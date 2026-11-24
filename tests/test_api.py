@@ -1,0 +1,522 @@
+"""Tests de bout en bout de l'API : un vrai serveur est lancé sur un port
+libre avec une base vide dans un dossier temporaire. Données fictives
+uniquement (le cas de référence reprend les chiffres du dossier de référence
+avec un nom inventé).
+
+Lancer : python3 tests/test_api.py
+"""
+import http.client
+import json
+import urllib.parse
+import os
+import socket
+import sys
+import tempfile
+import threading
+import time
+import unittest
+
+ICI = os.path.dirname(os.path.abspath(__file__))
+TMP = tempfile.mkdtemp(prefix="ano_test_")
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+PORT = s.getsockname()[1]
+s.close()
+os.environ["ANO_DONNEES"] = TMP
+os.environ["ANO_PORT"] = str(PORT)
+sys.path.insert(0, os.path.join(os.path.dirname(ICI), "app"))
+
+import serveur  # noqa: E402
+
+MDP_ADMIN = "Moanda-Bureau-2026!"
+
+
+class Client:
+    def __init__(self, hote="127.0.0.1:%d" % PORT):
+        self.cookie = None
+        self.csrf = None
+        self.hote = hote
+
+    def req(self, methode, chemin, corps=None, entetes=None, brut=None):
+        c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=30)
+        h = {"Host": self.hote}
+        if self.cookie:
+            h["Cookie"] = self.cookie
+        if self.csrf and methode != "GET":
+            h["X-CSRF-Token"] = self.csrf
+        data = None
+        if corps is not None or brut is not None:
+            data = brut if brut is not None else json.dumps(corps).encode()
+            h["Content-Type"] = "application/json"
+        h.update(entetes or {})
+        c.request(methode, chemin, body=data, headers=h)
+        r = c.getresponse()
+        txt = r.read()
+        sc = r.getheader("Set-Cookie")
+        if sc:
+            v = sc.split(";")[0]
+            self.cookie = v if v.split("=", 1)[1] else None
+        try:
+            j = json.loads(txt)
+        except ValueError:
+            j = txt
+        self.derniere = r
+        c.close()
+        return r.status, j
+
+    def connexion(self, ident, mdp):
+        st, j = self.req("POST", "/api/connexion", {"identifiant": ident, "mot_de_passe": mdp})
+        if st == 200:
+            self.csrf = j["csrf"]
+        return st, j
+
+
+def da_reference(client_id=1, nom="TESTEUR REFERENCE Alpha"):
+    return {"client_id": client_id, "num_da": "DA-TEST-1", "service": "DAF", "imputation": "IMP-01", "lieu": "Moanda",
+            "date_debut": "2026-11-02", "date_fin": "2027-05-01", "visite_mode": "Auto",
+            "date_proforma": "2026-10-30", "nom_numero": "TESTEUR REFERENCE",
+            "agents": [{"nom": nom, "poste": "Comptable fournisseurs", "salaire_base": 576300}]}
+
+
+class TestsAPI(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        t = threading.Thread(target=serveur.demarrer, kwargs={"ouvrir_navigateur": False}, daemon=True)
+        t.start()
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", PORT), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        cls.admin = Client()
+        st, j = cls.admin.req("GET", "/api/etat")
+        assert j["installation_requise"] is True
+        st, j = cls.admin.req("POST", "/api/installation",
+                              {"identifiant": "direction", "nom": "Direction", "mot_de_passe": MDP_ADMIN})
+        assert st == 200, j
+        st, j = cls.admin.connexion("direction", MDP_ADMIN)
+        assert st == 200, j
+
+    # ------------------------------------------------------------------ métier
+    def test_01_cas_de_reference(self):
+        a = self.admin
+        st, ap = a.req("POST", "/api/dossiers/apercu", da_reference())
+        self.assertEqual(st, 200, ap)
+        self.assertEqual(ap["cumul_ht"], 6648214)
+        self.assertEqual(ap["numero_propose"], "349-10-ANO-TESTEUR REFERENCE/2026")   # dernier devis réel : 348
+        st, j = a.req("POST", "/api/dossiers", da_reference())
+        self.assertEqual(st, 200, j)
+        did = j["id"]
+        self.assertEqual(j["numero_proforma"], "349-10-ANO-TESTEUR REFERENCE/2026")
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        pro = d["proforma"]
+        self.assertEqual(pro["cout_mensuel_total"], 1100733)
+        self.assertEqual(pro["cumul_ht"], 6648214)
+        self.assertEqual(pro["tva"], 1196679)
+        self.assertEqual([m["jours"] for m in pro["mois"]], [29, 31, 31, 28, 31, 30, 1])
+        self.assertEqual(len(pro["detail_charges"]), 10)
+        self.assertEqual(pro["detail_charges"][1]["total"], 106616)   # CNSS 18,5 %
+        # Générer sans BC : refus
+        st, j = a.req("POST", "/api/dossiers/%d/generer-factures" % did, {})
+        self.assertEqual(st, 409)
+        self.assertEqual(j["code"], "SANS_BC")
+        # BC 493930 au montant exact
+        st, j = a.req("POST", "/api/dossiers/%d/bc" % did, {"bc_numero": "493930", "bc_montant": 6648214})
+        self.assertEqual((st, j["ecart"]), (200, 0))
+        st, j = a.req("POST", "/api/dossiers/%d/generer-factures" % did, {})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["ajoutees"], 8)
+        # Relancer ne duplique rien
+        st, j = a.req("POST", "/api/dossiers/%d/generer-factures" % did, {})
+        self.assertEqual((j["ajoutees"], j["total"]), (0, 8))
+        st, f = a.req("GET", "/api/factures?dossier=%d" % did)
+        fs = f["factures"]
+        self.assertEqual([x["type"] for x in fs], ["VISITE"] + ["MAD"] * 7)
+        self.assertEqual([x["montant_ht"] for x in fs],
+                         [45000, 1064042, 1100733, 1100733, 1100733, 1100733, 1100733, 35508])
+        self.assertEqual(fs[1]["tva"], 191528)
+        # visite médicale : pas de TVA
+        self.assertEqual((fs[0]["tva"], fs[0]["ttc"]), (0, 45000))
+        self.assertEqual(fs[1]["ttc"], 1064042 + 191528)
+        type(self).did = did
+
+    def test_02_emission_rattrapage_bis_paiement(self):
+        a = self.admin
+        # dernière facture réelle : FA 161 (la suivante sera FA 162) ; le test repart de 152
+        st, pa = a.req("GET", "/api/parametres")
+        self.assertEqual(pa["parametres"]["dernier_num_facture"], 161)
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"dernier_num_facture": 152}})
+        self.assertEqual(st, 200, j)
+        # décembre + rattrapage de novembre (visite + novembre) = 3 factures
+        st, j = a.req("POST", "/api/factures/emettre",
+                      {"mois": "2026-12", "rattrapage": True, "date_facture": "2026-12-05"})
+        self.assertEqual((st, j["emises"]), (200, 3), j)
+        st, f = a.req("GET", "/api/factures?ids=" + ",".join(map(str, j["ids"])))
+        nums = [x["numero"] for x in f["factures"]]
+        self.assertEqual(nums, ["FA 153/11-Visite Médicale/2026", "FA 154/11-MAD/2026", "FA 155/12-MAD/2026"])
+        self.assertEqual(f["factures"][0]["echeance"], "2027-01-31")   # 05/12 + 30 j -> fin janvier
+        # relancer : rien de plus
+        st, j2 = a.req("POST", "/api/factures/emettre", {"mois": "2026-12", "rattrapage": True})
+        self.assertEqual(j2["emises"], 0)
+        nov = f["factures"][1]
+        # envoyée
+        st, j = a.req("POST", "/api/factures/envoyees", {"ids": [x["id"] for x in f["factures"]], "date": "2026-12-06"})
+        self.assertEqual(j["modifiees"], 3)
+        # facture bis selon PV
+        st, j = a.req("POST", "/api/factures/%d/bis" % nov["id"], {"montant_ht": 1060000, "date_pv": "2026-12-20"})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["numero"], "FA 154 bis/11-MAD/2026")
+        st, j3 = a.req("POST", "/api/factures/%d/bis" % nov["id"], {"montant_ht": 1, "date_pv": "2026-12-20"})
+        self.assertEqual(st, 409)
+        # paiement de la bis
+        st, fb = a.req("GET", "/api/factures?ids=%d,%d" % (nov["id"], j["id"]))
+        st_par_num = {x["numero"]: x for x in fb["factures"]}
+        self.assertEqual(st_par_num["FA 154/11-MAD/2026"]["statut"], "Remplacée")
+        bis = st_par_num["FA 154 bis/11-MAD/2026"]
+        self.assertEqual(bis["ttc"], 1060000 + 190800)
+        st, j = a.req("POST", "/api/factures/paiement", {"ids": [bis["id"]], "date": "2027-03-15", "reference": "VIR-0001"})
+        self.assertEqual(j["modifiees"], 1)
+        # export Word : une facture seule -> .docx ; plusieurs -> .zip d'un .docx par facture
+        import io
+        import zipfile
+        vis = f["factures"][0]
+        st, doc = a.req("GET", "/api/factures/word?ids=%d" % vis["id"])
+        self.assertEqual(st, 200)
+        self.assertIn("wordprocessingml", a.derniere.getheader("Content-Type"))
+        self.assertIn("attachment", a.derniere.getheader("Content-Disposition"))
+        self.assertIn("COMILOG SA - Facture Novembre 2026 - ", urllib.parse.unquote(a.derniere.getheader("Content-Disposition")))
+        z = zipfile.ZipFile(io.BytesIO(doc))
+        xml = z.read("word/document.xml").decode()
+        self.assertIn("N° FA 153/11-Visite Médicale/2026", xml)
+        self.assertIn("TVA (18 %)</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w=\"1600\" w:type=\"dxa\"/><w:vAlign w:val=\"top\"/></w:tcPr><w:p><w:pPr><w:spacing w:before=\"60\" w:after=\"60\"/></w:pPr><w:r><w:rPr><w:sz w:val=\"22\"/><w:szCs w:val=\"22\"/></w:rPr><w:t xml:space=\"preserve\">0<", xml)   # visite : TVA (18 %) = 0
+        self.assertNotIn("Modalité", xml)
+        for interne in ("Imputation", "IMP-01", "CLI001", vis["numero_proforma"], "DA-"):
+            self.assertNotIn(interne, xml)          # infos internes : jamais sur la facture
+        self.assertIn("45.000", xml)
+        self.assertIn("RCCM", z.read("word/footer1.xml").decode())
+        st, doc = a.req("GET", "/api/factures/word?ids=%d,%d" % (bis["id"], f["factures"][2]["id"]))
+        self.assertEqual(st, 200)
+        z = zipfile.ZipFile(io.BytesIO(doc))
+        self.assertEqual(len(z.namelist()), 2)
+        xml = z.read([n for n in z.namelist() if "154 bis" in n][0])
+        xml = zipfile.ZipFile(io.BytesIO(xml)).read("word/document.xml").decode()
+        self.assertIn("Ajustement selon PV", xml)
+        self.assertIn("Facture Novembre 2026", xml)
+        self.assertNotIn("PV du", xml)              # pas de dates dans la désignation
+        self.assertIn("TVA (18 %)", xml)
+        self.assertIn("1.250.800", xml)
+        st, j = a.req("GET", "/api/factures/word?ids=abc")
+        self.assertEqual(st, 400)
+        # paiement d'une facture remplacée : ignoré
+        st, j = a.req("POST", "/api/factures/paiement", {"ids": [nov["id"]], "date": "2027-03-15", "reference": "X"})
+        self.assertEqual(j["modifiees"], 0)
+        # export Excel (CSV) : en-têtes, accents, pas de salaire, formules neutralisées
+        st, csv = a.req("GET", "/api/factures/export.csv")
+        self.assertEqual(st, 200)
+        self.assertIn("text/csv", a.derniere.getheader("Content-Type"))
+        txt = csv.decode("utf-8-sig")
+        self.assertTrue(txt.startswith("N° facture;Mois;Type"))
+        self.assertIn("FA 154 bis/11-MAD/2026", txt)
+        self.assertNotIn("576300", txt)                 # jamais le salaire de base
+        self.assertEqual(serveur.api._cellule_csv("=SOMME(A1)"), "'=SOMME(A1)")
+        self.assertEqual(serveur.api._cellule_csv('a;"b"'), '"a;""b"""')
+        # tableau de bord : liste « À faire »
+        st, t = a.req("GET", "/api/tableau-de-bord")
+        self.assertIn("a_faire", t)
+        self.assertEqual(set(t["a_faire"]), {"a_emettre", "a_envoyer", "en_retard", "brouillons", "sans_bc"})
+        self.assertEqual(t["a_faire"]["a_emettre"], 0)       # novembre et décembre déjà émis, rien d'échu
+        # tableau de bord de novembre
+        st, t = a.req("GET", "/api/tableau-de-bord?mois=2026-11")
+        self.assertEqual(st, 200, t)
+        self.assertEqual(t["personnes_en_contrat"], 1)
+        self.assertEqual(t["a_facturer_total_ht"], 1064042 + 45000)
+        self.assertEqual(t["factures_emises"], 2)              # visite + bis (l'originale ne compte plus)
+        self.assertEqual(t["facture_ht"], 45000 + 1060000)
+        self.assertEqual(t["paye"], 1060000 + 190800)
+        st, t = a.req("GET", "/api/tableau-de-bord?mois=2027-05")
+        self.assertEqual(t["a_facturer_total_ht"], 35508)
+
+    def test_03_verrouillage_apres_emission(self):
+        a = self.admin
+        st, d = a.req("GET", "/api/dossiers/%d" % self.did)
+        self.assertTrue(d["verrouille"])
+        corps = da_reference()
+        corps["agents"][0]["salaire_base"] = 600000
+        st, j = a.req("PUT", "/api/dossiers/%d" % self.did, corps)
+        self.assertEqual(st, 409)
+        corps = da_reference()
+        corps["imputation"] = "IMP-02"
+        st, j = a.req("PUT", "/api/dossiers/%d" % self.did, corps)
+        self.assertEqual(st, 200, j)
+        st, j = a.req("POST", "/api/dossiers/%d/statut" % self.did, {"statut": "Annulé"})
+        self.assertEqual(st, 409)
+
+    def test_04_plusieurs_agents_visites_et_renouvellement(self):
+        a = self.admin
+        # 2 agents, 15 mois -> 2 visites chacun
+        corps = {"client_id": 2, "service": "DRH", "lieu": "Libreville", "date_debut": "2027-01-01",
+                 "date_fin": "2028-03-31", "agents": [
+                     {"nom": "AGENT FICTIF Un", "poste": "Chauffeur", "salaire_base": 300000},
+                     {"nom": "AGENT FICTIF Deux", "poste": "Magasinier", "salaire_base": 350000}]}
+        st, j = a.req("POST", "/api/dossiers", corps)
+        self.assertEqual(st, 200, j)
+        self.assertTrue(j["numero_proforma"].startswith("350-"))
+        # pas de n° de DA saisi -> n° automatique DA-AAAA-001, puis 002
+        annee = serveur.api.aujourdhui().year
+        self.assertEqual(j["num_da"], "DA-%d-001" % annee)
+        st, ap = a.req("POST", "/api/dossiers/apercu", corps)
+        self.assertEqual(ap["num_da_propose"], "DA-%d-002" % annee)
+        # un n° de DA déjà utilisé est refusé
+        st, k = a.req("POST", "/api/dossiers", dict(corps, num_da="DA-TEST-1"))
+        self.assertEqual(st, 409, k)
+        st, d = a.req("GET", "/api/dossiers/%d" % j["id"])
+        # modifier sans n° de DA garde le n° automatique
+        st, k = a.req("PUT", "/api/dossiers/%d" % j["id"], dict(corps, num_da=""))
+        self.assertEqual(st, 200, k)
+        st, d2 = a.req("GET", "/api/dossiers/%d" % j["id"])
+        self.assertEqual(d2["dossier"]["num_da"], "DA-%d-001" % annee)
+        self.assertEqual(d["proforma"]["nb_visites"], 4)
+        self.assertEqual(d["proforma"]["visites_ht"], 180000)
+        # Renouvellement du 1er agent de référence : visite faite le 02/11/2026,
+        # nouveau contrat du 02/05/2027 au 01/11/2027 -> aucune visite
+        ren = da_reference()
+        ren.update(date_debut="2027-05-02", date_fin="2027-11-01", nom_numero="")
+        st, ap = a.req("POST", "/api/dossiers/apercu", ren)
+        self.assertEqual(ap["dernieres_visites"], ["2026-11-02"])
+        self.assertEqual(ap["nb_visites"], 0)
+        # Visite désactivée
+        ren["visite_mode"] = "Non"
+        ren["date_fin"] = "2028-12-31"
+        st, ap = a.req("POST", "/api/dossiers/apercu", ren)
+        self.assertEqual(ap["nb_visites"], 0)
+
+    def test_06_matricule_fixe(self):
+        a = self.admin
+        base = {"client_id": 1, "service": "DAF", "lieu": "Moanda", "date_debut": "2028-01-01", "date_fin": "2028-02-29"}
+        st, j1 = a.req("POST", "/api/dossiers", dict(base, agents=[
+            {"nom": "INTERIM FICTIF Élodie", "poste": "Secrétaire", "salaire_base": 250000}]))
+        self.assertEqual(st, 200, j1)
+        st, d1 = a.req("GET", "/api/dossiers/%d" % j1["id"])
+        m1 = d1["agents"][0]["matricule"]
+        self.assertRegex(m1, r"^INT-\d{4}$")
+        # nouvelle DA : même personne écrite autrement -> même matricule ; nouvelle personne -> nouveau
+        corps2 = dict(base, date_debut="2028-03-01", date_fin="2028-04-30", agents=[
+            {"nom": "interim  fictif elodie", "poste": "Secrétaire", "salaire_base": 260000},
+            {"nom": "INTERIM FICTIF Autre", "poste": "Chauffeur", "salaire_base": 200000}])
+        st, ap = a.req("POST", "/api/dossiers/apercu", corps2)
+        self.assertEqual(ap["matricules"], [m1, None])
+        st, j2 = a.req("POST", "/api/dossiers", corps2)
+        self.assertEqual(st, 200, j2)
+        st, d2 = a.req("GET", "/api/dossiers/%d" % j2["id"])
+        m2 = [x["matricule"] for x in d2["agents"]]
+        self.assertEqual(m2[0], m1)
+        self.assertNotEqual(m2[1], m1)
+        # la modification d'une DA garde les matricules
+        st, k = a.req("PUT", "/api/dossiers/%d" % j2["id"], corps2)
+        self.assertEqual(st, 200, k)
+        st, d3 = a.req("GET", "/api/dossiers/%d" % j2["id"])
+        self.assertEqual([x["matricule"] for x in d3["agents"]], m2)
+        st, li = a.req("GET", "/api/interimaires")
+        self.assertEqual(st, 200)
+        e = [x for x in li["interimaires"] if x["matricule"] == m1][0]
+        self.assertEqual(e["nb_contrats"], 2)
+        self.assertNotIn("salaire_base", json.dumps(li))
+        st, ld = a.req("GET", "/api/dossiers?q=" + m1.lower())
+        self.assertEqual(len(ld["dossiers"]), 2)
+
+    def test_08_ancien_interimaire(self):
+        a = self.admin
+        fiche = {"nom": "ANCIEN FICTIF Paul", "poste": "Magasinier", "lieu": "Moanda",
+                 "hist_debut": "2025-03-01", "hist_fin": "2026-02-28", "derniere_visite": "2026-01-15"}
+        st, j = a.req("POST", "/api/interimaires", fiche)
+        self.assertEqual(st, 200, j)
+        mat = j["matricule"]
+        st, k = a.req("POST", "/api/interimaires", dict(fiche, nom="ancien fictif paul"))
+        self.assertEqual(st, 409)                       # doublon refusé
+        st, k = a.req("POST", "/api/interimaires", dict(fiche, hist_fin="2024-01-01"))
+        self.assertEqual(st, 400)                       # fin avant début
+        st, li = a.req("GET", "/api/interimaires")
+        e = [x for x in li["interimaires"] if x["matricule"] == mat][0]
+        self.assertEqual((e["nb_contrats"], e["poste"], e["premier_debut"], e["ancien"]), (1, "Magasinier", "2025-03-01", True))
+        st, f = a.req("GET", "/api/factures")
+        self.assertFalse([x for x in f["factures"] if x["agent"] == fiche["nom"]])   # aucune facture
+        # nouvelle DA : même matricule, visite de janvier 2026 reprise -> pas de visite avant janvier 2027
+        corps = {"client_id": 1, "service": "DAF", "lieu": "Moanda", "date_debut": "2026-12-01", "date_fin": "2027-01-10",
+                 "agents": [{"nom": "Ancien Fictif PAUL", "poste": "Magasinier", "salaire_base": 300000}]}
+        st, ap = a.req("POST", "/api/dossiers/apercu", corps)
+        self.assertEqual((ap["matricules"], ap["dernieres_visites"], ap["nb_visites"]), ([mat], ["2026-01-15"], 0))
+        # modification de la fiche
+        st, k = a.req("PUT", "/api/interimaires/%d" % j["id"], dict(fiche, poste="Chef magasinier"))
+        self.assertEqual(st, 200, k)
+
+    def test_07_migration_base_existante(self):
+        import sqlite3
+        chemin = os.path.join(TMP, "ancienne.db")
+        con = sqlite3.connect(chemin)
+        con.executescript("CREATE TABLE agents (id INTEGER PRIMARY KEY, dossier_id INTEGER, rang INTEGER, nom TEXT, "
+                          "poste TEXT, salaire_base INTEGER, derniere_visite TEXT);"
+                          "INSERT INTO agents(dossier_id, rang, nom, poste, salaire_base) VALUES "
+                          "(1,1,'ANCIEN Agent','X',1),(2,1,'Ancien  agent','X',1),(2,2,'AUTRE Agent','Y',1);")
+        con.commit()
+        con.close()
+        serveur.db.initialiser(chemin)
+        serveur.db.initialiser(chemin)      # deux lancements : rien ne doit changer
+        con = sqlite3.connect(chemin)
+        r = con.execute("SELECT a.id, i.matricule FROM agents a JOIN interimaires i ON i.id = a.interimaire_id "
+                        "ORDER BY a.id").fetchall()
+        con.close()
+        self.assertEqual([m for _, m in r], ["INT-0001", "INT-0001", "INT-0002"])
+
+    def test_05_validation_entrees(self):
+        a = self.admin
+        mauvais = [
+            dict(da_reference(), date_fin="2026-10-01"),
+            dict(da_reference(), date_debut="02/11/2026"),
+            dict(da_reference(), agents=[]),
+            dict(da_reference(), agents=[{"nom": "X", "poste": "Y", "salaire_base": -5}]),
+            dict(da_reference(), agents=[{"nom": "X", "poste": "Y", "salaire_base": "12a"}]),
+            dict(da_reference(), agents=[{"nom": "X", "poste": "Y", "salaire_base": 1.5}]),
+            dict(da_reference(), client_id=999),
+            dict(da_reference(), service="x" * 500),
+            dict(da_reference(), visite_mode="Peut-être"),
+        ]
+        for c in mauvais:
+            st, j = a.req("POST", "/api/dossiers/apercu", c)
+            self.assertEqual(st, 400, (c, j))
+        st, j = a.req("POST", "/api/dossiers/apercu", brut=b"{pas du json")
+        self.assertEqual(st, 400)
+        st, j = a.req("POST", "/api/dossiers/apercu", brut=b"[1,2]")
+        self.assertEqual(st, 400)
+        st, j = a.req("POST", "/api/dossiers/%d/bc" % self.did, {"bc_numero": "49A930", "bc_montant": 1})
+        self.assertEqual(st, 400)
+
+    # ---------------------------------------------------------------- sécurité
+    def test_10_sans_session(self):
+        c = Client()
+        for m, p in [("GET", "/api/dossiers"), ("GET", "/api/factures"), ("GET", "/api/tableau-de-bord"),
+                     ("GET", "/api/utilisateurs"), ("GET", "/api/parametres")]:
+            st, j = c.req(m, p)
+            self.assertEqual(st, 401, p)
+        st, j = c.req("POST", "/api/installation", {"identifiant": "pirate", "nom": "x", "mot_de_passe": "Unmotdepasse-long-9"})
+        self.assertEqual(st, 409)
+
+    def test_11_csrf_origine_type(self):
+        a = self.admin
+        sauve = a.csrf
+        a.csrf = None
+        st, j = a.req("POST", "/api/dossiers/apercu", da_reference())
+        self.assertEqual(st, 403)
+        a.csrf = "faux" * 10
+        st, j = a.req("POST", "/api/dossiers/apercu", da_reference())
+        self.assertEqual(st, 403)
+        a.csrf = sauve
+        st, j = a.req("POST", "/api/dossiers/apercu", da_reference(), entetes={"Origin": "http://evil.example"})
+        self.assertEqual(st, 403)
+        st, j = a.req("POST", "/api/dossiers/apercu", brut=json.dumps(da_reference()).encode(),
+                      entetes={"Content-Type": "text/plain"})
+        self.assertEqual(st, 415)
+        # Hôte étranger (DNS rebinding)
+        st, j = Client(hote="evil.example:%d" % PORT).req("GET", "/api/etat")
+        self.assertEqual(st, 400)
+
+    def test_12_entetes_securite(self):
+        a = self.admin
+        st, _ = a.req("GET", "/")
+        r = a.derniere
+        self.assertEqual(st, 200)
+        self.assertIn("default-src 'self'", r.getheader("Content-Security-Policy"))
+        self.assertEqual(r.getheader("X-Frame-Options"), "DENY")
+        self.assertEqual(r.getheader("X-Content-Type-Options"), "nosniff")
+        st, _ = a.req("GET", "/static/../app/db.py")
+        self.assertEqual(st, 404)
+        st, _ = a.req("GET", "/donnees/ano.db")
+        self.assertEqual(st, 404)
+
+    def test_13_roles(self):
+        a = self.admin
+        st, j = a.req("POST", "/api/utilisateurs", {"identifiant": "lola", "nom": "Lola", "role": "gestion",
+                                                     "mot_de_passe": "Temporaire-Compta-1"})
+        self.assertEqual(st, 200, j)
+        st, j = a.req("POST", "/api/utilisateurs", {"identifiant": "boss", "nom": "Lecteur", "role": "lecture",
+                                                     "mot_de_passe": "Temporaire-Lecture-1"})
+        self.assertEqual(st, 200, j)
+        st, j = a.req("POST", "/api/utilisateurs", {"identifiant": "faible", "nom": "x", "role": "gestion",
+                                                     "mot_de_passe": "court"})
+        self.assertEqual(st, 400)
+        g = Client()
+        st, j = g.connexion("lola", "Temporaire-Compta-1")
+        self.assertEqual(st, 200)
+        self.assertTrue(j["utilisateur"]["doit_changer_mdp"])
+        st, j = g.req("GET", "/api/dossiers")
+        self.assertEqual((st, j.get("code")), (403, "CHANGER_MDP"))
+        st, j = g.req("POST", "/api/moi/mot-de-passe", {"actuel": "Temporaire-Compta-1", "nouveau": "Factures-du-mois-42"})
+        self.assertEqual(st, 200, j)
+        st, j = g.req("GET", "/api/dossiers")
+        self.assertEqual(st, 200)
+        st, j = g.req("GET", "/api/utilisateurs")
+        self.assertEqual(st, 403)
+        st, j = g.req("PUT", "/api/parametres", {"parametres": {"tva_pdm": 0}})
+        self.assertEqual(st, 403)
+        lec = Client()
+        lec.connexion("boss", "Temporaire-Lecture-1")
+        lec.req("POST", "/api/moi/mot-de-passe", {"actuel": "Temporaire-Lecture-1", "nouveau": "Tableau-de-bord-77"})
+        st, j = lec.req("GET", "/api/tableau-de-bord")
+        self.assertEqual(st, 200)
+        st, j = lec.req("GET", "/api/dossiers")
+        self.assertEqual(st, 403)       # les salaires restent invisibles
+        st, j = lec.req("GET", "/api/interimaires")
+        self.assertEqual(st, 403)
+        st, j = lec.req("GET", "/api/factures/word?ids=1")
+        self.assertEqual(st, 403)       # le cachet n'est pas remis au compte Lecture
+        st, j = lec.req("POST", "/api/factures/paiement", {"ids": [1], "date": "2027-01-01"})
+        self.assertEqual(st, 403)
+
+    def test_14_blocage_apres_5_erreurs(self):
+        c = Client()
+        for _ in range(5):
+            st, j = c.connexion("lola", "mauvais-mot-de-passe")
+            self.assertEqual(st, 401)
+        st, j = c.connexion("lola", "Factures-du-mois-42")
+        self.assertEqual(st, 423)
+        st, j = c.connexion("inconnu", "nimporte-quoi-123")
+        self.assertEqual(st, 401)
+        self.assertEqual(j["erreur"], "Identifiant ou mot de passe incorrect.")
+
+    def test_15_deconnexion_et_journal(self):
+        c = Client()
+        st, j = c.connexion("direction", MDP_ADMIN)
+        self.assertEqual(st, 200)
+        st, j = c.req("POST", "/api/deconnexion", {})
+        self.assertEqual(st, 200)
+        st, j = c.req("GET", "/api/moi")
+        self.assertEqual(st, 401)
+        st, j = self.admin.req("GET", "/api/journal")
+        actions = {x["action"] for x in j["journal"]}
+        for a in ("installation", "connexion", "connexion_echec", "dossier_cree", "bc_saisi", "factures_emises",
+                  "facture_bis", "paiement", "utilisateur_cree"):
+            self.assertIn(a, actions)
+        # aucun mot de passe en clair dans le journal
+        self.assertNotIn("Factures-du-mois-42", json.dumps(j))
+
+    def test_16_sauvegarde(self):
+        st, j = self.admin.req("POST", "/api/sauvegarde", {})
+        self.assertEqual(st, 200, j)
+        self.assertTrue(os.path.exists(j["fichier"]))
+
+    def test_17_signature_protegee(self):
+        if not os.path.exists(serveur.api.CHEMIN_SIGNATURE):
+            self.skipTest("pas de fichier de signature")
+        st, corps = Client().req("GET", "/api/signature")
+        self.assertEqual(st, 401)
+        st, corps = self.admin.req("GET", "/api/signature")
+        self.assertEqual(st, 200)
+        self.assertEqual(self.admin.derniere.getheader("Content-Type"), "image/png")
+        lec = Client()
+        lec.connexion("boss", "Tableau-de-bord-77")
+        st, corps = lec.req("GET", "/api/signature")
+        self.assertEqual(st, 200)       # cachet sur tous les documents, pour tout compte connecté
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

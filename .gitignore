@@ -1,0 +1,8 @@
+donnees/
+donnees-essai/
+__pycache__/
+*.pyc
+app/prive/
+node_modules/
+*.db
+.DS_Store

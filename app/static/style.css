@@ -1,0 +1,302 @@
+:root {
+  --fond: #f4f6f9;
+  --carte: #ffffff;
+  --texte: #1c2430;
+  --doux: #5f6b7a;
+  --bord: #dde3ea;
+  --marine: #1f4e78;
+  --marine-clair: #e8f0f8;
+  --vert: #127a46;
+  --vert-clair: #e4f4ea;
+  --orange: #b45309;
+  --orange-clair: #fdf0e1;
+  --rouge: #b42318;
+  --rouge-clair: #fde8e7;
+  --gris-clair: #eef1f4;
+  --rayon: 10px;
+  --ombre: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+  font-size: 15px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--fond); color: var(--texte); line-height: 1.45;
+}
+a { color: var(--marine); }
+h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.1rem; margin: 0 0 .75rem; }
+h3 { font-size: .95rem; margin: 1rem 0 .5rem; color: var(--doux); text-transform: uppercase; letter-spacing: .03em; }
+.chargement { padding: 3rem; text-align: center; color: var(--doux); }
+.cache { display: none !important; }
+.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.doux { color: var(--doux); }
+.petit { font-size: .85rem; }
+.gras { font-weight: 600; }
+
+/* --- structure --- */
+.coque { display: grid; grid-template-columns: 230px 1fr; min-height: 100vh; }
+.menu { background: #14324f; color: #dbe6f1; padding: 1rem .75rem; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+.menu .marque { font-weight: 700; font-size: 1.15rem; color: #fff; padding: .25rem .5rem 1rem; }
+.menu .marque small { display: block; font-weight: 400; font-size: .75rem; color: #9fb6cc; }
+.menu a { display: block; color: #dbe6f1; text-decoration: none; padding: .55rem .75rem; border-radius: 8px; margin-bottom: 2px; }
+.menu a:hover { background: rgba(255,255,255,.08); }
+.menu a.actif { background: #2a5d8c; color: #fff; font-weight: 600; }
+.menu .sep { border-top: 1px solid rgba(255,255,255,.12); margin: .75rem .25rem; }
+.menu .moi { font-size: .85rem; color: #9fb6cc; padding: .5rem .75rem; }
+.menu .moi b { color: #fff; display: block; }
+.contenu { padding: 1.5rem 2rem 4rem; max-width: 1400px; width: 100%; }
+.entete { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; flex-wrap: wrap; }
+.entete p { margin: .2rem 0 0; color: var(--doux); }
+.actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+
+/* --- cartes --- */
+.carte { background: var(--carte); border: 1px solid var(--bord); border-radius: var(--rayon); box-shadow: var(--ombre); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
+.grille { display: grid; gap: 1rem; }
+.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.kpi { background: var(--carte); border: 1px solid var(--bord); border-radius: var(--rayon); padding: 1rem 1.1rem; box-shadow: var(--ombre); }
+.kpi .lib { color: var(--doux); font-size: .85rem; }
+.kpi .val { font-size: 1.6rem; font-weight: 700; margin: .15rem 0; font-variant-numeric: tabular-nums; }
+.kpi .sous { font-size: .8rem; color: var(--doux); }
+.kpi.accent { border-left: 4px solid var(--marine); }
+.kpi.ok { border-left: 4px solid var(--vert); }
+.kpi.alerte { border-left: 4px solid var(--orange); }
+.kpi.danger { border-left: 4px solid var(--rouge); }
+
+/* --- bandeaux --- */
+.bandeau { border-radius: var(--rayon); padding: .8rem 1rem; margin-bottom: 1rem; display: flex; gap: 1rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.bandeau.info { background: var(--marine-clair); border: 1px solid #c4d7ea; }
+.bandeau.alerte { background: var(--orange-clair); border: 1px solid #f3d1a8; }
+.bandeau.danger { background: var(--rouge-clair); border: 1px solid #f5c2bd; }
+.bandeau.ok { background: var(--vert-clair); border: 1px solid #b9e2c8; }
+
+/* --- tableaux --- */
+.tableau-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { padding: .5rem .6rem; border-bottom: 1px solid var(--bord); text-align: left; vertical-align: top; }
+th { font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--doux); font-weight: 600; background: #fafbfc; position: sticky; top: 0; }
+tbody tr:hover { background: #f8fafc; }
+tr.cliquable { cursor: pointer; }
+tr.total td { font-weight: 700; border-top: 2px solid var(--texte); }
+tr.barre td { color: var(--doux); text-decoration: line-through; }
+td.actions-ligne { white-space: nowrap; text-align: right; }
+
+/* --- badges --- */
+.badge { display: inline-block; padding: .12rem .55rem; border-radius: 999px; font-size: .78rem; font-weight: 600; background: var(--gris-clair); color: var(--doux); white-space: nowrap; }
+.b-Brouillon { background: var(--gris-clair); color: #475467; }
+.b-Envoyé, .b-Envoyée, .b-À.envoyer { background: var(--marine-clair); color: var(--marine); }
+.b-Validé, .b-BC.reçu { background: #ede9fe; color: #5b21b6; }
+.b-En.cours, .b-Payée { background: var(--vert-clair); color: var(--vert); }
+.b-Terminé, .b-Remplacée { background: var(--gris-clair); color: #667085; }
+.b-Annulé, .b-En.retard { background: var(--rouge-clair); color: var(--rouge); }
+.b-À.émettre { background: var(--orange-clair); color: var(--orange); }
+
+/* --- formulaires --- */
+label { display: block; font-size: .85rem; font-weight: 600; margin-bottom: .25rem; color: #344054; }
+.champ { margin-bottom: .85rem; }
+.aide { font-size: .8rem; color: var(--doux); margin-top: .2rem; }
+input, select, textarea {
+  font: inherit; width: 100%; padding: .5rem .65rem; border: 1px solid #c9d1db; border-radius: 8px; background: #fff; color: var(--texte);
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid #8bb5de; outline-offset: 0; border-color: var(--marine); }
+input[type=checkbox] { width: auto; }
+input.montant { text-align: right; font-variant-numeric: tabular-nums; }
+.ligne-form { display: grid; gap: .75rem; }
+.lf2 { grid-template-columns: 1fr 1fr; }
+.lf3 { grid-template-columns: 1fr 1fr 1fr; }
+.lf4 { grid-template-columns: repeat(4, 1fr); }
+.radios { display: flex; gap: .5rem; }
+.radios label { font-weight: 500; border: 1px solid #c9d1db; border-radius: 8px; padding: .45rem .8rem; cursor: pointer; display: flex; gap: .4rem; align-items: center; margin: 0; }
+.radios label.choisi { border-color: var(--marine); background: var(--marine-clair); color: var(--marine); }
+.erreur-form { color: var(--rouge); font-size: .9rem; margin: .5rem 0; }
+
+button, .bouton {
+  font: inherit; font-weight: 600; border: 1px solid transparent; border-radius: 8px; padding: .5rem .95rem; cursor: pointer;
+  background: var(--marine); color: #fff; text-decoration: none; display: inline-flex; align-items: center; gap: .35rem; white-space: nowrap;
+}
+button:hover { filter: brightness(1.08); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.secondaire, .bouton.secondaire { background: #fff; color: var(--texte); border-color: #c9d1db; }
+button.vert { background: var(--vert); }
+button.orange { background: var(--orange); }
+button.danger { background: #fff; color: var(--rouge); border-color: #f0b4ae; }
+button.lien { background: none; color: var(--marine); padding: .2rem .3rem; border: none; }
+button.petit { padding: .25rem .6rem; font-size: .82rem; }
+
+/* --- saisie DA --- */
+.da { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
+.apercu { position: sticky; top: 1rem; }
+.agents-saisie td { padding: .3rem .3rem; border: none; }
+.agents-saisie th { background: none; }
+.gros-total { font-size: 1.5rem; font-weight: 700; color: var(--marine); }
+
+/* --- étapes --- */
+.etapes { display: flex; gap: .25rem; margin: .75rem 0 1rem; flex-wrap: wrap; }
+.etape { flex: 1; min-width: 110px; padding: .45rem .6rem; border-radius: 8px; background: var(--gris-clair); color: var(--doux); font-size: .82rem; font-weight: 600; text-align: center; }
+.etape.fait { background: var(--vert-clair); color: var(--vert); }
+.etape.courant { background: var(--marine); color: #fff; }
+
+/* --- barres (tableau de bord) --- */
+.barres td { padding: .3rem .5rem; }
+.barre-fond { background: var(--gris-clair); border-radius: 4px; height: 10px; position: relative; min-width: 120px; }
+.barre-val { height: 10px; border-radius: 4px; }
+.bv-prevu { background: #9db9d6; }
+.bv-facture { background: var(--marine); }
+.bv-paye { background: var(--vert); }
+.legende { display: flex; gap: 1rem; font-size: .82rem; color: var(--doux); margin-bottom: .5rem; }
+.legende span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: .35rem; vertical-align: -1px; }
+.legende .l-prevu::before { background: #9db9d6; }
+.legende .l-facture::before { background: var(--marine); }
+.legende .l-paye::before { background: var(--vert); }
+
+/* --- modale et toasts --- */
+.modale { position: fixed; inset: 0; background: rgba(16, 24, 40, .45); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 1rem; z-index: 50; overflow-y: auto; }
+.modale .boite { background: #fff; border-radius: 12px; width: 100%; max-width: 520px; padding: 1.25rem 1.5rem; box-shadow: 0 20px 40px rgba(0,0,0,.2); }
+.modale .boite.large { max-width: 760px; }
+.modale .pied { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+#toasts { position: fixed; right: 1rem; bottom: 1rem; display: flex; flex-direction: column; gap: .5rem; z-index: 60; }
+.toast { background: #101828; color: #fff; padding: .7rem 1rem; border-radius: 8px; box-shadow: var(--ombre); max-width: 380px; }
+.toast.err { background: var(--rouge); }
+
+/* --- connexion --- */
+.connexion { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+.connexion .carte { width: 100%; max-width: 400px; padding: 2rem; }
+.connexion h1 { color: var(--marine); }
+
+/* --- documents imprimables (proforma, factures) --- */
+.doc-barre { display: flex; gap: .5rem; align-items: center; margin-bottom: 1rem; }
+
+@media (max-width: 1000px) {
+  .coque { grid-template-columns: 1fr; }
+  .menu { position: static; height: auto; display: flex; flex-wrap: wrap; gap: .25rem; }
+  .menu .sep, .menu .moi { display: none; }
+  .da, .g2, .g3, .g4 { grid-template-columns: 1fr; }
+  .contenu { padding: 1rem; }
+}
+
+@media print {
+  @page { size: A4; margin: 0; }
+  body { background: #fff; }
+  .menu, .doc-barre, #toasts, .modale, .pas-imprimer { display: none !important; }
+  .coque { display: block; }
+  .contenu { padding: 0; max-width: none; }
+}
+
+/* tableau des factures : colonnes lisibles */
+#t-fact td { font-size: .9rem; }
+#t-fact td:nth-child(4) { min-width: 210px; }
+#t-fact td:nth-child(7) { white-space: nowrap; }
+#t-fact td:nth-child(7) .doux { white-space: normal; max-width: 220px; font-weight: 400; }
+#t-fact td:nth-child(2) { white-space: nowrap; }
+
+
+
+.a-faire { margin-bottom: 1rem; border-left: 4px solid #b54708; }
+.a-faire ul { margin: .25rem 0 0; padding-left: 1.1rem; }
+.a-faire li { margin: .3rem 0; }
+.a-faire li b { font-size: 1.05rem; }
+.matricule { display: inline-block; font-size: .72rem; font-weight: 600; font-family: ui-monospace, Menlo, monospace; background: #eef2f7; color: #36506e; border-radius: 4px; padding: 0 .35rem; white-space: nowrap; }
+.matricule.nouveau { background: #fff4d6; color: #7a5a00; font-family: inherit; }
+
+.choix-factures { max-width: 210mm; margin: 0 auto 1rem; }
+.choix-liste { display: flex; flex-wrap: wrap; gap: .35rem 1.2rem; margin: .5rem 0; font-size: .85rem; }
+.choix-liste label { display: flex; align-items: center; gap: .35rem; cursor: pointer; }
+.doc.exclu { display: none !important; }
+
+/* ===================================================================
+   Documents imprimables : copie de la mise en page des proformas et
+   factures existantes d'ANO Services (Excel / Word)
+   =================================================================== */
+.doc { background: #fff; width: 210mm; min-height: 296mm; margin: 0 auto 1.5rem; padding: 10mm 12mm 6mm; box-shadow: var(--ombre);
+  border: 1px solid var(--bord); color: #000; display: flex; flex-direction: column;
+  font-family: Calibri, Carlito, "Segoe UI", Arial, sans-serif; font-size: 10.5pt; line-height: 1.3; }
+.doc table { border-collapse: collapse; }
+.doc th { background: none; color: #000; text-transform: none; letter-spacing: 0; position: static; font-size: inherit; font-weight: 700; }
+.doc td, .doc th { border: none; padding: 1px 5px; }
+.doc .logo-doc { height: 24mm; width: auto; display: block; }
+.doc .emetteur { font-family: Arial, Helvetica, sans-serif; font-size: 10.5pt; line-height: 1.3; }
+.doc .emetteur b { font-size: 11pt; }
+.doc .mail { color: #0563c1; text-decoration: underline; font-size: 9.5pt; }
+.doc .sig-img { width: 30mm; height: auto; display: block; }
+.doc .c { text-align: center; } .doc .d { text-align: right; } .doc .b { font-weight: 700; } .doc .i { font-style: italic; }
+
+/* --- proforma --- */
+.pf-cadre { border: 3px solid #000; padding: 4mm 0 5mm 4mm; }
+.pf-tete { display: flex; justify-content: space-between; padding-right: 6mm; }
+.pf-logo { width: 55%; }
+.pf .double-trait { border-top: 1px solid #000; border-bottom: 1px solid #000; height: 3px; margin-top: 2mm; }
+.pf .emetteur { width: 40%; padding-top: 2mm; }
+.pf-bandeau { display: flex; margin-top: 3mm; width: 66%; }
+.pf-titre { background: #595959; color: #fff; font-weight: 700; font-style: italic; font-size: 20pt; padding: 1mm 3mm; width: 52%; font-family: Calibri, Carlito, "Segoe UI", Arial, sans-serif; }
+.pf-num { background: #a6a6a6; color: #fff; font-weight: 700; font-size: 9pt; flex: 1; display: flex; align-items: center; justify-content: center; }
+.pf-infos { display: flex; justify-content: space-between; align-items: flex-start; padding-right: 6mm; }
+.pf-gauche { padding-top: 4mm; }
+.pf-date { font-weight: 700; font-style: italic; font-size: 13pt; }
+.pf-lieu { font-size: 8pt; margin-bottom: 1mm; }
+.pf-gi { font-weight: 700; font-style: italic; font-size: 12pt; }
+.pf-bi { font-weight: 700; font-style: italic; }
+.pf-b { font-weight: 700; }
+.pf-client { border: 2px solid #7f7f7f; border-radius: 4mm; padding: 1.5mm 5mm 1.5mm 8mm; margin-top: 1mm; line-height: 1.5; min-width: 60mm; }
+.pf-charges { width: calc(100% - 4mm); margin-top: 1mm; }
+.pf-charges thead th { border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; border-left: 1px solid #000; text-align: center; vertical-align: middle; padding: 1mm 2mm; }
+.pf-charges thead th.g { border-left: none; text-align: left; }
+.pf-charges thead th.d { text-align: right; }
+.pf-charges tbody tr:first-child td { border-top: 1px solid #000; }
+.pf-charges tbody tr:first-child td:first-child { border-left: 1px solid #000; }
+.pf-charges tbody td:first-child { border-left: 1px solid #000; }
+.pf-charges tbody tr:last-child td { border-bottom: 1px solid #000; }
+.pf-charges tbody td { font-size: 9.5pt; padding: 0 2mm; border-bottom: 1px solid #000; }  /* un trait sous chaque ligne, comme les proformas existantes */
+.pf-charges tbody td:nth-child(2) { width: 22mm; } .pf-charges tbody td:nth-child(3) { width: 26mm; }
+.pf-charges tbody td:nth-child(4), .pf-charges tbody td:nth-child(5) { width: 20mm; }
+.pf-cout { display: flex; align-items: center; justify-content: flex-end; gap: 6mm; font-weight: 700; margin: 3mm 4mm 1mm 0; }
+.pf-cout-val { border: 2px solid #000; padding: .5mm 2mm; margin-left: 8mm; }
+.pf-cout .pf-xaf { font-weight: 400; font-size: 9pt; margin-left: -5mm; width: 12mm; }
+.pf-mois { margin-left: 6mm; width: calc(100% - 10mm); }
+.pf-mois thead th { border: 1px solid #000; vertical-align: middle; text-align: center; padding: 1.2mm 2mm; }
+.pf-mois thead th.pf-mad { font-weight: 400; font-style: italic; width: 46%; }
+.pf-mois thead th.pf-q, .pf-mois thead th.pf-t, .pf-mois thead th.pf-j { width: 13%; }
+.pf-mois td { border: 1px solid #000; }
+.pf-mois .pf-vide { border: none; }
+.pf-mois tr.pf-cumul td { border: none; }
+.pf-mois .pf-cumul-lib { text-align: right; font-weight: 700; font-size: 9.5pt; }
+.pf-mois .pf-cumul-val { background: #a6a6a6; border: 1px solid #7f7f7f !important; font-weight: 700; font-style: italic; }
+.pf-valable { color: #c00000; font-weight: 700; font-style: italic; margin-top: 1mm; font-family: Arial, sans-serif; }
+.pf-sign { font-weight: 700; font-style: italic; font-family: Arial, sans-serif; }
+.pf-resp { display: flex; flex-direction: column; align-items: center; width: 60%; font-weight: 700; font-style: italic; font-family: Arial, sans-serif; font-size: 9.5pt; }
+.pf-resp .sig-img { width: 25mm; margin: .5mm 0; }
+/* pied de page centré, comme sur les factures */
+.pf-pied { margin-top: auto; text-align: center; font-size: 10pt; line-height: 1.4; }
+
+/* --- facture --- */
+.fa { font-size: 11pt; padding: 12mm 14mm 8mm; }
+/* facture : double trait épais sous le logo, bloc ANO en Arial sans trait (comme la facture 152 bis) */
+.fa-tete { display: flex; justify-content: space-between; align-items: flex-start; padding: 8mm 10mm 0 8mm; }
+.fa-logo { width: 47%; }
+.fa .logo-doc { height: 25mm; }
+.fa-logo .double-trait { border-top: 2.5px solid #000; border-bottom: 1.5px solid #000; height: 2px; margin-top: 1mm; }
+.fa .emetteur { padding: 4mm 0 0 0; font-size: 10.5pt; width: 40%; }
+.fa-infos { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 14mm; padding: 0 4mm 0 6mm; }
+.fa-gauche { text-align: right; line-height: 2.3; font-size: 10.5pt; padding-top: 3mm; }
+.fa-client { background: #4472c4; color: #fff; border: 1px solid #2f528f; border-radius: 5mm; padding: 2mm 10mm; text-align: center; line-height: 2.25; min-width: 72mm; font-size: 10.5pt; }
+.fa-titre { text-align: right; font-size: 17pt; font-weight: 700; margin: 22mm 3mm 20mm 0; line-height: 1.25; }
+.fa-titre .fa-num { font-size: 13pt; }
+.fa-table { width: 100%; }
+.fa-table th { background: #d6dce5; border: 1px solid #000; text-align: center; vertical-align: top; padding: 1mm 2mm; font-size: 10pt; }
+.fa-table td { border-left: 1px solid #000; border-right: 1px solid #000; border-bottom: 1px solid #000; text-align: center; vertical-align: top; font-size: 9pt; padding: 2mm 2mm; }
+.fa-table th:first-child { width: 30%; }
+.fa-periode { font-size: 8pt; }
+.fa-totaux { margin: 14mm 14mm 0 auto; width: 62mm; }
+.fa-totaux td { padding: 2.5mm 0; font-weight: 700; }
+.fa-totaux td:last-child { text-align: left; padding-left: 6mm; font-weight: 400; }
+.fa-totaux tr:last-child td { font-weight: 700; }
+.fa-totaux tr.fa-trait td { border-bottom: 3px solid #000; padding: 1mm 0; height: 0; }
+.fa-sign { display: flex; align-items: flex-start; gap: 18mm; margin: 12mm 0 0 14mm; }
+.fa-sign b { padding-top: 6mm; }
+.fa-pied { margin-top: auto; text-align: center; font-size: 11pt; line-height: 1.4; }
+
+@media print {
+  .doc { box-shadow: none; border: none; margin: 0; width: 210mm; min-height: 292mm; page-break-after: always; break-after: page; }
+  .doc:last-child { page-break-after: auto; break-after: auto; }
+}
