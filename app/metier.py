@@ -160,8 +160,10 @@ def premier_mot(texte):
     return t.split(" ")[0] if t else ""
 
 
-def numero_proforma(seq, date_proforma, nom):
-    return "%d-%02d-ANO-%s/%d" % (seq, date_proforma.month, nom_pour_numero(nom), date_proforma.year)
+def numero_proforma(seq, date_proforma, nom, code="ANO"):
+    """348-11-ANO-NOM/2026 ; « ANO » = code de l'entreprise (Paramètres)."""
+    code = nom_pour_numero(code) or "ANO"
+    return "%d-%02d-%s-%s/%d" % (seq, date_proforma.month, code, nom_pour_numero(nom), date_proforma.year)
 
 
 def calcul_proforma(dossier, agents, charges, params):
@@ -235,9 +237,10 @@ def lignes_factures_agent(dossier, agent, charges, params):
     return res
 
 
-def numero_facture(n, type_facture, mois):
-    libelle = "Visite Médicale" if type_facture == TYPE_VISITE else "MAD"
-    return "FA %d/%02d-%s/%d" % (n, mois.month, libelle, mois.year)
+def numero_facture(n, type_facture, mois, prefixe="FA", code_mad="MAD", code_visite="Visite Médicale"):
+    """FA 161/11-MAD/2026 ; préfixe et codes réglables par entreprise (Paramètres)."""
+    libelle = code_visite if type_facture == TYPE_VISITE else code_mad
+    return ("%s %d/%02d-%s/%d" % (prefixe, n, mois.month, libelle, mois.year)).strip()
 
 
 def numero_bis(numero):

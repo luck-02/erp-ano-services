@@ -145,7 +145,7 @@ function confirmer(titre, texte, libelle = "Confirmer", classe = "") {
 function afficherConnexion(message) {
   $("#app").className = "";
   $("#app").innerHTML = html`<div class="connexion"><form class="carte" id="f-cnx">
-    <h1>ANO Services</h1><p class="doux">Gestion des mises à disposition</p>
+    <img class="logo-connexion" src="/static/logo.png" alt=""><h1>Connexion</h1><p class="doux">Gestion des mises à disposition</p>
     ${message ? html`<div class="bandeau alerte petit">${message}</div>` : ""}
     <div class="champ"><label for="c-id">Identifiant</label><input id="c-id" autocomplete="username" required maxlength="40"></div>
     <div class="champ"><label for="c-mdp">Mot de passe</label><input id="c-mdp" type="password" autocomplete="current-password" required maxlength="128"></div>
@@ -240,7 +240,7 @@ async function demarrerApp() {
   try { etat.params = await api("GET", "/api/parametres"); } catch (e) { return; }
   $("#app").className = "";
   $("#app").innerHTML = html`<div class="coque">
-    <nav class="menu"><div class="marque">ANO Services<small>ERP – version MVP</small></div>
+    <nav class="menu"><div class="marque">${etat.params.parametres.raison_sociale}<small>ERP – version MVP</small></div>
       ${PAGES.map((p) => (p.sep ? html`<div class="sep"></div>` : p.roles.includes(etat.user.role) ? html`<a href="${p.h}">${p.t}</a>` : ""))}
       <div class="sep"></div>
       <div class="moi"><b>${etat.user.nom}</b>${ROLES[etat.user.role]}</div>
@@ -292,7 +292,7 @@ const filtres = { mois: moisCourant(), factMois: moisCourant(), factStatut: "", 
 function carteAFaire(a) {
   const lignes = [
     [a.a_emettre, "facture(s) à émettre (mois en cours et mois passés)", "#/factures", "À émettre"],
-    [a.a_envoyer, "facture(s) émise(s) pas encore envoyée(s) à COMILOG", "#/factures", "À envoyer"],
+    [a.a_envoyer, "facture(s) émise(s) pas encore envoyée(s) au client", "#/factures", "À envoyer"],
     [a.en_retard, "facture(s) en retard de paiement (échéance dépassée)", "#/factures", "En retard"],
     [a.sans_bc, "proforma(s) envoyée(s) ou validée(s) sans bon de commande", "#/dossiers", null],
     [a.brouillons, "proforma(s) en brouillon, pas encore envoyée(s)", "#/dossiers", null],
@@ -412,7 +412,7 @@ async function pageSaisieDA(page, id) {
   const verrou = det && det.verrouille;
   rendre(page, html`
     <div class="entete"><div><h1>${id ? "Modifier la DA " + det.dossier.numero_proforma : "Nouvelle DA"}</h1>
-      <p>Saisissez la demande d'achat de COMILOG : la proforma se calcule à droite au fur et à mesure.</p></div></div>
+      <p>Saisissez la demande d'achat du client : la proforma se calcule à droite au fur et à mesure.</p></div></div>
     ${verrou ? html`<div class="bandeau alerte">Des factures sont déjà émises : seuls le n° de DA, le service, l'imputation, le lieu et les notes peuvent changer.</div>` : ""}
     <div class="da">
       <form id="f-da" autocomplete="off">
@@ -624,7 +624,8 @@ async function pageDossier(page, id) {
       e.preventDefault();
       const m = entierSaisi($("#bc-m").value);
       if (m === null) return toast("Montant du BC : chiffres uniquement.", true);
-      if (!/^\d{6}$/.test($("#bc-n").value.trim()) && !(await confirmer("N° de BC inhabituel", "Les BC COMILOG ont normalement 6 chiffres. Enregistrer quand même ?"))) return;
+      const nbc = Number(etat.params.parametres.bc_chiffres) || 0;
+      if (nbc && !new RegExp("^\\d{" + nbc + "}$").test($("#bc-n").value.trim()) && !(await confirmer("N° de BC inhabituel", "Les BC de ce client ont normalement " + nbc + " chiffres. Enregistrer quand même ?"))) return;
       try { const res = await action(() => api("POST", "/api/dossiers/" + id + "/bc", { bc_numero: $("#bc-n").value.trim(), bc_montant: m, bc_date: $("#bc-d").value })); toast(Math.abs(res.ecart) <= 1 ? "BC enregistré : montant conforme." : "BC enregistré, mais écart de " + fmt(res.ecart) + " XAF.", Math.abs(res.ecart) > 1); } catch (x) { return; }
       pageDossier(page, id);
     };
@@ -714,7 +715,7 @@ function brancherTableFactures(page, rafraichir) {
     b.onclick = () => {
       const id = +b.dataset.bis;
       const m = ouvrirModale(html`<form id="f-bis"><h2>Facture bis selon le PV</h2>
-        <p class="doux petit">COMILOG a envoyé un PV avec un autre montant : une facture « bis » remplace celle-ci (même n° + « bis », montant et date du PV). L'ancienne n'est plus comptée.</p>
+        <p class="doux petit">Le client a envoyé un PV avec un autre montant : une facture « bis » remplace celle-ci (même n° + « bis », montant et date du PV). L'ancienne n'est plus comptée.</p>
         <div class="ligne-form lf2"><div class="champ"><label for="b-m">Montant HT du PV</label><input id="b-m" class="montant" inputmode="numeric" required></div>
         <div class="champ"><label for="b-d">Date du PV</label><input type="date" id="b-d" value="${auj()}" required></div></div>
         <div class="pied"><button type="button" class="secondaire" data-fermer>Annuler</button><button type="submit" class="orange">Créer la facture bis</button></div></form>`);
@@ -901,7 +902,7 @@ async function pageImprimer(page, type, arg) {
   if ($("#imp-tout")) { $("#imp-tout").onclick = () => { $$(".imp-sel").forEach((c) => { c.checked = true; }); majChoix(); }; $("#imp-rien").onclick = () => { $$(".imp-sel").forEach((c) => { c.checked = false; }); majChoix(); }; }
   if ($("#imp-word")) $("#imp-word").onclick = () => exporterWord(cochees());
   $("#imp").onclick = () => window.print();
-  window.addEventListener("hashchange", () => { document.title = "ANO Services – ERP"; }, { once: true });
+  window.addEventListener("hashchange", () => { document.title = etat.params.parametres.raison_sociale + " – ERP"; }, { once: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -924,7 +925,7 @@ async function pageInterimaires(page) {
   const fiche = (x) => {
     const f = x ? Object.assign({ nom: x.nom }, x.fiche) : { nom: "", poste: "", lieu: "", hist_debut: "", hist_fin: "", derniere_visite: "", notes: "" };
     const m = ouvrirModale(html`<form id="f-it"><h2>${x ? "Fiche " + x.matricule : "Ajouter un ancien intérimaire"}</h2>
-      <p class="doux petit">${x ? "" : "Pour les personnes déjà passées chez COMILOG avant l'application : elles reçoivent un matricule, sans proforma ni facture. "}La dernière visite médicale est reprise automatiquement à sa prochaine DA (pas de nouvelle visite avant 1 an).</p>
+      <p class="doux petit">${x ? "" : "Pour les personnes déjà mises à disposition avant l'application : elles reçoivent un matricule, sans proforma ni facture. "}La dernière visite médicale est reprise automatiquement à sa prochaine DA (pas de nouvelle visite avant 1 an).</p>
       <div class="champ"><label for="it-nom">Nom et prénoms</label><input id="it-nom" value="${f.nom}" maxlength="120" required placeholder="NOM Prénoms"></div>
       <div class="ligne-form lf2"><div class="champ"><label for="it-poste">Poste</label><input id="it-poste" value="${f.poste}" maxlength="120"></div>
         <div class="champ"><label for="it-lieu">Lieu</label><input id="it-lieu" list="l-it-lieux" value="${f.lieu}" maxlength="80"></div></div>
@@ -1004,6 +1005,7 @@ async function pageParametres(page) {
         <div class="ligne-form lf2">
           <div class="champ"><label for="p-tva">TVA %</label><input id="p-tva" class="montant" value="${(p.tva_pdm / 100).toLocaleString("fr-FR")}" ${dis}></div>
           ${champ("visite_ht", "Visite médicale HT (par agent)")}</div>
+        <label class="case"><input type="checkbox" id="p-tva-visite" ${p.tva_visite ? "checked" : ""} ${dis}> Appliquer la TVA sur la facture de visite médicale</label>
         <div class="ligne-form lf2">${champ("validite_visite_mois", "Validité visite (mois)")}${champ("delai_paiement_jours", "Délai de paiement (jours, puis fin de mois)")}</div>
         <div class="ligne-form lf2">${champ("modalite_reglement", "Modalité de règlement")}${champ("validite_devis_jours", "Validité du devis (jours)")}</div>
         ${champ("heures", "Heures (texte de la proforma)")}</div>
@@ -1012,16 +1014,55 @@ async function pageParametres(page) {
       <div class="carte"><h2>Numérotation</h2>
         <div class="ligne-form lf2">${champ("dernier_num_proforma", "Dernier n° de proforma utilisé", "La prochaine DA prendra ce n° + 1.")}
         ${champ("dernier_num_facture", "Dernier n° de facture utilisé", p.dernier_num_facture === null ? "À renseigner avant la 1re émission (ex. 152)." : "La prochaine facture prendra ce n° + 1.")}</div>
+        <div class="ligne-form lf2">${champ("code_entreprise", "Code entreprise (n° de proforma)")}${champ("prefixe_facture", "Préfixe des factures")}</div>
+        <div class="ligne-form lf2">${champ("code_mad", "Code facture mensuelle")}${champ("code_visite", "Code facture visite médicale")}</div>
+        <p class="aide" id="p-exemples"></p>
+        <div class="ligne-form lf2">${champ("bc_chiffres", "Chiffres d'un n° de BC client", "0 = pas de contrôle.")}<div></div></div>
         <div class="ligne-form lf2">${champ("alerte_fin_jours", "Alerte fin de contrat (jours avant)")}${champ("alerte_visite_jours", "Alerte visite médicale (jours avant)")}</div></div>
       <div class="carte"><h2>Listes</h2>
         <div class="champ"><label for="p-lieux">Lieux (un par ligne)</label><textarea id="p-lieux" rows="4" ${dis}>${p.lieux.join("\n")}</textarea></div>
         <div class="champ"><label for="p-services">Services demandeurs (un par ligne)</label><textarea id="p-services" rows="4" ${dis}>${p.services.join("\n")}</textarea></div></div>
     </div>
+    <div class="carte"><h2>Logo et cachet sur les documents</h2>
+      <div class="grille g2">
+        <div><p class="doux petit">Logo (en-tête de la proforma et des factures)</p><img class="apercu-image" id="p-img-logo" src="/static/logo.png" alt="Logo">
+          ${admin ? html`<div><label class="bouton secondaire petit" for="p-f-logo">Changer le logo (PNG)</label><input type="file" id="p-f-logo" accept="image/png" hidden></div>` : ""}</div>
+        <div><p class="doux petit">Cachet et signature (au-dessus de « Le responsable »)</p><img class="apercu-image" id="p-img-signature" src="/api/signature" alt="Aucun cachet enregistré">
+          ${admin ? html`<div><label class="bouton secondaire petit" for="p-f-signature">Changer le cachet (PNG)</label><input type="file" id="p-f-signature" accept="image/png" hidden></div>` : ""}</div>
+      </div><p class="aide">Le cachet n'est jamais public : il n'est montré qu'aux comptes connectés.</p></div>
     ${admin ? html`<div class="actions"><button type="submit" class="vert">Enregistrer les paramètres</button><button type="button" class="secondaire" id="p-sauve">Faire une sauvegarde maintenant</button></div>` : ""}
     </form>`);
   if (!admin) return;
   const majCoef = () => { let s = 10000; $$("#p-charges [data-taux]").forEach((i) => { s += pdmSaisi(i.value) || 0; }); $("#p-coef").textContent = (s / 10000).toLocaleString("fr-FR"); };
   $$("#p-charges [data-taux]").forEach((i) => { i.oninput = majCoef; });
+  // exemples de n° calculés en direct depuis les codes saisis
+  const majEx = () => {
+    const v = (k) => $("#p-" + k).value.trim();
+    const an = new Date().getFullYear(), mm = String(new Date().getMonth() + 1).padStart(2, "0");
+    const nf = (Number(v("dernier_num_facture")) || 0) + 1;
+    $("#p-exemples").textContent = "Exemples : proforma " + ((Number(v("dernier_num_proforma")) || 0) + 1) + "-" + mm + "-" + v("code_entreprise").toUpperCase() + "-NOM/" + an
+      + " · facture " + (v("prefixe_facture") + " " + nf + "/" + mm + "-" + v("code_mad") + "/" + an).trim()
+      + " · visite " + (v("prefixe_facture") + " " + nf + "/" + mm + "-" + v("code_visite") + "/" + an).trim();
+  };
+  ["code_entreprise", "prefixe_facture", "code_mad", "code_visite", "dernier_num_proforma", "dernier_num_facture"].forEach((k) => { $("#p-" + k).oninput = majEx; });
+  majEx();
+  for (const quoi of ["logo", "signature"]) {
+    $("#p-f-" + quoi).onchange = (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      if (f.type !== "image/png") return toast("Choisissez une image PNG.", true);
+      if (f.size > 600000) return toast("Image trop lourde (600 Ko au plus).", true);
+      const lecteur = new FileReader();
+      lecteur.onload = async () => {
+        try {
+          await api("PUT", "/api/images/" + quoi, { png: lecteur.result });
+          $("#p-img-" + quoi).src = (quoi === "logo" ? "/static/logo.png" : "/api/signature") + "?v=" + Date.now();
+          toast(quoi === "logo" ? "Logo enregistré." : "Cachet enregistré.");
+        } catch (x) { toast(x.message, true); }
+      };
+      lecteur.readAsDataURL(f);
+    };
+  }
   $("#p-sauve").onclick = async () => { try { const s = await api("POST", "/api/sauvegarde", {}); toast("Sauvegarde créée : " + s.fichier.split(/[\\/]/).pop()); } catch (x) { toast(x.message, true); } };
   $("#f-par").onsubmit = async (e) => {
     e.preventDefault();
@@ -1030,6 +1071,7 @@ async function pageParametres(page) {
     const tva = pdmSaisi($("#p-tva").value);
     if (tva === null) return toast("TVA : nombre attendu (ex. 18).", true);
     par.tva_pdm = tva;
+    par.tva_visite = $("#p-tva-visite").checked;
     if (par.dernier_num_facture === "") par.dernier_num_facture = null;
     par.lieux = $("#p-lieux").value.split("\n");
     par.services = $("#p-services").value.split("\n");

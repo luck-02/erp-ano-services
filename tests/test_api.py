@@ -362,6 +362,17 @@ class TestsAPI(unittest.TestCase):
         con.close()
         serveur.db.initialiser(chemin)
         serveur.db.initialiser(chemin)      # deux lancements : rien ne doit changer
+        # paramètre ajouté par une version récente : ajouté sans écraser les autres
+        con = sqlite3.connect(chemin)
+        con.execute("DELETE FROM parametres WHERE cle = 'code_entreprise'")
+        con.execute("UPDATE parametres SET valeur = '\"BANQUE TEST\"' WHERE cle = 'banque'")
+        con.commit()
+        con.close()
+        serveur.db.initialiser(chemin)
+        con = sqlite3.connect(chemin)
+        self.assertEqual(dict(con.execute("SELECT cle, valeur FROM parametres WHERE cle IN ('code_entreprise', 'banque')")),
+                         {"code_entreprise": '"ANO"', "banque": '"BANQUE TEST"'})
+        con.close()
         con = sqlite3.connect(chemin)
         r = con.execute("SELECT a.id, i.matricule FROM agents a JOIN interimaires i ON i.id = a.interimaire_id "
                         "ORDER BY a.id").fetchall()
@@ -516,6 +527,56 @@ class TestsAPI(unittest.TestCase):
         lec.connexion("boss", "Tableau-de-bord-77")
         st, corps = lec.req("GET", "/api/signature")
         self.assertEqual(st, 200)       # cachet sur tous les documents, pour tout compte connecté
+
+    def test_99_parametres_entreprise(self):
+        """V1 B2B : codes de n°, TVA visite et images réglables ; ANO inchangé par défaut."""
+        a = self.admin
+        st, p = a.req("GET", "/api/parametres")
+        d = p["parametres"]
+        self.assertEqual((d["code_entreprise"], d["prefixe_facture"], d["code_mad"], d["tva_visite"], d["bc_chiffres"]),
+                         ("ANO", "FA", "MAD", False, 6))
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"code_mad": "A/B"}})
+        self.assertEqual(st, 400)                       # « / » interdit dans un code
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"code_entreprise": "  "}})
+        self.assertEqual(st, 400)
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"tva_visite": "oui"}})
+        self.assertEqual(st, 400)
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"code_entreprise": "xyz", "tva_visite": True}})
+        self.assertEqual(st, 200, j)
+        st, ap = a.req("POST", "/api/dossiers/apercu", da_reference())
+        self.assertIn("-XYZ-", ap["numero_propose"])
+        self.assertEqual(ap["cumul_ht"], 6648214)       # calcul inchangé
+        self.assertEqual(serveur.api._tva_ligne("VISITE", 45000, {"tva_pdm": 1800, "tva_visite": True}), 8100)
+        self.assertEqual(serveur.api._tva_ligne("VISITE", 45000, {"tva_pdm": 1800}), 0)     # anciens dossiers
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"code_entreprise": "ANO", "tva_visite": False}})
+        self.assertEqual(st, 200)
+        # logo / cachet : direction seulement, PNG seulement, rangé dans un dossier de test
+        prive = os.path.join(TMP, "prive")
+        ancien, serveur.api.PRIVE = serveur.api.PRIVE, prive
+        try:
+            import base64
+            st, j = a.req("PUT", "/api/images/logo", {"png": base64.b64encode(b"GIF89a....").decode()})
+            self.assertEqual(st, 400)
+            st, j = a.req("PUT", "/api/images/logo", {"png": "pas du base64 !"})
+            self.assertEqual(st, 400)
+            png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+            st, j = a.req("PUT", "/api/images/signature", {"png": "data:image/png;base64," + base64.b64encode(png).decode()})
+            self.assertEqual(st, 200, j)
+            with open(os.path.join(prive, "signature.png"), "rb") as f:
+                self.assertEqual(f.read(), png)
+            st, j = a.req("PUT", "/api/images/autre", {"png": ""})
+            self.assertEqual(st, 404)
+        finally:
+            serveur.api.PRIVE = ancien
+        st, j = Client().req("PUT", "/api/images/logo", {"png": ""})
+        self.assertEqual(st, 401)                       # sans connexion
+        a.req("POST", "/api/utilisateurs", {"identifiant": "gestion99", "nom": "G", "role": "gestion",
+                                             "mot_de_passe": "Temporaire-Gestion-9"})
+        g = Client()
+        g.connexion("gestion99", "Temporaire-Gestion-9")
+        g.req("POST", "/api/moi/mot-de-passe", {"actuel": "Temporaire-Gestion-9", "nouveau": "Gestion-des-images-9"})
+        st, j = g.req("PUT", "/api/images/logo", {"png": ""})
+        self.assertEqual(st, 403)                       # gestion : refusé
 
 
 if __name__ == "__main__":

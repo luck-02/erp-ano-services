@@ -15,7 +15,13 @@ from xml.sax.saxutils import escape
 import metier as M
 
 ICI = os.path.dirname(os.path.abspath(__file__))
-LOGO = os.path.join(ICI, "static", "logo.png")
+LOGO_DEFAUT = os.path.join(ICI, "static", "logo.png")
+
+
+def chemin_logo():
+    """Logo chargé par l'entreprise (Paramètres), sinon le logo livré."""
+    perso = os.path.join(ICI, "prive", "logo.png")
+    return perso if os.path.exists(perso) else LOGO_DEFAUT
 SIGNATURE = os.path.join(ICI, "prive", "signature.png")
 
 EMU_MM = 36000
@@ -165,7 +171,7 @@ def corps_document(p, f, avec_signature):
             "".join(para(run(t, taille=10.5, police="Arial")) for t in (p["adresse"], p["ville"], p["telephone"])) +
             para(run(p["email"], taille=9.5, couleur="0563C1", police="Arial")))
     trait = '<w:tcBorders><w:bottom w:val="double" w:sz="12" w:space="0" w:color="000000"/></w:tcBorders>'
-    x.append(tableau([[cellule(para(image("rLogo", 1, "logo", haut_mm=25, chemin=LOGO)), 4800, bords=trait),
+    x.append(tableau([[cellule(para(image("rLogo", 1, "logo", haut_mm=25, chemin=chemin_logo())), 4800, bords=trait),
                        cellule("", 1000), cellule(emet, 3600, valign="top", marges={"top": 200})]],
                      [4800, 1000, 3600], align="center"))
     x.append(para("", apres=560))
@@ -270,7 +276,7 @@ def facture_docx(p, f, avec_signature=True):
         z.writestr("word/document.xml", document)
         z.writestr("word/styles.xml", styles)
         z.writestr("word/footer1.xml", footer)
-        z.write(LOGO, "word/media/logo.png")
+        z.write(chemin_logo(), "word/media/logo.png")
         if avec_signature:
             z.write(SIGNATURE, "word/media/cachet.png")
     return buf.getvalue()

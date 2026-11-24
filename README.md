@@ -41,6 +41,7 @@ Si le double-clic ne marche pas : dans Terminal, tapez `cd ` puis glissez le dos
 ### Première ouverture
 L'application demande de créer le **compte de la direction** (administrateur) : nom, identifiant, mot de passe de 12 caractères minimum. Ensuite :
 1. **Paramètres** : vérifiez l'entreprise, les taux, et les derniers n° réels sont déjà réglés : dernier devis **348** (le prochain sera 349) et dernière facture **FA 161** (la prochaine sera FA 162). Vous pouvez les corriger dans Paramètres.
+   Tout ce qui est propre à l'entreprise se règle aussi dans **Paramètres**, sans toucher au code : identité, taux de charges, TVA (et TVA ou non sur la visite médicale), codes des n° (`ANO` dans 349-11-ANO-NOM/2026, `FA`, `MAD`, `Visite Médicale`), longueur des n° de BC, logo et cachet (PNG). Les réglages d'ANO sont ceux par défaut.
 2. **Utilisateurs** : créez le compte de Lola (rôle « Gestion ») avec un mot de passe provisoire ; elle le changera à sa première connexion.
 
 ---

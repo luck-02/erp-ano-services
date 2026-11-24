@@ -150,6 +150,13 @@ PARAMETRES_INITIAUX = {
     "dernier_num_facture": 161,    # dernière facture réelle FA 161 (Luc, 24/11/2026)
     "alerte_fin_jours": 30,
     "alerte_visite_jours": 30,
+    # V1 B2B : ce qui était écrit en dur pour ANO devient réglable
+    "code_entreprise": "ANO",          # 348-11-ANO-NOM/2026
+    "prefixe_facture": "FA",           # FA 161/11-MAD/2026
+    "code_mad": "MAD",
+    "code_visite": "Visite Médicale",
+    "tva_visite": False,               # visite médicale sans TVA (règle ANO)
+    "bc_chiffres": 6,                  # longueur habituelle d'un n° de BC (0 = pas de contrôle)
     "lieux": ["Moanda", "Libreville", "Port-Gentil"],
     "services": ["DAF"],
 }
@@ -194,6 +201,11 @@ def initialiser(chemin):
             for c in CLIENTS_INITIAUX:
                 con.execute("INSERT INTO clients(code, nom, adresse, ville, telephone) VALUES (?,?,?,?,?)", c)
         con.execute("COMMIT")
+    # base existante : ajoute les paramètres apparus depuis (ex. V1 B2B), sans
+    # jamais toucher aux valeurs déjà enregistrées
+    with con:
+        for k, v in PARAMETRES_INITIAUX.items():
+            con.execute("INSERT OR IGNORE INTO parametres(cle, valeur) VALUES (?, ?)", (k, json.dumps(v)))
     migrer_interimaires(con)
     con.close()
     try:

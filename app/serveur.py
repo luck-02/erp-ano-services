@@ -82,6 +82,7 @@ ROUTES = [
     ("PUT", r"/api/factures/(\d+)/remarque", api.remarque_facture, EQUIPE),
     ("GET", r"/api/tableau-de-bord", api.tableau_de_bord, TOUS),
     ("GET", r"/api/signature", api.signature, TOUS),
+    ("PUT", r"/api/images/(logo|signature)", api.televerser_image, (A,)),
     ("GET", r"/api/utilisateurs", api.utilisateurs, (A,)),
     ("POST", r"/api/utilisateurs", api.creer_utilisateur, (A,)),
     ("PUT", r"/api/utilisateurs/(\d+)", api.modifier_utilisateur, (A,)),
@@ -224,7 +225,10 @@ class Gestionnaire(BaseHTTPRequestHandler):
         if chemin not in STATIQUES:
             return self._erreur(404, "Page introuvable.")
         nom, type_ = STATIQUES[chemin]
-        with open(os.path.join(ICI, "static", nom), "rb") as f:
+        fichier = os.path.join(ICI, "static", nom)
+        if chemin == "/static/logo.png" and os.path.exists(os.path.join(ICI, "prive", "logo.png")):
+            fichier = os.path.join(ICI, "prive", "logo.png")   # logo chargé par l'entreprise
+        with open(fichier, "rb") as f:
             self._envoyer(200, f.read(), type_)
 
     def _api(self, methode, url):

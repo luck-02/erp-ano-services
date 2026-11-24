@@ -47,6 +47,10 @@ class TestsMetier(unittest.TestCase):
         self.assertEqual(M.numero_proforma(348, D(2026, 10, 30), "Dupont Mbïna"), "348-10-ANO-DUPONT MBINA/2026")
         self.assertEqual(M.numero_facture(153, "VISITE", D(2026, 11, 1)), "FA 153/11-Visite Médicale/2026")
         self.assertEqual(M.numero_bis("FA 152/08-MAD/2026"), "FA 152 bis/08-MAD/2026")
+        # V1 B2B : codes réglables par entreprise
+        self.assertEqual(M.numero_proforma(12, D(2027, 2, 3), "Fictif", "xyz"), "12-02-XYZ-FICTIF/2027")
+        self.assertEqual(M.numero_facture(7, "MAD", D(2027, 2, 1), "FAC", "PREST", "VM"), "FAC 7/02-PREST/2027")
+        self.assertEqual(M.numero_facture(8, "VISITE", D(2027, 2, 1), "", "PREST", "VM"), "8/02-VM/2027")
         self.assertEqual(M.echeance(D(2026, 12, 5), 30), D(2027, 1, 31))
 
     def test_arrondi(self):

@@ -394,7 +394,43 @@ def modifier_utilisateur(ctx, g, body):
     return {"ok": True}
 
 
-CHEMIN_SIGNATURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prive", "signature.png")
+PRIVE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prive")
+CHEMIN_SIGNATURE = os.path.join(PRIVE, "signature.png")
+IMAGES_ENTREPRISE = {"logo": "logo.png", "signature": "signature.png"}
+PNG = b"\x89PNG\r\n\x1a\n"
+
+
+def televerser_image(ctx, g, body):
+    """Logo ou cachet/signature de l'entreprise (direction seulement).
+    PNG uniquement, 600 Ko au plus, rangé dans app/prive (jamais public
+    pour la signature)."""
+    import base64
+    import binascii
+    quoi = g[0]
+    if quoi not in IMAGES_ENTREPRISE:
+        raise ErreurAPI(404, "Image inconnue.")
+    b64 = body.get("png")
+    if not isinstance(b64, str) or len(b64) > 820_000:
+        raise ErreurAPI(400, "Image manquante ou trop lourde (600 Ko au plus).")
+    try:
+        data = base64.b64decode(b64.split(",", 1)[-1], validate=True)
+    except (binascii.Error, ValueError):
+        raise ErreurAPI(400, "Image illisible.")
+    if not data.startswith(PNG) or len(data) > 600_000:
+        raise ErreurAPI(400, "Format PNG attendu (600 Ko au plus).")
+    os.makedirs(PRIVE, mode=0o700, exist_ok=True)
+    cible = os.path.join(PRIVE, IMAGES_ENTREPRISE[quoi])
+    tmp = cible + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, cible)
+    with Transaction(ctx["con"]):
+        journaliser(ctx, "image_entreprise", quoi, "%d octets" % len(data))
+    return {"ok": True}
 
 
 def signature(ctx, g, body):
@@ -426,11 +462,14 @@ def sauvegarde(ctx, g, body):
 CHAMPS_TEXTE_PARAM = {
     "raison_sociale": 80, "adresse": 120, "ville": 80, "telephone": 80, "email": 120, "rccm": 80,
     "nif": 40, "cnss": 40, "banque": 80, "compte": 60, "devise": 6, "modalite_reglement": 40, "heures": 120,
+    "code_entreprise": 12, "prefixe_facture": 10, "code_mad": 20, "code_visite": 30,
 }
+# morceaux de n° : pas de « / » ni de « - » (ils séparent les parties du n°)
+CHAMPS_CODE_PARAM = ("code_entreprise", "prefixe_facture", "code_mad", "code_visite")
 CHAMPS_ENTIER_PARAM = {
     "tva_pdm": (0, 5000), "validite_devis_jours": (1, 365), "delai_paiement_jours": (0, 365),
     "visite_ht": (0, 10_000_000), "validite_visite_mois": (1, 60), "dernier_num_proforma": (0, 10_000_000),
-    "alerte_fin_jours": (1, 365), "alerte_visite_jours": (1, 365),
+    "alerte_fin_jours": (1, 365), "alerte_visite_jours": (1, 365), "bc_chiffres": (0, 20),
 }
 
 
@@ -449,9 +488,16 @@ def modifier_parametres(ctx, g, body):
     for k, mx in CHAMPS_TEXTE_PARAM.items():
         if k in p_in:
             nouv[k] = texte(p_in, k, mx, k in ("raison_sociale",))
+    for k in CHAMPS_CODE_PARAM:
+        if k in nouv and any(c in nouv[k] for c in "/-\\"):
+            raise ErreurAPI(400, "« %s » ne doit contenir ni « / » ni « - » (ils séparent les parties du n°)." % k)
+    if "code_entreprise" in nouv and not M.nom_pour_numero(nouv["code_entreprise"]):
+        raise ErreurAPI(400, "Code entreprise obligatoire (lettres ou chiffres, ex. ANO).")
     for k, (a, b) in CHAMPS_ENTIER_PARAM.items():
         if k in p_in:
             nouv[k] = entier(p_in, k, a, b)
+    if "tva_visite" in p_in:
+        nouv["tva_visite"] = booleen(p_in, "tva_visite")
     if "dernier_num_facture" in p_in:
         nouv["dernier_num_facture"] = entier(p_in, "dernier_num_facture", 0, 10_000_000, requis=False)
     for k in ("lieux", "services"):
@@ -583,7 +629,20 @@ def _valider_dossier(con, body):
 def _bareme_actuel(con):
     p = parametres(con)
     return {"charges": charges(con), "visite_ht": p["visite_ht"], "tva_pdm": p["tva_pdm"],
-            "validite_visite_mois": p["validite_visite_mois"]}
+            "validite_visite_mois": p["validite_visite_mois"], "tva_visite": bool(p.get("tva_visite", False))}
+
+
+def _tva_ligne(type_, ht, bareme):
+    """Visite médicale sans TVA, sauf si l'entreprise l'a réglé autrement
+    (barème figé dans le dossier ; anciens dossiers : sans TVA)."""
+    if type_ == M.TYPE_VISITE and not bareme.get("tva_visite"):
+        return 0
+    return M.tva(ht, bareme["tva_pdm"])
+
+
+def _codes_facture(p):
+    return {"prefixe": p.get("prefixe_facture", "FA"), "code_mad": p.get("code_mad", "MAD"),
+            "code_visite": p.get("code_visite", "Visite Médicale")}
 
 
 def prochain_num_da(con, annee):
@@ -617,7 +676,7 @@ def apercu_dossier(ctx, g, body):
     p = parametres(con)
     seq = int(p.get("dernier_num_proforma") or 0) + 1
     pro = M.calcul_proforma(d, agents, b["charges"], b)
-    pro["numero_propose"] = M.numero_proforma(seq, d["date_proforma"], d["nom_numero"])
+    pro["numero_propose"] = M.numero_proforma(seq, d["date_proforma"], d["nom_numero"], p.get("code_entreprise", "ANO"))
     pro["num_da_propose"] = d["num_da"] or prochain_num_da(con, d["date_proforma"].year)
     pro["dernieres_visites"] = [a["derniere_visite"].isoformat() if a["derniere_visite"] else None for a in agents]
     mats = []
@@ -635,7 +694,7 @@ def creer_dossier(ctx, g, body):
         p = parametres(con)
         mx = con.execute("SELECT COALESCE(MAX(num_seq), 0) FROM dossiers").fetchone()[0]
         seq = max(int(p.get("dernier_num_proforma") or 0), mx) + 1
-        numero = M.numero_proforma(seq, d["date_proforma"], d["nom_numero"])
+        numero = M.numero_proforma(seq, d["date_proforma"], d["nom_numero"], p.get("code_entreprise", "ANO"))
         if con.execute("SELECT 1 FROM dossiers WHERE numero_proforma = ?", (numero,)).fetchone():
             raise ErreurAPI(409, "Le n° de proforma %s existe déjà." % numero)
         if d["num_da"]:
@@ -759,7 +818,9 @@ def modifier_dossier(ctx, g, body):
                         "WHERE id=?", (d["num_da"], d["service"], d["imputation"], d["lieu"], d["notes"],
                                        d["client_id"], db.maintenant(), did))
         else:
-            numero = M.numero_proforma(r["num_seq"], d["date_proforma"], d["nom_numero"])
+            # le code entreprise d'origine est gardé (repris du n° existant)
+            code = r["numero_proforma"].split("-")[2] if r["numero_proforma"].count("-") >= 3 else "ANO"
+            numero = M.numero_proforma(r["num_seq"], d["date_proforma"], d["nom_numero"], code)
             if con.execute("SELECT 1 FROM dossiers WHERE numero_proforma = ? AND id <> ?", (numero, did)).fetchone():
                 raise ErreurAPI(409, "Le n° de proforma %s existe déjà." % numero)
             avait_factures = con.execute("SELECT COUNT(*) FROM factures f JOIN agents a ON a.id = f.agent_id "
@@ -846,8 +907,8 @@ def _generer(con, did):
         for l in prevues:
             mois = l["mois"].isoformat()
             cles.add((l["type"], mois))
-            # visite médicale : pas de TVA (règle de Luc, 24/11/2026)
-            t = 0 if l["type"] == M.TYPE_VISITE else M.tva(l["montant_ht"], b["tva_pdm"])
+            # visite médicale : pas de TVA par défaut (règle de Luc, 24/11/2026), réglable
+            t = _tva_ligne(l["type"], l["montant_ht"], b)
             ex = con.execute("SELECT id, numero FROM factures WHERE agent_id = ? AND type = ? AND mois = ?",
                              (a["id"], l["type"], mois)).fetchone()
             if ex is None:
@@ -972,7 +1033,7 @@ def emettre(ctx, g, body):
         ids_emis = []
         for r in rows:
             n += 1
-            numero = M.numero_facture(n, r["type"], dt.date.fromisoformat(r["mois"]))
+            numero = M.numero_facture(n, r["type"], dt.date.fromisoformat(r["mois"]), **_codes_facture(p))
             if con.execute("SELECT 1 FROM factures WHERE numero = ?", (numero,)).fetchone():
                 raise ErreurAPI(409, "Le n° %s existe déjà : vérifiez le dernier n° de facture." % numero)
             ech = M.echeance(dfac, p.get("delai_paiement_jours", 30))
@@ -1050,8 +1111,7 @@ def facture_bis(ctx, g, body):
             raise ErreurAPI(409, "Cette facture est déjà payée.")
         r = con.execute("SELECT d.bareme_json FROM dossiers d JOIN agents a ON a.dossier_id = d.id WHERE a.id = ?",
                         (f["agent_id"],)).fetchone()
-        tva_pdm = json.loads(r[0])["tva_pdm"]
-        t = 0 if f["type"] == M.TYPE_VISITE else M.tva(montant, tva_pdm)
+        t = _tva_ligne(f["type"], montant, json.loads(r[0]))
         num = M.numero_bis(f["numero"])
         if con.execute("SELECT 1 FROM factures WHERE numero = ?", (num,)).fetchone():
             raise ErreurAPI(409, "Le n° %s existe déjà." % num)
@@ -1166,7 +1226,7 @@ def tableau_de_bord(ctx, g, body):
         "personnes_en_contrat": personnes, "personnes_en_attente": attente,
         "nouveaux": nouveaux, "fins": fins,
         "a_facturer_ht": a_fact, "visites_ht": visites, "a_facturer_total_ht": a_fact + visites,
-        "a_facturer_ttc": a_fact + visites + M.tva(a_fact, p["tva_pdm"]),
+        "a_facturer_ttc": a_fact + visites + M.tva(a_fact, p["tva_pdm"]) + (M.tva(visites, p["tva_pdm"]) if p.get("tva_visite") else 0),
         "factures_emises": len(du_mois), "factures_envoyees": sum(1 for f in du_mois if f["envoyee_le"]),
         "factures_payees": sum(1 for f in du_mois if f["paye_le"]),
         "facture_ht": sum(f["montant_ht"] for f in du_mois), "facture_ttc": sum(f["ttc"] for f in du_mois),
@@ -1332,5 +1392,6 @@ def factures_csv(ctx, g, body):
     journaliser(ctx, "factures_export", "", "%d ligne(s)" % len(res))
     contenu = ("\ufeff" + "\r\n".join(lignes) + "\r\n").encode("utf-8")   # BOM : accents corrects dans Excel
     q = ctx["query"]
-    nom = "Factures ANO Services - %s.csv" % (M.libelle_mois(mois_(q["mois"])) if q.get("mois") else "tous les mois")
+    nom = "Factures %s - %s.csv" % (parametres(ctx["con"]).get("raison_sociale", ""),
+                                    M.libelle_mois(mois_(q["mois"])) if q.get("mois") else "tous les mois")
     return Fichier(contenu, "text/csv; charset=utf-8", M.sans_accents(nom))
