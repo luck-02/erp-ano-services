@@ -142,21 +142,27 @@ function confirmer(titre, texte, libelle = "Confirmer", classe = "") {
 // ---------------------------------------------------------------------------
 // Connexion, installation, mot de passe
 // ---------------------------------------------------------------------------
+// Code entreprise retenu sur ce navigateur (confort seulement, jamais un secret)
+function codeMemorise() { try { return localStorage.getItem("ano_entreprise") || ""; } catch (x) { return ""; } }
+
 function afficherConnexion(message) {
   $("#app").className = "";
   $("#app").innerHTML = html`<div class="connexion"><form class="carte" id="f-cnx">
-    <img class="logo-connexion" src="/static/logo.png" alt=""><h1>Connexion</h1><p class="doux">Gestion des mises à disposition</p>
+    <h1>Connexion</h1><p class="doux">Gestion des mises à disposition</p>
+    ${etat.multi ? html`<div class="champ"><label for="c-ent">Code entreprise</label><input id="c-ent" autocomplete="organization" required maxlength="30" value="${codeMemorise()}"></div>` : ""}
     ${message ? html`<div class="bandeau alerte petit">${message}</div>` : ""}
     <div class="champ"><label for="c-id">Identifiant</label><input id="c-id" autocomplete="username" required maxlength="40"></div>
     <div class="champ"><label for="c-mdp">Mot de passe</label><input id="c-mdp" type="password" autocomplete="current-password" required maxlength="128"></div>
     <div class="erreur-form" id="c-err"></div>
     <button type="submit" data-style="width:100%">Se connecter</button></form></div>`.s;
-  $("#c-id").focus();
+  ($("#c-ent") && !$("#c-ent").value ? $("#c-ent") : $("#c-id")).focus();
   $("#f-cnx").onsubmit = async (e) => {
     e.preventDefault();
     $("#c-err").textContent = "";
     try {
-      const r = await api("POST", "/api/connexion", { identifiant: $("#c-id").value.trim(), mot_de_passe: $("#c-mdp").value });
+      const corps = { identifiant: $("#c-id").value.trim(), mot_de_passe: $("#c-mdp").value };
+      if ($("#c-ent")) { corps.entreprise = $("#c-ent").value.trim().toLowerCase(); try { localStorage.setItem("ano_entreprise", corps.entreprise); } catch (x) { /* navigation privée */ } }
+      const r = await api("POST", "/api/connexion", corps);
       etat.user = r.utilisateur; etat.csrf = r.csrf;
       if (etat.user.doit_changer_mdp) return afficherChangerMdp(true);
       demarrerApp();
@@ -811,7 +817,7 @@ function docProforma(p, d, pr, c) {
   const valable = +p.validite_devis_jours === 30 ? "1 mois" : p.validite_devis_jours + " jours";
   const mad = pr.nb_agents > 1 ? "de " + pr.nb_agents + " " + postes : "d'un " + postes;
   return html`<div class="doc pf"><div class="pf-cadre">
-    <div class="pf-tete"><div class="pf-logo"><img class="logo-doc" src="/static/logo.png" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
+    <div class="pf-tete"><div class="pf-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
     <div class="pf-bandeau"><div class="pf-titre">PROFORMA</div><div class="pf-num">${d.numero_proforma}</div></div>
     <div class="pf-infos"><div class="pf-gauche">
         <div class="pf-date">Date de devis : ${dateFr(d.date_proforma)}</div>
@@ -843,7 +849,7 @@ function docFacture(p, f) {
   else if (f.type === "VISITE") ligne = html`<tr><td>Visite médicale<br>${f.agent}</td><td>1</td><td>1</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
   else ligne = html`<tr><td>Ajustement selon PV<br>${f.agent}</td><td>1</td><td>Forfait</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
   return html`<div class="doc fa">
-    <div class="fa-tete"><div class="fa-logo"><img class="logo-doc" src="/static/logo.png" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
+    <div class="fa-tete"><div class="fa-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
     <div class="fa-infos"><div class="fa-gauche">
         <div>Date d'émission : ${dateFr(f.date_facture)}</div><div>Emis par : ${p.raison_sociale}</div>
         <div>Commande client N° : ${f.bc_numero}</div>
@@ -1025,7 +1031,7 @@ async function pageParametres(page) {
     </div>
     <div class="carte"><h2>Logo et cachet sur les documents</h2>
       <div class="grille g2">
-        <div><p class="doux petit">Logo (en-tête de la proforma et des factures)</p><img class="apercu-image" id="p-img-logo" src="/static/logo.png" alt="Logo">
+        <div><p class="doux petit">Logo (en-tête de la proforma et des factures)</p><img class="apercu-image" id="p-img-logo" src="/api/logo" alt="Logo">
           ${admin ? html`<div><label class="bouton secondaire petit" for="p-f-logo">Changer le logo (PNG)</label><input type="file" id="p-f-logo" accept="image/png" hidden></div>` : ""}</div>
         <div><p class="doux petit">Cachet et signature (au-dessus de « Le responsable »)</p><img class="apercu-image" id="p-img-signature" src="/api/signature" alt="Aucun cachet enregistré">
           ${admin ? html`<div><label class="bouton secondaire petit" for="p-f-signature">Changer le cachet (PNG)</label><input type="file" id="p-f-signature" accept="image/png" hidden></div>` : ""}</div>
@@ -1056,7 +1062,7 @@ async function pageParametres(page) {
       lecteur.onload = async () => {
         try {
           await api("PUT", "/api/images/" + quoi, { png: lecteur.result });
-          $("#p-img-" + quoi).src = (quoi === "logo" ? "/static/logo.png" : "/api/signature") + "?v=" + Date.now();
+          $("#p-img-" + quoi).src = (quoi === "logo" ? "/api/logo" : "/api/signature") + "?v=" + Date.now();
           toast(quoi === "logo" ? "Logo enregistré." : "Cachet enregistré.");
         } catch (x) { toast(x.message, true); }
       };
@@ -1133,6 +1139,7 @@ async function pageJournal(page) {
 async function demarrage() {
   try {
     const e = await api("GET", "/api/etat");
+    etat.multi = !!e.multi;
     if (e.installation_requise) return afficherInstallation();
   } catch (x) { $("#app").textContent = x.message; return; }
   try {

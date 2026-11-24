@@ -1,17 +1,18 @@
 ERP ANO Services - premier lancement sur Mac
 =============================================
 
-Si macOS bloque « Lancer ANO.command » (message « impossible d'ouvrir » ou
-« développeur non identifié »), faites ceci UNE SEULE FOIS :
+Si macOS bloque « Lancer ANO.command » (« Not Opened », « impossible
+d'ouvrir » ou « développeur non identifié ») : à faire UNE fois, et à
+refaire à chaque nouveau zip (vos données ne sont jamais écrasées).
 
 1. Ouvrez Terminal (Launchpad > Autres > Terminal).
-2. Tapez  cd  puis un espace, glissez le dossier erp-mvp dans la fenêtre, Entrée.
-3. Copiez-collez cette ligne, puis Entrée :
-      xattr -cr . ; chmod +x "Lancer ANO.command"
-4. Fermez Terminal, puis double-cliquez sur « Lancer ANO.command ».
+2. Tapez  bash  puis un espace.
+3. Glissez le fichier « installer-ou-mettre-a-jour.sh » (dans ce dossier)
+   dans la fenêtre Terminal, puis Entrée.
 
-Sans Terminal : double-clic sur « Lancer ANO.command », OK, puis
-Réglages Système > Confidentialité et sécurité > « Ouvrir quand même ».
+L'ERP est alors installé dans Documents/ERP-ANO et s'ouvre tout seul.
+Ensuite, lancez-le toujours depuis Documents/ERP-ANO (double-clic sur
+« Lancer ANO.command ») : macOS ne le bloquera plus.
 
 Ensuite : l'application s'ouvre dans le navigateur à l'adresse
 http://localhost:8765 . Laissez la fenêtre Terminal ouverte tant que vous

@@ -2,6 +2,7 @@
 import datetime as dt
 import json
 import os
+import re
 import sqlite3
 
 SCHEMA = """
@@ -185,19 +186,31 @@ def connecter(chemin):
     return con
 
 
-def initialiser(chemin):
+def parametres_vierges(nom, code):
+    """Nouvelle entreprise (V3) : réglages par défaut SANS les données d'ANO
+    (identité vide, compteurs à 0, code des n° = code de l'entreprise)."""
+    p = dict(PARAMETRES_INITIAUX)
+    for k in ("adresse", "ville", "telephone", "email", "rccm", "nif", "cnss", "banque", "compte"):
+        p[k] = ""
+    p.update(raison_sociale=nom, code_entreprise=re.sub(r"[^A-Z0-9]", "", code.upper())[:12] or "ENT",
+             dernier_num_proforma=0, dernier_num_facture=0, lieux=[], services=[],
+             maj_compteurs_20261124=True)       # compteurs d'ANO : jamais appliqués ici
+    return p
+
+
+def initialiser(chemin, vierge=False, nom="", code=""):
     neuf = not os.path.exists(chemin)
     con = connecter(chemin)
     con.execute("PRAGMA journal_mode = WAL")
     con.executescript(SCHEMA)
     if neuf or con.execute("SELECT COUNT(*) FROM parametres").fetchone()[0] == 0:
         con.execute("BEGIN")
-        for k, v in PARAMETRES_INITIAUX.items():
+        for k, v in (parametres_vierges(nom, code) if vierge else PARAMETRES_INITIAUX).items():
             con.execute("INSERT OR IGNORE INTO parametres(cle, valeur) VALUES (?, ?)", (k, json.dumps(v)))
         if con.execute("SELECT COUNT(*) FROM charges").fetchone()[0] == 0:
             for i, (lib, t) in enumerate(CHARGES_INITIALES):
                 con.execute("INSERT INTO charges(ordre, libelle, taux_pdm) VALUES (?, ?, ?)", (i + 1, lib, t))
-        if con.execute("SELECT COUNT(*) FROM clients").fetchone()[0] == 0:
+        if not vierge and con.execute("SELECT COUNT(*) FROM clients").fetchone()[0] == 0:
             for c in CLIENTS_INITIAUX:
                 con.execute("INSERT INTO clients(code, nom, adresse, ville, telephone) VALUES (?,?,?,?,?)", c)
         con.execute("COMMIT")

@@ -24,6 +24,24 @@ PORT = s.getsockname()[1]
 s.close()
 os.environ["ANO_DONNEES"] = TMP
 os.environ["ANO_PORT"] = str(PORT)
+# cachet fictif dans un dossier temporaire : jamais le vrai cachet de app/prive
+os.environ["ANO_PRIVE"] = os.path.join(TMP, "prive")
+os.makedirs(os.environ["ANO_PRIVE"])
+
+
+def png_test(l=40, h=20):
+    import struct
+    import zlib
+
+    def ch(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    brut = b"".join(b"\x00" + b"\x10\x40\xa0" * l for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", l, h, 8, 2, 0, 0, 0))
+            + ch(b"IDAT", zlib.compress(brut)) + ch(b"IEND", b""))
+
+
+with open(os.path.join(os.environ["ANO_PRIVE"], "signature.png"), "wb") as _f:
+    _f.write(png_test())
 sys.path.insert(0, os.path.join(os.path.dirname(ICI), "app"))
 
 import serveur  # noqa: E402
@@ -516,8 +534,6 @@ class TestsAPI(unittest.TestCase):
         self.assertTrue(os.path.exists(j["fichier"]))
 
     def test_17_signature_protegee(self):
-        if not os.path.exists(serveur.api.CHEMIN_SIGNATURE):
-            self.skipTest("pas de fichier de signature")
         st, corps = Client().req("GET", "/api/signature")
         self.assertEqual(st, 401)
         st, corps = self.admin.req("GET", "/api/signature")
@@ -551,8 +567,7 @@ class TestsAPI(unittest.TestCase):
         st, j = a.req("PUT", "/api/parametres", {"parametres": {"code_entreprise": "ANO", "tva_visite": False}})
         self.assertEqual(st, 200)
         # logo / cachet : direction seulement, PNG seulement, rangé dans un dossier de test
-        prive = os.path.join(TMP, "prive")
-        ancien, serveur.api.PRIVE = serveur.api.PRIVE, prive
+        prive = os.environ["ANO_PRIVE"]
         try:
             import base64
             st, j = a.req("PUT", "/api/images/logo", {"png": base64.b64encode(b"GIF89a....").decode()})
@@ -567,7 +582,8 @@ class TestsAPI(unittest.TestCase):
             st, j = a.req("PUT", "/api/images/autre", {"png": ""})
             self.assertEqual(st, 404)
         finally:
-            serveur.api.PRIVE = ancien
+            with open(os.path.join(prive, "signature.png"), "wb") as f:
+                f.write(png_test())
         st, j = Client().req("PUT", "/api/images/logo", {"png": ""})
         self.assertEqual(st, 401)                       # sans connexion
         a.req("POST", "/api/utilisateurs", {"identifiant": "gestion99", "nom": "G", "role": "gestion",

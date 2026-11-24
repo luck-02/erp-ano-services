@@ -1,0 +1,27 @@
+# Service systemd : démarre l'ERP au démarrage du serveur et le relance s'il s'arrête.
+# Copier dans /etc/systemd/system/erp-ano.service puis : systemctl enable --now erp-ano
+[Unit]
+Description=ERP mise a disposition (multi-entreprises)
+After=network.target
+
+[Service]
+User=erp
+Group=erp
+WorkingDirectory=/opt/erp/erp-mvp
+Environment=ANO_EN_LIGNE=1
+Environment=ANO_HTTPS=1
+Environment=ANO_PROXY=1
+Environment=ANO_HOTES=erp.exemple.com
+Environment=ANO_DONNEES=/var/lib/erp
+ExecStart=/usr/bin/python3 app/serveur.py
+Restart=on-failure
+# durcissement : pas d'accès au reste du système
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/erp
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

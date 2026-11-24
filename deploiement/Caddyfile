@@ -1,0 +1,9 @@
+# Caddy : HTTPS automatique (certificat Let's Encrypt) devant l'ERP.
+# Remplacer erp.exemple.com par le vrai nom de domaine.
+erp.exemple.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8765
+	request_body {
+		max_size 1MB
+	}
+}

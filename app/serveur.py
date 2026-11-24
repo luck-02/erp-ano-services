@@ -22,14 +22,21 @@ sys.path.insert(0, ICI)
 
 import api  # noqa: E402
 import db  # noqa: E402
+import plateforme  # noqa: E402
 import securite as S  # noqa: E402
 
 RACINE = os.path.dirname(ICI)
 DONNEES = os.environ.get("ANO_DONNEES", os.path.join(RACINE, "donnees"))
 CHEMIN_DB = os.path.join(DONNEES, "ano.db")
 SAUVEGARDES = os.path.join(DONNEES, "sauvegardes")
-HOTE = "127.0.0.1"
+HOTE = os.environ.get("ANO_ECOUTE", "127.0.0.1")     # en ligne : reste 127.0.0.1, derrière Caddy (HTTPS)
 PORT = int(os.environ.get("ANO_PORT", "8765"))
+# V3 en ligne (plusieurs entreprises) ; sans ces variables : installation sur un poste, comme avant
+EN_LIGNE = os.environ.get("ANO_EN_LIGNE") == "1"
+HTTPS = os.environ.get("ANO_HTTPS") == "1"
+DERRIERE_PROXY = os.environ.get("ANO_PROXY") == "1"
+HOTES = [h.strip().lower() for h in os.environ.get("ANO_HOTES", "").split(",") if h.strip()]
+REGISTRE = plateforme.Registre(DONNEES)
 TAILLE_MAX = 1_000_000
 COOKIE = "ano_session"
 
@@ -82,6 +89,7 @@ ROUTES = [
     ("PUT", r"/api/factures/(\d+)/remarque", api.remarque_facture, EQUIPE),
     ("GET", r"/api/tableau-de-bord", api.tableau_de_bord, TOUS),
     ("GET", r"/api/signature", api.signature, TOUS),
+    ("GET", r"/api/logo", api.logo, TOUS),
     ("PUT", r"/api/images/(logo|signature)", api.televerser_image, (A,)),
     ("GET", r"/api/utilisateurs", api.utilisateurs, (A,)),
     ("POST", r"/api/utilisateurs", api.creer_utilisateur, (A,)),
@@ -119,6 +127,8 @@ class Gestionnaire(BaseHTTPRequestHandler):
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
         self.send_header("Cache-Control", "no-store")
+        if HTTPS:
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
 
     def _envoyer(self, status, corps, type_="application/json; charset=utf-8", cookie=None, nom_fichier=None):
         if isinstance(corps, (dict, list)):
@@ -152,23 +162,37 @@ class Gestionnaire(BaseHTTPRequestHandler):
     def _hote_ok(self):
         """Protection contre le « DNS rebinding » : seul l'hôte local est accepté."""
         h = (self.headers.get("Host") or "").lower()
-        return h in ("127.0.0.1:%d" % PORT, "localhost:%d" % PORT)
+        return h in ("127.0.0.1:%d" % PORT, "localhost:%d" % PORT) or h in HOTES
 
     def _origine_ok(self):
         o = self.headers.get("Origin")
         if o is None:
             return True
-        return o.lower() in ("http://127.0.0.1:%d" % PORT, "http://localhost:%d" % PORT)
+        schema = "https://" if HTTPS else "http://"
+        return o.lower() in (("http://127.0.0.1:%d" % PORT, "http://localhost:%d" % PORT)
+                             + tuple(schema + h for h in HOTES))
 
-    def _session(self, con):
+    def _ip(self):
+        """IP du visiteur ; derrière Caddy, la dernière adresse ajoutée par le proxy."""
+        if DERRIERE_PROXY:
+            xff = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+            if xff:
+                return xff
+        return self.client_address[0]
+
+    def _cookie(self):
+        """Cookie de session = « code-entreprise.jeton »."""
         c = cookies.SimpleCookie()
         try:
             c.load(self.headers.get("Cookie") or "")
         except cookies.CookieError:
-            return None, None
+            return "", ""
         if COOKIE not in c:
-            return None, None
-        jeton = c[COOKIE].value
+            return "", ""
+        code, _, jeton = c[COOKIE].value.partition(".")
+        return code, jeton
+
+    def _session(self, con, jeton):
         if not re.fullmatch(r"[A-Za-z0-9_-]{20,100}", jeton):
             return None, None
         h = S.empreinte(jeton)
@@ -264,13 +288,43 @@ class Gestionnaire(BaseHTTPRequestHandler):
             if not isinstance(corps, dict):
                 return self._erreur(400, "JSON invalide.")
 
-        con = db.connecter(CHEMIN_DB)
+        # Entreprise de la requête : par le cookie de session (comptes connectés),
+        # sinon par le code saisi à la connexion. Une requête n'ouvre QUE la
+        # base de cette entreprise.
+        ip = self._ip()
+        query = dict(parse_qsl(url.query))
+        multi = False
+        if roles is None:
+            code = corps.get("entreprise") if methode != "GET" else query.get("entreprise")
+            code = code if isinstance(code, str) else ""
+            ent = REGISTRE.choisir(code)
+            multi = EN_LIGNE or len(REGISTRE.actives()) > 1
+            if ent is None:
+                if fonction is api.etat:
+                    return self._envoyer(200, {"installation_requise": False, "multi": True})
+                if fonction is api.connexion:
+                    # même réponse et même durée qu'un mauvais mot de passe :
+                    # on ne révèle pas quels codes d'entreprise existent
+                    if LIMITEUR.bloque(ip):
+                        return self._erreur(429, "Trop de tentatives. Réessayez dans 15 minutes.")
+                    S.verifier_factice(str(corps.get("mot_de_passe") or "x")[:S.MDP_MAX])
+                    LIMITEUR.echec(ip)
+                    return self._erreur(401, "Identifiant ou mot de passe incorrect.")
+                return self._erreur(400, "Entreprise inconnue.")
+            jeton = ""
+        else:
+            code, jeton = self._cookie()
+            ent = REGISTRE.trouver(code) if jeton else None
+            if ent is None:
+                return self._erreur(401, "Session expirée : reconnectez-vous.", "NON_CONNECTE")
+        con = db.connecter(ent["chemin_db_abs"])
         try:
-            ctx = {"con": con, "ip": self.client_address[0], "limiteur": LIMITEUR,
-                   "query": dict(parse_qsl(url.query)), "chemin_db": CHEMIN_DB,
-                   "dossier_sauvegardes": SAUVEGARDES}
+            ctx = {"con": con, "ip": ip, "limiteur": LIMITEUR, "query": query,
+                   "chemin_db": ent["chemin_db_abs"], "dossier_sauvegardes": ent["sauvegardes_abs"],
+                   "prive": ent["prive_abs"], "origine": ent["origine"], "entreprise": ent["code"],
+                   "en_ligne": EN_LIGNE, "multi": multi}
             if roles is not None:
-                session, user = self._session(con)
+                session, user = self._session(con, jeton)
                 if not user:
                     return self._erreur(401, "Session expirée : reconnectez-vous.", "NON_CONNECTE")
                 if methode != "GET":
@@ -287,11 +341,12 @@ class Gestionnaire(BaseHTTPRequestHandler):
             except api.ErreurAPI as e:
                 return self._erreur(e.status, e.message, e.code)
             cookie = None
+            secure = "; Secure" if HTTPS else ""
             if ctx.get("nouveau_cookie"):
-                cookie = "%s=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=%d" % (
-                    COOKIE, ctx["nouveau_cookie"], int(S.DUREE_MAX_SESSION.total_seconds()))
+                cookie = "%s=%s.%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=%d%s" % (
+                    COOKIE, ent["code"], ctx["nouveau_cookie"], int(S.DUREE_MAX_SESSION.total_seconds()), secure)
             elif ctx.get("effacer_cookie"):
-                cookie = "%s=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0" % COOKIE
+                cookie = "%s=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0%s" % (COOKIE, secure)
             if isinstance(res, api.Fichier):
                 return self._envoyer(200, res.contenu, res.type_, nom_fichier=res.nom)
             self._envoyer(200, res, cookie=cookie)
@@ -299,8 +354,8 @@ class Gestionnaire(BaseHTTPRequestHandler):
             con.close()
 
 
-def nettoyer_sessions():
-    con = db.connecter(CHEMIN_DB)
+def nettoyer_sessions(chemin_db):
+    con = db.connecter(chemin_db)
     limite = (dt.datetime.now() - S.DUREE_INACTIVITE).replace(microsecond=0).isoformat(sep=" ")
     con.execute("DELETE FROM sessions WHERE vu_le < ?", (limite,))
     con.close()
@@ -312,10 +367,14 @@ def demarrer(ouvrir_navigateur=True):
         os.chmod(DONNEES, 0o700)
     except OSError:
         pass
-    if os.path.exists(CHEMIN_DB):
-        db.sauvegarder(CHEMIN_DB, SAUVEGARDES)
-    db.initialiser(CHEMIN_DB)
-    nettoyer_sessions()
+    REGISTRE.initialiser(en_ligne=EN_LIGNE)
+    for e in REGISTRE.actives():       # chaque entreprise : sauvegarde, mise à niveau, sessions
+        if os.path.exists(e["chemin_db_abs"]):
+            db.sauvegarder(e["chemin_db_abs"], e["sauvegardes_abs"])
+        db.initialiser(e["chemin_db_abs"])
+        nettoyer_sessions(e["chemin_db_abs"])
+    if EN_LIGNE:
+        ouvrir_navigateur = False
     try:
         serveur = ThreadingHTTPServer((HOTE, PORT), Gestionnaire)
     except OSError:
@@ -326,7 +385,7 @@ def demarrer(ouvrir_navigateur=True):
         return
     serveur.daemon_threads = True
     adresse = "http://localhost:%d/" % PORT
-    print("\n  ANO Services – ERP (version MVP)")
+    print("\n  ERP mise à disposition (version MVP)")
     print("  Ouvert sur : %s" % adresse)
     print("  Données    : %s" % DONNEES)
     print("  Pour arrêter : fermez cette fenêtre (ou Ctrl + C).\n")

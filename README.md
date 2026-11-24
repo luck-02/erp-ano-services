@@ -106,3 +106,15 @@ app/static/          interface (HTML, CSS, JavaScript sans dépendance)
 tests/               tests automatiques
 donnees/             créé au 1er lancement : base ano.db + sauvegardes (ne pas partager)
 ```
+
+## Version en ligne, plusieurs entreprises (V3)
+
+Sur ce Mac, rien ne change : l'application reste réservée à ANO, avec ses données actuelles.
+
+Sur un serveur, chaque entreprise cliente a sa propre base de données et ses propres fichiers (logo, cachet, sauvegardes). On se connecte avec un **code entreprise**, un identifiant et un mot de passe. Les entreprises sont créées avec `app/plateforme.py` (voir `deploiement/INSTALLER-SUR-UN-SERVEUR.md`). Une nouvelle entreprise démarre vierge : sans client, avec les compteurs à 0 et une identité à compléter dans Paramètres.
+
+Tests d'isolation entre entreprises : `python3 tests/test_multi.py` (inclus dans `lancer_tests.sh`).
+
+### Essayer plusieurs entreprises sur ce Mac (données fictives)
+
+Double-cliquez sur **« Essai plusieurs entreprises.command »**. Deux entreprises fictives s'ouvrent sur http://localhost:8766 : code `alpha` (mot de passe provisoire `Essai-Alpha-2026`) et code `beta` (`Essai-Beta-2026`). L'identifiant est `direction` pour les deux. Leurs données sont rangées à part, dans `donnees-essai/`. La vraie installation d'ANO (port 8765, dossier `donnees/`) n'est jamais touchée. Pour tout effacer et recommencer, supprimez le dossier `donnees-essai/`.

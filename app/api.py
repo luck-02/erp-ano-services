@@ -221,11 +221,15 @@ def _derniere_visite_connue(con, nom, sauf_dossier=None):
 # ---------------------------------------------------------------------------
 def etat(ctx, g, body):
     n = ctx["con"].execute("SELECT COUNT(*) FROM utilisateurs").fetchone()[0]
-    return {"installation_requise": n == 0}
+    # en ligne : les comptes sont créés par l'administration de la plateforme
+    return {"installation_requise": n == 0 and not ctx.get("en_ligne"), "multi": bool(ctx.get("multi"))}
 
 
 def installation(ctx, g, body):
-    """Création du premier compte administrateur (seulement si aucun compte)."""
+    """Création du premier compte administrateur (seulement si aucun compte,
+    et jamais sur la version en ligne)."""
+    if ctx.get("en_ligne"):
+        raise ErreurAPI(403, "Installation fermée : compte créé par l'administration de la plateforme.")
     con = ctx["con"]
     identifiant = texte(body, "identifiant", 40, True)
     nom = texte(body, "nom", 80, True)
@@ -394,16 +398,17 @@ def modifier_utilisateur(ctx, g, body):
     return {"ok": True}
 
 
-PRIVE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prive")
-CHEMIN_SIGNATURE = os.path.join(PRIVE, "signature.png")
+# 1 pixel transparent : entreprise sans logo (jamais le logo d'une autre)
+PNG_VIDE = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c48900"
+                         "00000b49444154789c6360000200000500017a5eab3f0000000049454e44ae426082")
 IMAGES_ENTREPRISE = {"logo": "logo.png", "signature": "signature.png"}
 PNG = b"\x89PNG\r\n\x1a\n"
 
 
 def televerser_image(ctx, g, body):
     """Logo ou cachet/signature de l'entreprise (direction seulement).
-    PNG uniquement, 600 Ko au plus, rangé dans app/prive (jamais public
-    pour la signature)."""
+    PNG uniquement, 600 Ko au plus, rangé dans le dossier privé de
+    l'entreprise (jamais public pour la signature)."""
     import base64
     import binascii
     quoi = g[0]
@@ -418,8 +423,8 @@ def televerser_image(ctx, g, body):
         raise ErreurAPI(400, "Image illisible.")
     if not data.startswith(PNG) or len(data) > 600_000:
         raise ErreurAPI(400, "Format PNG attendu (600 Ko au plus).")
-    os.makedirs(PRIVE, mode=0o700, exist_ok=True)
-    cible = os.path.join(PRIVE, IMAGES_ENTREPRISE[quoi])
+    os.makedirs(ctx["prive"], mode=0o700, exist_ok=True)
+    cible = os.path.join(ctx["prive"], IMAGES_ENTREPRISE[quoi])
     tmp = cible + ".tmp"
     with open(tmp, "wb") as f:
         f.write(data)
@@ -437,10 +442,19 @@ def signature(ctx, g, body):
     """Cachet + signature de la direction : servi seulement aux comptes
     connectés (direction, gestion), jamais comme fichier public."""
     try:
-        with open(CHEMIN_SIGNATURE, "rb") as f:
+        with open(os.path.join(ctx["prive"], "signature.png"), "rb") as f:
             return Fichier(f.read(), "image/png")
     except OSError:
         raise ErreurAPI(404, "Aucune signature enregistrée.")
+
+
+def logo(ctx, g, body):
+    """Logo de l'entreprise de l'utilisateur connecté (documents, Paramètres)."""
+    chemin = docx_facture.chemin_logo(ctx["prive"], ctx["origine"])
+    if not chemin:
+        return Fichier(PNG_VIDE, "image/png")
+    with open(chemin, "rb") as f:
+        return Fichier(f.read(), "image/png")
 
 
 def journal(ctx, g, body):
@@ -1296,7 +1310,7 @@ def factures_word(ctx, g, body):
         while nom in vus:
             nom = nom[:-5] + "_" + str(f["id"]) + ".docx"
         vus.add(nom)
-        fichiers.append((nom, docx_facture.facture_docx(p, f)))
+        fichiers.append((nom, docx_facture.facture_docx(p, f, prive=ctx["prive"], origine=ctx["origine"])))
     journaliser(ctx, "factures_word", ", ".join(f["numero"] for f in fs)[:300], "%d facture(s)" % len(fs))
     if len(fichiers) == 1:
         return Fichier(fichiers[0][1], docx_facture.MIME_DOCX, fichiers[0][0])

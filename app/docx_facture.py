@@ -18,11 +18,13 @@ ICI = os.path.dirname(os.path.abspath(__file__))
 LOGO_DEFAUT = os.path.join(ICI, "static", "logo.png")
 
 
-def chemin_logo():
-    """Logo chargé par l'entreprise (Paramètres), sinon le logo livré."""
-    perso = os.path.join(ICI, "prive", "logo.png")
-    return perso if os.path.exists(perso) else LOGO_DEFAUT
-SIGNATURE = os.path.join(ICI, "prive", "signature.png")
+def chemin_logo(prive=None, origine=True):
+    """Logo chargé par l'entreprise (Paramètres) ; sinon le logo livré pour
+    l'installation d'origine (ANO), aucun logo pour une autre entreprise."""
+    perso = os.path.join(prive or os.path.join(ICI, "prive"), "logo.png")
+    if os.path.exists(perso):
+        return perso
+    return LOGO_DEFAUT if origine else None
 
 EMU_MM = 36000
 LARGEUR = 10204          # largeur utile en twips (A4, marges 1,5 cm)
@@ -163,7 +165,7 @@ def _designation(f):
     return "Ajustement selon PV\n%s" % f["agent"], "1", "Forfait"
 
 
-def corps_document(p, f, avec_signature):
+def corps_document(p, f, avec_signature, logo=None, signature=None):
     x = []
     # En-tête : logo à gauche, émetteur à droite (souligné)
     # bloc ANO en Arial, double trait épais sous le logo (comme la facture 152 bis)
@@ -171,7 +173,7 @@ def corps_document(p, f, avec_signature):
             "".join(para(run(t, taille=10.5, police="Arial")) for t in (p["adresse"], p["ville"], p["telephone"])) +
             para(run(p["email"], taille=9.5, couleur="0563C1", police="Arial")))
     trait = '<w:tcBorders><w:bottom w:val="double" w:sz="12" w:space="0" w:color="000000"/></w:tcBorders>'
-    x.append(tableau([[cellule(para(image("rLogo", 1, "logo", haut_mm=25, chemin=chemin_logo())), 4800, bords=trait),
+    x.append(tableau([[cellule(para((image("rLogo", 1, "logo", haut_mm=25, chemin=logo) if logo else run(""))), 4800, bords=trait),
                        cellule("", 1000), cellule(emet, 3600, valign="top", marges={"top": 200})]],
                      [4800, 1000, 3600], align="center"))
     x.append(para("", apres=560))
@@ -217,7 +219,7 @@ def corps_document(p, f, avec_signature):
     # Signature
     sig = run("Signature :", gras=True, taille=11)
     if avec_signature:
-        sig += run("\t") + image("rSig", 2, "cachet", larg_mm=30, chemin=SIGNATURE)
+        sig += run("\t") + image("rSig", 2, "cachet", larg_mm=30, chemin=signature)
     x.append('<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="2600"/></w:tabs><w:spacing w:before="900"/>'
              '<w:ind w:left="1000"/></w:pPr>%s</w:p>' % sig)
     return "".join(x)
@@ -230,9 +232,12 @@ NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
       'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"')
 
 
-def facture_docx(p, f, avec_signature=True):
-    """Renvoie le contenu binaire du .docx d'une facture émise."""
-    avec_signature = avec_signature and os.path.exists(SIGNATURE)
+def facture_docx(p, f, avec_signature=True, prive=None, origine=True):
+    """Renvoie le contenu binaire du .docx d'une facture émise. `prive` =
+    dossier privé de l'entreprise (logo, cachet)."""
+    logo = chemin_logo(prive, origine)
+    signature = os.path.join(prive or os.path.join(ICI, "prive"), "signature.png")
+    avec_signature = avec_signature and os.path.exists(signature)
     pied = (para(run("RCCM %s – NIF %s – N° CNSS %s" % (p["rccm"], p["nif"], p["cnss"]), taille=10), align="center") +
             para(run("Compte bancaire %s %s" % (p["banque"], p["compte"]), taille=10), align="center"))
     document = (
@@ -240,7 +245,7 @@ def facture_docx(p, f, avec_signature=True):
         '<w:sectPr><w:footerReference w:type="default" r:id="rPied"/>'
         '<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="567" w:right="851" w:bottom="851" w:left="851" '
         'w:header="0" w:footer="400" w:gutter="0"/></w:sectPr></w:body></w:document>'
-        % (NS, corps_document(p, f, avec_signature)))
+        % (NS, corps_document(p, f, avec_signature, logo, signature)))
     footer = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr %s>%s</w:ftr>' % (NS, pied)
     styles = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
               '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -249,8 +254,9 @@ def facture_docx(p, f, avec_signature=True):
               '<w:pPrDefault><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault>'
               '</w:docDefaults></w:styles>')
     rels_doc = ['<Relationship Id="rStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>',
-                '<Relationship Id="rPied" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>',
-                '<Relationship Id="rLogo" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/logo.png"/>']
+                '<Relationship Id="rPied" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>']
+    if logo:
+        rels_doc.append('<Relationship Id="rLogo" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/logo.png"/>')
     if avec_signature:
         rels_doc.append('<Relationship Id="rSig" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/cachet.png"/>')
     buf = io.BytesIO()
@@ -276,9 +282,10 @@ def facture_docx(p, f, avec_signature=True):
         z.writestr("word/document.xml", document)
         z.writestr("word/styles.xml", styles)
         z.writestr("word/footer1.xml", footer)
-        z.write(chemin_logo(), "word/media/logo.png")
+        if logo:
+            z.write(logo, "word/media/logo.png")
         if avec_signature:
-            z.write(SIGNATURE, "word/media/cachet.png")
+            z.write(signature, "word/media/cachet.png")
     return buf.getvalue()
 
 
