@@ -8,7 +8,14 @@ Rien n'est en ligne tant que ces étapes ne sont pas faites. Aucune donnée rée
   ou un petit serveur payant (~5 €/mois) pour les vraies données.
 - Un nom de domaine (ex. erp.votre-domaine.com) pointant vers l'adresse du serveur.
 
-## Étapes (≈ 30 minutes)
+## Le plus simple : le script
+
+Sur le serveur, depuis le dossier erp-mvp : `sudo bash deploiement/installer-serveur.sh [domaine]`
+(sans domaine : adresse gratuite `<ip>.sslip.io`). Il fait toutes les étapes ci-dessous, plus les
+mises à jour de sécurité automatiques et la sauvegarde chaque nuit (erp-sauvegarde.timer).
+Guide pas à pas pour Oracle : https://claude.ai/artifact/AiDterS47ehZG7ieoybBz1
+
+## Étapes à la main (≈ 30 minutes)
 1. Pare-feu : n'ouvrir que les ports 22 (SSH), 80 et 443.
    `sudo ufw allow 22,80,443/tcp && sudo ufw enable`
 2. Compte dédié et dossiers :

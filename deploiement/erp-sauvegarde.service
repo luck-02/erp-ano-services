@@ -1,0 +1,14 @@
+# Sauvegarde de toutes les entreprises (lancée chaque nuit par erp-sauvegarde.timer).
+[Unit]
+Description=Sauvegarde quotidienne ERP
+
+[Service]
+Type=oneshot
+User=erp
+Environment=ANO_DONNEES=/var/lib/erp
+ExecStart=/usr/bin/python3 /opt/erp/erp-mvp/app/sauvegarde_quotidienne.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/erp
+UMask=0077

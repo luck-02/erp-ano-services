@@ -118,3 +118,9 @@ Tests d'isolation entre entreprises : `python3 tests/test_multi.py` (inclus dans
 ### Essayer plusieurs entreprises sur ce Mac (données fictives)
 
 Double-cliquez sur **« Essai plusieurs entreprises.command »**. Deux entreprises fictives s'ouvrent sur http://localhost:8766 : code `alpha` (mot de passe provisoire `Essai-Alpha-2026`) et code `beta` (`Essai-Beta-2026`). L'identifiant est `direction` pour les deux. Leurs données sont rangées à part, dans `donnees-essai/`. La vraie installation d'ANO (port 8765, dossier `donnees/`) n'est jamais touchée. Pour tout effacer et recommencer, supprimez le dossier `donnees-essai/`.
+
+## Vérifications avant chaque mise en ligne
+
+`bash avant-mise-en-ligne.sh` lance tous les tests : calculs, API, sécurité, plusieurs entreprises, puis 37 vérifications dans un vrai navigateur (`tests/e2e/`, Playwright installé automatiquement la première fois, Node.js requis). Ces vérifications couvrent le parcours complet ANO, les PDF, Word et CSV, l'isolation entre entreprises, l'accessibilité de base et l'affichage sur téléphone. Si un test échoue, on ne met pas en ligne.
+
+Supervision : `/api/sante` répond `{"ok": true}` sans connexion (pour un service de surveillance). Sauvegarde de toutes les entreprises : `python3 app/sauvegarde_quotidienne.py` (lancée chaque nuit sur le serveur).

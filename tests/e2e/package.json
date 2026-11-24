@@ -1,0 +1,7 @@
+{
+  "name": "erp-tests-navigateur",
+  "private": true,
+  "description": "Tests de bout en bout de l'ERP dans Chromium (Playwright). Données fictives uniquement.",
+  "scripts": { "test": "node parcours_complet.js" },
+  "devDependencies": { "playwright": "1.49.1" }
+}

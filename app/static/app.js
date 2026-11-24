@@ -469,10 +469,10 @@ async function pageSaisieDA(page, id) {
   const corpsAgents = $("#da-agents");
   function dessinerAgents() {
     corpsAgents.innerHTML = agents.map((a, i) => html`<tr data-i="${i}">
-      <td><input data-c="nom" list="l-interimaires" value="${a.nom}" maxlength="120" placeholder="NOM Prénoms" required ${verrou ? "disabled" : ""}></td>
-      <td><input data-c="poste" value="${a.poste}" maxlength="120" required ${verrou ? "disabled" : ""}></td>
-      <td><input data-c="salaire_base" class="montant" inputmode="numeric" value="${a.salaire_base === "" ? "" : fmt(a.salaire_base)}" placeholder="0" required ${verrou ? "disabled" : ""}></td>
-      <td><input data-c="derniere_visite" type="date" value="${a.derniere_visite}" ${verrou ? "disabled" : ""}></td>
+      <td><input data-c="nom" aria-label="Nom de l'agent ${i + 1}" list="l-interimaires" value="${a.nom}" maxlength="120" placeholder="NOM Prénoms" required ${verrou ? "disabled" : ""}></td>
+      <td><input data-c="poste" aria-label="Poste de l'agent ${i + 1}" value="${a.poste}" maxlength="120" required ${verrou ? "disabled" : ""}></td>
+      <td><input data-c="salaire_base" aria-label="Salaire de base de l'agent ${i + 1}" class="montant" inputmode="numeric" value="${a.salaire_base === "" ? "" : fmt(a.salaire_base)}" placeholder="0" required ${verrou ? "disabled" : ""}></td>
+      <td><input data-c="derniere_visite" aria-label="Dernière visite médicale de l'agent ${i + 1}" type="date" value="${a.derniere_visite}" ${verrou ? "disabled" : ""}></td>
       <td>${agents.length > 1 && !verrou ? html`<button type="button" class="lien" data-suppr="${i}" title="Retirer">✕</button>` : ""}</td></tr>`).join("");
     $$("input", corpsAgents).forEach((inp) => {
       inp.oninput = () => {
@@ -1005,7 +1005,7 @@ async function pageParametres(page) {
         <div class="ligne-form lf2">${champ("banque", "Banque")}${champ("compte", "Compte bancaire")}</div></div>
       <div class="carte"><h2>Taux de charges (sur le salaire de base)</h2>
         <table><thead><tr><th>Libellé</th><th class="num" data-style="width:120px">Taux %</th></tr></thead><tbody id="p-charges">
-        ${r.charges.map((c) => html`<tr><td><input data-lib value="${c.libelle}" maxlength="80" ${dis}></td><td><input data-taux class="montant" value="${(c.taux_pdm / 100).toLocaleString("fr-FR")}" ${dis}></td></tr>`)}</tbody>
+        ${r.charges.map((c) => html`<tr><td><input data-lib aria-label="Libellé de la charge" value="${c.libelle}" maxlength="80" ${dis}></td><td><input data-taux aria-label="Taux % : ${c.libelle}" class="montant" value="${(c.taux_pdm / 100).toLocaleString("fr-FR")}" ${dis}></td></tr>`)}</tbody>
         <tfoot><tr class="total"><td>Coefficient coût mensuel</td><td class="num" id="p-coef">${(r.coefficient_pdm / 10000).toLocaleString("fr-FR")}</td></tr></tfoot></table>
         <h3>Facturation</h3>
         <div class="ligne-form lf2">

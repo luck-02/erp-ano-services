@@ -57,6 +57,7 @@ EQUIPE = (A, G)
 # (méthode, motif, fonction, rôles autorisés ; None = sans connexion)
 ROUTES = [
     ("GET", r"/api/etat", api.etat, None),
+    ("GET", r"/api/sante", None, None),     # supervision : répond sans ouvrir aucune base
     ("POST", r"/api/installation", api.installation, None),
     ("POST", r"/api/connexion", api.connexion, None),
     ("POST", r"/api/deconnexion", api.deconnexion, TOUS),
@@ -266,6 +267,8 @@ class Gestionnaire(BaseHTTPRequestHandler):
         if route is None:
             return self._erreur(404, "Adresse inconnue.")
         fonction, roles = route
+        if fonction is None:
+            return self._envoyer(200, {"ok": True})
 
         corps = {}
         if methode in ("POST", "PUT"):

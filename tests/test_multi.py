@@ -212,6 +212,17 @@ class TestsMultiEntreprises(unittest.TestCase):
         with open(os.path.join(TMP, "plateforme.db"), "rb") as f:
             self.assertNotIn(b"400000", f.read())       # le registre ne contient aucune donnée métier
 
+    def test_08_sante_et_sauvegarde(self):
+        st, j = Client().req("GET", "/api/sante")
+        self.assertEqual((st, j), (200, {"ok": True}))  # supervision, sans connexion ni donnée
+        import subprocess
+        r = subprocess.run([sys.executable, os.path.join(os.path.dirname(ICI), "app", "sauvegarde_quotidienne.py")],
+                           env=dict(os.environ), capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for code in ("alpha", "beta"):
+            d = plateforme.Registre(TMP).trouver(code)["sauvegardes_abs"]
+            self.assertTrue(os.listdir(d))
+
     def test_99_entreprise_desactivee(self):
         reg = plateforme.Registre(TMP)
         reg.activer("beta", False)
