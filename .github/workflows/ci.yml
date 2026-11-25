@@ -1,0 +1,63 @@
+# Intégration continue : à chaque envoi (push) et à chaque demande de fusion,
+# tous les tests doivent passer. Données fictives uniquement, aucun secret utilisé.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: Dépôt propre (fichiers interdits, syntaxe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: bash outils/verifier-depot.sh
+
+  tests:
+    name: Calculs, API, sécurité, plusieurs entreprises (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.13"]   # 3.9 = Mac de Luc au minimum ; 3.13 proche du serveur
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: bash lancer_tests.sh
+
+  navigateur:
+    name: Parcours complet dans Chromium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: tests
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Playwright (version fixée dans tests/e2e/package.json)
+        working-directory: tests/e2e
+        run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
+      - run: node tests/e2e/parcours_complet.js

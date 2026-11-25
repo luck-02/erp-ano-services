@@ -47,6 +47,7 @@ done
 
 if [ "$(id -u)" -eq 0 ] && [ -d /var/lib/erp ]; then
   echo "5. Serveur (lancé en root sur la machine)"
+  echo "  info  version installée : $(cat /opt/erp/erp-mvp/VERSION 2>/dev/null || echo inconnue)"
   verif "service ERP actif" "systemctl is-active --quiet erp-ano"
   verif "Caddy actif" "systemctl is-active --quiet caddy"
   verif "sauvegarde quotidienne programmée" "systemctl is-active --quiet erp-sauvegarde.timer"

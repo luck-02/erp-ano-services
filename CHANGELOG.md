@@ -7,6 +7,13 @@ Numérotation : `vMAJEUR.MINEUR.CORRECTIF`.
 
 Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git checkout v3.1.0`.
 
+## v3.3.0 – 25/11/2026 : livraison automatisée (DevOps)
+- Tests automatiques sur GitHub à chaque envoi : calculs, API, sécurité, plusieurs entreprises (Python 3.9 et 3.13), parcours complet dans Chromium, contrôle du dépôt (aucun cachet, aucune base, aucun secret).
+- Étiquette de version envoyée sur GitHub = tests + zip publié dans « Releases ».
+- `outils/nouvelle-version.sh` : vérifications, tests, étiquette et zip en une commande.
+- `deploiement/deployer.sh` : mise en ligne depuis le Mac en une commande (sauvegarde des bases avant, contrôle du site après) ; retour arrière = même commande avec la version précédente.
+- Fichier `VERSION` rempli automatiquement dans chaque zip ; version affichée par `verifier-en-ligne.sh` sur le serveur.
+
 ## v3.2.0 – 25/11/2026 : documents gardés sur le serveur, mise en ligne
 - Copie figée de chaque facture émise (Word, et PDF quand LibreOffice est installé).
 - Pièces reçues du client (DA, BC, PV) jointes au dossier : PDF, PNG ou JPEG, 8 Mo au plus.

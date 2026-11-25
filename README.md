@@ -134,6 +134,15 @@ Après la mise en ligne, sur le serveur : `bash deploiement/verifier-en-ligne.sh
 
 Le dossier est un dépôt Git : `git log --oneline` liste les versions, `git tag` leurs étiquettes, et `CHANGELOG.md` dit ce que chacune apporte. Le cachet (`app/prive/`) et les données (`donnees/`) ne sont jamais versionnés.
 
+Livrer une version :
+1. Décrire la version en haut de `CHANGELOG.md` (`## v3.4.0 – date : titre`), puis `git commit -am "…"`.
+2. `bash outils/nouvelle-version.sh 3.4.0` : contrôle du dépôt, tous les tests, étiquette, zip dans `dist/`.
+3. `git push origin main --follow-tags` : GitHub relance les tests et publie le zip dans « Releases ».
+4. `bash deploiement/deployer.sh v3.4.0 <ip> <domaine>` : sauvegarde, installation et contrôle sur le serveur.
+   En cas de problème, relancer avec la version précédente (ex. `v3.3.0`) : les données ne bougent pas.
+
+Les tests tournent aussi sur GitHub à chaque envoi (`.github/workflows/ci.yml`). Le serveur n'est jamais touché par GitHub : aucune clé SSH n'y est confiée.
+
 ## Documentation technique
 
 Dans `docs/` : description de l'API au format OpenAPI (`openapi.yaml`, lisible dans Swagger), MCD et diagrammes UML en Mermaid (`docs/diagrammes/`). Voir `docs/LISEZ-MOI.md`.

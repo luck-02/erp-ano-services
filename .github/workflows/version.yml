@@ -1,0 +1,46 @@
+# Livraison : quand une étiquette de version (v3.3.0…) est envoyée, les tests
+# repassent puis le zip de la version est publié dans « Releases » sur GitHub.
+# Le déploiement sur le serveur reste lancé à la main (deploiement/deployer.sh) :
+# aucune clé SSH du serveur n'est confiée à GitHub.
+name: Version
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: bash outils/verifier-depot.sh && bash lancer_tests.sh
+
+  publier:
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write     # seulement pour créer la « Release »
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Zip de la version
+        run: bash outils/construire-zip.sh "$GITHUB_REF_NAME"
+      - name: Release GitHub (notes = section du CHANGELOG)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          awk -v t="## $GITHUB_REF_NAME " 'index($0,t)==1{f=1;next} /^## v/{f=0} f' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" "dist/ERP_ANO_Services-$GITHUB_REF_NAME.zip" \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
