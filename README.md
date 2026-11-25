@@ -136,6 +136,21 @@ Après la mise en ligne, sur le serveur : `bash deploiement/verifier-en-ligne.sh
 
 Le dossier est un dépôt Git : `git log --oneline` liste les versions, `git tag` leurs étiquettes, et `CHANGELOG.md` dit ce que chacune apporte. Le cachet (`app/prive/`) et les données (`donnees/`) ne sont jamais versionnés.
 
+### Deux branches : `dev` (travail) et `main` (production)
+
+- **`dev`** : toutes les nouvelles modifications arrivent ici. À chaque envoi, GitHub relance tous les tests. Rien ne part sur le serveur.
+- **`main`** : seulement ce qui a été vérifié sur `dev`. Une étiquette de version posée sur `main` met en ligne.
+
+Au quotidien (Mac) :
+1. `git checkout dev && git pull` : récupérer la dernière version de travail.
+2. Modifier, puis `git commit -am "…"` et `git push` : les tests tournent sur GitHub (onglet « Actions »).
+3. Essayer en local : double-clic sur « Lancer ANO.command » (données de test sur le Mac).
+
+Passer en production, quand `dev` est validée :
+1. `git checkout main && git pull && git merge dev` puis `git push`.
+2. Suivre « Livrer une version » ci-dessous (`nouvelle-version.sh`, puis `git push origin main --follow-tags`).
+3. `git checkout dev` pour reprendre le travail.
+
 Livrer une version :
 1. Décrire la version en haut de `CHANGELOG.md` (`## v3.4.0 – date : titre`), puis `git commit -am "…"`.
 2. `bash outils/nouvelle-version.sh 3.4.0` : contrôle du dépôt, tous les tests, étiquette, zip dans `dist/`.
