@@ -7,6 +7,7 @@ Lancer : python3 tests/test_api.py
 """
 import http.client
 import json
+import re
 import urllib.parse
 import os
 import socket
@@ -853,6 +854,30 @@ class TestsAPI(unittest.TestCase):
         fin = {x["id"]: x for x in a.req("GET", "/api/factures?dossier=%d" % did)[1]["factures"]}
         self.assertTrue(all(x["agent"].startswith("PREMIER") or x["agent"].startswith("Premier") for x in fin.values()))
         self.assertEqual(fin[nov["id"]]["numero"], par[nov["id"]]["numero"])
+
+    def test_23_mention_designation(self):
+        """« ANO SERVICE » sous la 1re ligne de la désignation (comme les factures d'ANO), réglable."""
+        import io
+        import zipfile
+        a = self.admin
+        fa = [x for x in a.req("GET", "/api/factures")[1]["factures"] if x["numero"] and x["type"] == "MAD"][0]
+        def texte_word():
+            st, doc = a.req("GET", "/api/factures/word?ids=%d" % fa["id"])
+            self.assertEqual(st, 200)
+            z = zipfile.ZipFile(io.BytesIO(doc))
+            nom = [n for n in z.namelist() if n.endswith(".docx")]
+            if nom:
+                z = zipfile.ZipFile(io.BytesIO(z.read(nom[0])))
+            return re.sub(r"<[^>]+>", "|", z.read("word/document.xml").decode())
+        rs = a.req("GET", "/api/parametres")[1]["parametres"]["raison_sociale"]
+        self.assertIn("|" + rs.upper() + "|", texte_word())            # vide : raison sociale en majuscules
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"mention_designation": "ANO SERVICE"}})
+        self.assertEqual(st, 200, j)
+        t = texte_word()
+        self.assertIn("|ANO SERVICE|", t)
+        self.assertLess(t.index("MAD d"), t.index("ANO SERVICE|"))
+        self.assertLess(t.index("ANO SERVICE|"), t.index(fa["agent"]))
+        a.req("PUT", "/api/parametres", {"parametres": {"mention_designation": ""}})
 
     def test_99_parametres_entreprise(self):
         """V1 B2B : codes de n°, TVA visite et images réglables ; ANO inchangé par défaut."""

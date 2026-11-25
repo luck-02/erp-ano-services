@@ -999,17 +999,19 @@ function docProforma(p, d, pr, c) {
 }
 
 function docFacture(p, f) {
-  // Désignation sans dates (demande de Luc) : le mois facturé est dans le titre
+  // Désignation sans dates (demande de Luc) : le mois facturé est dans le titre ;
+  // nom de l'entreprise sous la 1re ligne, comme sur les factures d'ANO (« ANO SERVICE »)
+  const men = (p.mention_designation || p.raison_sociale || "").trim().toUpperCase();
   let ligne;
   if (f.groupe && f.type === "MAD") {
     const complet = f.jours === f.jours_mois;
-    ligne = html`<tr><td>MAD de ${f.nb_agents} ${f.poste}<br>${f.agent}</td><td>${complet ? "1" : String(f.jours).padStart(2, "0")}</td><td>${f.unite || (complet ? "Mois" : "Jours")}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+    ligne = html`<tr><td>MAD de ${f.nb_agents} ${f.poste}<br>${men}<br>${f.agent}</td><td>${complet ? "1" : String(f.jours).padStart(2, "0")}</td><td>${f.unite || (complet ? "Mois" : "Jours")}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
   } else if (f.groupe && f.type === "VISITE") {
     const q = f.jours || 1;
-    ligne = html`<tr><td>Visite médicale<br>${f.agent}</td><td>${q}</td><td>${f.unite || "1"}</td><td>${fmtPt(Math.floor(f.montant_ht / q))}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
-  } else if (f.type === "MAD") ligne = html`<tr><td>MAD d'un ${f.poste}<br>${f.agent}</td><td>${String(f.jours).padStart(2, "0")}</td><td>${f.unite || "Jours"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
-  else if (f.type === "VISITE") ligne = html`<tr><td>Visite médicale<br>${f.agent}</td><td>1</td><td>${f.unite || "1"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
-  else ligne = html`<tr><td>Ajustement selon PV<br>${f.agent}</td><td>1</td><td>${f.unite || "Forfait"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+    ligne = html`<tr><td>Visite médicale<br>${men}<br>${f.agent}</td><td>${q}</td><td>${f.unite || "1"}</td><td>${fmtPt(Math.floor(f.montant_ht / q))}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  } else if (f.type === "MAD") ligne = html`<tr><td>MAD d'un ${f.poste}<br>${men}<br>${f.agent}</td><td>${String(f.jours).padStart(2, "0")}</td><td>${f.unite || "Jours"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  else if (f.type === "VISITE") ligne = html`<tr><td>Visite médicale<br>${men}<br>${f.agent}</td><td>1</td><td>${f.unite || "1"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  else ligne = html`<tr><td>Ajustement selon PV<br>${men}<br>${f.agent}</td><td>1</td><td>${f.unite || "Forfait"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
   return html`<div class="doc fa">
     <div class="fa-tete"><div class="fa-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
     <div class="fa-infos"><div class="fa-gauche">
@@ -1204,7 +1206,7 @@ async function pageParametres(page) {
         <div class="ligne-form lf2">${champ("dernier_num_proforma", "Dernier n° de proforma utilisé", "La prochaine DA prendra ce n° + 1.")}
         ${champ("dernier_num_facture", "Dernier n° de facture utilisé", p.dernier_num_facture === null ? "À renseigner avant la 1re émission (ex. 152)." : "La prochaine facture prendra ce n° + 1.")}</div>
         <div class="ligne-form lf2">${champ("code_entreprise", "Code entreprise (n° de proforma)")}${champ("prefixe_facture", "Préfixe des factures")}</div>
-        <div class="ligne-form lf2">${champ("code_mad", "Code facture mensuelle", "Vide (comme les factures d'ANO) : FA 159/11/2026. Avec un code : FA 159/11-MAD/2026. 11 = mois d'émission.")}${champ("code_visite", "Code facture visite médicale", "FA 159/Visite médicale/2026 : même n° que la facture du même mois et du même agent, même si elles sont émises à des jours différents. Un n° émis ne change plus jamais.")}</div>
+        <div class="ligne-form lf3">${champ("code_mad", "Code facture mensuelle", "Vide (comme les factures d'ANO) : FA 159/11/2026. Avec un code : FA 159/11-MAD/2026. 11 = mois d'émission.")}${champ("mention_designation", "Nom sous la désignation des factures", "Ligne imprimée sous la 1re ligne de la désignation, avant le nom de l'agent (ex. ANO SERVICE). Vide : la raison sociale en majuscules.")}${champ("code_visite", "Code facture visite médicale", "FA 159/Visite médicale/2026 : même n° que la facture du même mois et du même agent, même si elles sont émises à des jours différents. Un n° émis ne change plus jamais.")}</div>
         <p class="aide" id="p-exemples"></p>
         <div class="ligne-form lf2">${champ("bc_chiffres", "Chiffres d'un n° de BC client", "0 = pas de contrôle.")}<div></div></div>
         <div class="ligne-form lf2">${champ("alerte_fin_jours", "Alerte fin de contrat (jours avant)")}${champ("alerte_visite_jours", "Alerte visite médicale (jours avant)")}</div></div>

@@ -171,6 +171,7 @@ PARAMETRES_INITIAUX = {
     "prefixe_facture": "FA",           # FA 161/11/2026 et FA 161/Visite médicale/2026
     "code_mad": "",
     "code_visite": "Visite médicale",
+    "mention_designation": "",         # ligne sous la désignation (ex. ANO SERVICE) ; vide = raison sociale
     "tva_visite": False,               # visite médicale sans TVA (règle ANO)
     "bc_chiffres": 6,                  # longueur habituelle d'un n° de BC (0 = pas de contrôle)
     "lieux": ["Moanda", "Libreville", "Port-Gentil"],

@@ -155,8 +155,22 @@ def image(rid, num, nom, larg_mm=None, haut_mm=None, chemin=None):
 # ---------------------------------------------------------------------------
 # Corps de la facture
 # ---------------------------------------------------------------------------
-def _designation(f):
-    """(désignation, quantité, unité, prix unitaire HT)"""
+def mention(p):
+    """Nom de l'entreprise sous la désignation, comme sur les factures d'ANO (« ANO SERVICE »)."""
+    return (p.get("mention_designation") or p.get("raison_sociale") or "").strip().upper()
+
+
+def _designation(f, p=None):
+    """(désignation, quantité, unité, prix unitaire HT) ; 1re ligne, nom de l'entreprise, agent"""
+    m = mention(p or {})
+    d, q, u, pu = _designation_brute(f)
+    if m:
+        premiere, _, reste = d.partition("\n")
+        d = "%s\n%s\n%s" % (premiere, m, reste)
+    return d, q, u, pu
+
+
+def _designation_brute(f):
     ht = f["montant_ht"]
     if f.get("groupe"):
         # facture groupée (ex. 9 infirmiers) : une ligne pour tout le groupe
@@ -208,7 +222,7 @@ def corps_document(p, f, avec_signature, logo=None, signature=None):
     x.append(para(run("Facture %s" % mois_fr(f["mois"]), gras=True, taille=17), align="right", avant=1000))
     x.append(para(run("N° %s" % f["numero"], gras=True, taille=13), align="right", apres=900))
     # Tableau des prestations
-    des, qte, unite, pu = _designation(f)
+    des, qte, unite, pu = _designation(f, p)
     larg = [3060, 1640, 1640, 1932, 1932]
     entetes = ["Désignation des produits ou des prestations", "Quantité", "Unité", "Prix unitaire HT", "TOTAL HT"]
     bt = bordures(1 * 8, 1 * 8, 1 * 8, 1 * 8)

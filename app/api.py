@@ -478,7 +478,7 @@ def sauvegarde(ctx, g, body):
 CHAMPS_TEXTE_PARAM = {
     "raison_sociale": 80, "adresse": 120, "ville": 80, "telephone": 80, "email": 120, "rccm": 80,
     "nif": 40, "cnss": 40, "banque": 80, "compte": 60, "devise": 6, "modalite_reglement": 40, "heures": 120,
-    "code_entreprise": 12, "prefixe_facture": 10, "code_mad": 20, "code_visite": 30,
+    "code_entreprise": 12, "prefixe_facture": 10, "code_mad": 20, "code_visite": 30, "mention_designation": 60,
 }
 # morceaux de n° : pas de « / » ni de « - » (ils séparent les parties du n°)
 CHAMPS_CODE_PARAM = ("code_entreprise", "prefixe_facture", "code_mad", "code_visite")
