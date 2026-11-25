@@ -145,9 +145,13 @@ class TestsAPI(unittest.TestCase):
         # BC 493930 au montant exact
         st, j = a.req("POST", "/api/dossiers/%d/bc" % did, {"bc_numero": "493930", "bc_montant": 6648214})
         self.assertEqual((st, j["ecart"]), (200, 0))
+        # lot 1 : BC conforme -> les 8 factures prévues sont créées tout de suite, dossier « En cours »
+        self.assertEqual(j["factures_creees"], 8)
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        self.assertEqual(d["dossier"]["statut"], "En cours")
         st, j = a.req("POST", "/api/dossiers/%d/generer-factures" % did, {})
         self.assertEqual(st, 200, j)
-        self.assertEqual(j["ajoutees"], 8)
+        self.assertEqual(j["ajoutees"], 0)
         # Relancer ne duplique rien
         st, j = a.req("POST", "/api/dossiers/%d/generer-factures" % did, {})
         self.assertEqual((j["ajoutees"], j["total"]), (0, 8))
@@ -246,7 +250,7 @@ class TestsAPI(unittest.TestCase):
         # tableau de bord : liste « À faire »
         st, t = a.req("GET", "/api/tableau-de-bord")
         self.assertIn("a_faire", t)
-        self.assertEqual(set(t["a_faire"]), {"a_emettre", "a_envoyer", "en_retard", "brouillons", "sans_bc"})
+        self.assertEqual(set(t["a_faire"]), {"a_emettre", "a_envoyer", "en_retard", "brouillons", "sans_bc", "imputations", "visites"})
         self.assertEqual(t["a_faire"]["a_emettre"], 0)       # novembre et décembre déjà émis, rien d'échu
         # tableau de bord de novembre
         st, t = a.req("GET", "/api/tableau-de-bord?mois=2026-11")
@@ -1042,6 +1046,80 @@ class TestsAPI(unittest.TestCase):
                         [{"date": "2026-10-12", "debut": "25:00", "fin": "26:00"}]):
             st, j = a.req("POST", "/api/dossiers/%d/heures-sup" % dos["id"], {"agent_id": ag["id"], "lignes": mauvais})
             self.assertEqual(st, 400, (mauvais, j))
+
+    def test_26_lot1_moins_d_oublis(self):
+        """Lot 1 (25/11/2026) : statuts automatiques, factures dès le BC, À faire détaillé,
+        visite faite le…, numérotation par formats."""
+        import datetime as dt
+        a = self.admin
+        auj = dt.date.today()
+        # --- dossier sans imputation, contrat déjà fini : Brouillon -> Envoyé à l'impression
+        da = da_reference(nom="LOTUN Passé")
+        da.update({"num_da": "", "imputation": "", "nom_numero": "LOTUN",
+                   "date_debut": (auj - dt.timedelta(days=90)).isoformat(),
+                   "date_fin": (auj - dt.timedelta(days=2)).isoformat(),
+                   "date_proforma": (auj - dt.timedelta(days=95)).isoformat()})
+        st, j = a.req("POST", "/api/dossiers", da)
+        self.assertEqual(st, 200, j)
+        did = j["id"]
+        st, j = a.req("POST", "/api/dossiers/%d/proforma-envoyee" % did, {})
+        self.assertEqual((st, j["statut"], j["change"]), (200, "Envoyé", True))
+        st, j = a.req("POST", "/api/dossiers/%d/proforma-envoyee" % did, {})
+        self.assertEqual(j["change"], False)                       # ne recule ni ne répète jamais
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        self.assertEqual(d["dossier"]["envoye_le"], auj.isoformat())
+        st, t = a.req("GET", "/api/tableau-de-bord")
+        self.assertIn(did, [x["id"] for x in t["a_faire_dossiers"]["imputations"]])
+        self.assertIn(did, [x["id"] for x in t["a_faire_dossiers"]["sans_bc"]])
+        # --- BC avec un écart : pas de factures créées, le dossier reste « BC reçu »
+        pro = d["proforma"]["cumul_ht"]
+        st, j = a.req("POST", "/api/dossiers/%d/bc" % did, {"bc_numero": "810001", "bc_montant": pro + 500})
+        self.assertEqual((st, j["factures_creees"]), (200, 0))
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        self.assertEqual((d["dossier"]["statut"], len(d["factures"])), ("BC reçu", 0))
+        # --- BC corrigé : factures créées, puis « Terminé » tout seul (date de fin passée)
+        st, j = a.req("POST", "/api/dossiers/%d/bc" % did, {"bc_numero": "810001", "bc_montant": pro})
+        self.assertGreater(j["factures_creees"], 0)
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        self.assertEqual(d["dossier"]["statut"], "Terminé")
+        st, jr = a.req("GET", "/api/journal")
+        self.assertTrue(any("Terminé (date de fin passée)" in (x["details"] or "") for x in jr["journal"]))
+        # --- visite faite le… : date future refusée, sinon enregistrée et reprise pour l'intérimaire
+        aid = d["agents"][0]["id"]
+        st, j = a.req("POST", "/api/agents/%d/visite-faite" % aid,
+                      {"prevue": da["date_debut"], "faite": (auj + dt.timedelta(days=3)).isoformat()})
+        self.assertEqual(st, 400)
+        faite = (auj - dt.timedelta(days=80)).isoformat()
+        st, j = a.req("POST", "/api/agents/%d/visite-faite" % aid, {"prevue": da["date_debut"], "faite": faite})
+        self.assertEqual(st, 200, j)
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        self.assertEqual(json.loads(d["agents"][0]["visites_faites"]), [{"prevue": da["date_debut"], "faite": faite}])
+        # renouvellement : la visite réellement faite est reprise comme dernière visite connue
+        suite = dict(da, date_debut=auj.isoformat(), date_fin=(auj + dt.timedelta(days=60)).isoformat(),
+                     date_proforma=auj.isoformat())
+        st, ap = a.req("POST", "/api/dossiers/apercu", suite)
+        self.assertEqual(ap["dernieres_visites"], [faite])
+        self.assertEqual(self.lecteur_refuse("POST", "/api/agents/%d/visite-faite" % aid), True)
+        # --- numérotation par formats : contrôles, puis même résultat qu'avant quand le format est vide
+        for mauvais in ("{X} {N}", "FA {MM}/{AAAA}", "FA {N"):
+            st, j = a.req("PUT", "/api/parametres", {"parametres": {"format_facture": mauvais}})
+            self.assertEqual(st, 400, mauvais)
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"format_proforma": "DEV-{AA}{MM}-{N} {NOM}"}})
+        self.assertEqual(st, 200, j)
+        st, ap = a.req("POST", "/api/dossiers/apercu", da_reference())
+        self.assertRegex(ap["numero_propose"], r"^DEV-2610-\d+ TESTEUR REFERENCE$")
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"format_proforma": ""}})
+        st, ap = a.req("POST", "/api/dossiers/apercu", da_reference())
+        self.assertRegex(ap["numero_propose"], r"^\d+-10-ANO-TESTEUR REFERENCE/2026$")
+
+    def lecteur_refuse(self, methode, chemin):
+        """Un compte « lecture » ne peut pas faire cette action."""
+        st, j = self.admin.req("POST", "/api/utilisateurs", {"identifiant": "lect-lot1", "nom": "Lecture",
+                                                              "role": "lecture", "mot_de_passe": "Lecture-Lot1-2026!"})
+        c = Client()
+        c.connexion("lect-lot1", "Lecture-Lot1-2026!")
+        st, j = c.req(methode, chemin, {})
+        return st == 403
 
     def test_99_parametres_entreprise(self):
         """V1 B2B : codes de n°, TVA visite et images réglables ; ANO inchangé par défaut."""

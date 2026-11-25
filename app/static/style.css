@@ -446,3 +446,18 @@ body.site-test .connexion .carte::before { content: "SITE DE TEST"; display: inl
 #f-r summary { cursor: pointer; color: var(--marine); font-weight: 600; margin-bottom: .5rem; }
 .r-total { margin: 0 0 .75rem; }
 @media (max-width: 1000px) { .menu-recherche { flex: 1 1 100%; margin: 0 0 .25rem; } }
+
+/* --- lot 1 (25/11/2026) : prochaine étape, À faire détaillé, DA à côté du formulaire --- */
+.bandeau.prochaine { background: var(--marine-clair); border: 1px solid #c4d7ea; border-left: 4px solid var(--marine); }
+.bandeau.prochaine > span, .bandeau.alerte > span, .bandeau.info > span { flex: 1 1 18rem; min-width: 0; }
+.a-faire li { display: flex; flex-wrap: wrap; gap: .25rem .6rem; align-items: baseline; }
+.a-faire li button.lien { padding: 0; font: inherit; text-align: left; }
+.a-faire-dos { display: inline-flex; flex-wrap: wrap; gap: .2rem .45rem; font-size: .85rem; }
+.a-faire-dos a { color: var(--doux); }
+.da-vue { margin-top: .5rem; border: 1px solid var(--bord); border-radius: 8px; overflow: auto; max-height: 70vh; background: var(--gris-clair); }
+.da-vue iframe { display: block; width: 100%; height: 65vh; border: 0; background: #fff; }
+.da-vue img { display: block; width: 100%; height: auto; }
+.da-vue p { padding: .75rem; margin: 0; }
+@media (max-width: 1250px) { .da-vue iframe { height: 55vh; } }
+.formats-num { margin: .5rem 0 1rem; }
+.formats-num summary { cursor: pointer; color: var(--marine); font-weight: 600; }

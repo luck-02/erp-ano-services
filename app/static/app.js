@@ -329,16 +329,21 @@ const filtres = { mois: moisCourant(), factMois: moisCourant(), factStatut: "", 
   rech: { type: "", client: "", statut: "", du: "", au: "", min: "", max: "" } };
 
 // Carte « À faire » : chaque ligne = une action, avec le lien qui y mène
-function carteAFaire(a) {
+function carteAFaire(a, ad) {
+  ad = ad || {};
+  // [nombre, libellé, lien, statut de facture à filtrer, dossiers concernés]
   const lignes = [
+    [a.en_retard, "facture(s) en retard de paiement : relancer le client", "#/factures", "En retard"],
     [a.a_emettre, "facture(s) à émettre (mois en cours et mois passés)", "#/factures", "À émettre"],
     [a.a_envoyer, "facture(s) émise(s) pas encore envoyée(s) au client", "#/factures", "À envoyer"],
-    [a.en_retard, "facture(s) en retard de paiement (échéance dépassée)", "#/factures", "En retard"],
-    [a.sans_bc, "proforma(s) envoyée(s) ou validée(s) sans bon de commande", "#/dossiers", null],
-    [a.brouillons, "proforma(s) en brouillon, pas encore envoyée(s)", "#/dossiers", null],
+    [a.sans_bc, "proforma(s) envoyée(s) sans bon de commande : relancer le client", "#/dossiers", null, ad.sans_bc],
+    [a.imputations, "dossier(s) sans n° d'imputation : le demander au client", "#/dossiers", null, ad.imputations],
+    [a.visites, "visite(s) médicale(s) à organiser ou à confirmer", "#/tableau", null, null, "tb-visites"],
+    [a.brouillons, "proforma(s) en brouillon : à imprimer et envoyer", "#/dossiers", null, ad.brouillons],
   ].filter((l) => l[0]);
+  const dossiers = (ds) => (ds && ds.length ? html`<span class="a-faire-dos">${ds.map((x) => html`<a href="#/dossier/${x.id}">${x.numero}</a>`)}</span>` : "");
   return html`<div class="carte a-faire"><h2>À faire</h2>${lignes.length
-    ? html`<ul>${lignes.map(([n, lib, lien, statut]) => html`<li><a href="${lien}" ${statut ? html`data-statut="${statut}"` : ""}><b>${n}</b> ${lib}</a></li>`)}</ul>`
+    ? html`<ul>${lignes.map(([n, lib, lien, statut, ds, ancre]) => html`<li>${ancre ? html`<button class="lien" data-aller="${ancre}"><b>${n}</b> ${lib}</button>` : html`<a href="${lien}" ${statut ? html`data-statut="${statut}"` : ""}><b>${n}</b> ${lib}</a>`}${dossiers(ds)}</li>`)}</ul>`
     : html`<p class="doux">Rien en attente : tout est émis, envoyé et à jour.</p>`}</div>`;
 }
 
@@ -352,7 +357,7 @@ async function pageTableau(page) {
     <div class="entete"><div><h1>Tableau de bord</h1><p>Situation du mois de ${t.libelle}</p></div>
       <div class="actions"><label for="tb-mois" class="doux" data-style="margin:0">Mois</label><input type="month" id="tb-mois" value="${filtres.mois}" data-style="width:auto"></div></div>
     ${t.num_facture_manquant && peut("admin") ? html`<div class="bandeau alerte"><span>Avant d'émettre la première facture, indiquez le <b>dernier n° de facture</b> réellement utilisé (ex. 152).</span><a class="bouton" href="#/parametres">Ouvrir les paramètres</a></div>` : ""}
-    ${peut("admin", "gestion") ? carteAFaire(t.a_faire) : ""}
+    ${peut("admin", "gestion") ? carteAFaire(t.a_faire, t.a_faire_dossiers) : ""}
     ${t.ecarts_bc.length ? html`<div class="bandeau danger"><span>Écart entre BC et proforma : ${t.ecarts_bc.map((e) => html`<a href="#/dossier/${e.dossier_id}">${e.numero}</a> (${fmt(e.ecart)} XAF) `)}</span></div>` : ""}
     ${t.trop_percus && t.trop_percus.length && peut("admin", "gestion") ? html`<div class="bandeau alerte"><span>Paiement plus grand que la facture : ${t.trop_percus.map((x) => html`<b>${x.numero}</b> (payé ${fmt(x.paye)} pour ${fmt(x.ttc)} TTC) `)}. À vérifier ; si c'est une erreur, annulez le paiement dans « Factures » puis ressaisissez-le.</span></div>` : ""}
     <div class="grille g4">
@@ -373,9 +378,11 @@ async function pageTableau(page) {
         ${t.alertes_fin.length ? html`<table><thead><tr><th>Agent</th><th>Fin</th><th class="num">Jours</th></tr></thead><tbody>
           ${t.alertes_fin.map((a) => html`<tr class="cliquable" data-href="#/dossier/${a.dossier_id}"><td>${a.agent}</td><td>${dateFr(a.fin)}</td><td class="num">${a.jours}</td></tr>`)}</tbody></table>
           <p class="aide">Renouvellement = nouvelle DA.</p>` : html`<p class="doux">Aucun contrat ne se termine dans les ${etat.params.parametres.alerte_fin_jours} jours.</p>`}</div>
-      <div class="carte"><h2>Visites médicales à refaire</h2>
-        ${t.alertes_visite.length ? html`<table><thead><tr><th>Agent</th><th>À refaire le</th><th>Fin du contrat</th></tr></thead><tbody>
-          ${t.alertes_visite.map((a) => html`<tr class="cliquable" data-href="#/dossier/${a.dossier_id}"><td>${a.agent}</td><td>${dateFr(a.date)}</td><td>${dateFr(a.fin)}</td></tr>`)}</tbody></table>` : html`<p class="doux">Aucune visite à prévoir dans les ${etat.params.parametres.alerte_visite_jours} jours.</p>`}</div>
+      <div class="carte" id="tb-visites"><h2>Visites médicales à organiser</h2>
+        ${t.alertes_visite.length ? html`<table><thead><tr><th>Agent</th><th>Prévue le</th><th>Fin du contrat</th>${peut("admin", "gestion") ? html`<th></th>` : ""}</tr></thead><tbody>
+          ${t.alertes_visite.map((a, i) => html`<tr class="cliquable" data-href="#/dossier/${a.dossier_id}"><td>${a.agent}</td><td>${dateFr(a.date)}${a.passee ? html` <span class="badge b-En retard">à confirmer</span>` : ""}</td><td>${dateFr(a.fin)}</td>
+            ${peut("admin", "gestion") ? html`<td><button class="secondaire petit" data-visite="${i}">Faite le…</button></td>` : ""}</tr>`)}</tbody></table>
+          <p class="aide">« Faite le… » note la date réelle : l'alerte disparaît et la date sert au contrat suivant.</p>` : html`<p class="doux">Aucune visite à prévoir dans les ${etat.params.parametres.alerte_visite_jours} jours.</p>`}</div>
     </div>
     <div class="carte"><h2>Mois par mois (12 derniers mois au plus)</h2>
       <div class="legende"><span class="l-prevu">Prévu (HT)</span><span class="l-facture">Facturé (TTC)</span><span class="l-paye">Payé (TTC)</span></div>
@@ -391,6 +398,23 @@ async function pageTableau(page) {
   $("#tb-mois").onchange = (e) => { if (e.target.value) { filtres.mois = e.target.value; pageTableau(page); } };
   // un clic sur une ligne « À faire » ouvre les factures déjà filtrées sur ce statut
   $$(".a-faire a[data-statut]", page).forEach((l) => { l.onclick = () => { filtres.factStatut = l.dataset.statut; filtres.factMois = ""; }; });
+  $$(".a-faire [data-aller]", page).forEach((b) => { b.onclick = () => { const c = $("#" + b.dataset.aller); if (c) c.scrollIntoView({ behavior: "smooth", block: "start" }); }; });
+  $$("[data-visite]", page).forEach((b) => {
+    b.onclick = () => {
+      const v = t.alertes_visite[+b.dataset.visite];
+      const defaut = v.date < auj() ? v.date : auj();
+      ouvrirModale(html`<h2>Visite médicale de ${v.agent}</h2><p class="doux">Prévue le ${dateFr(v.date)}.</p><form id="vf-f">
+        <div class="champ"><label for="vf-d">Faite le</label><input id="vf-d" type="date" value="${defaut}" max="${auj()}" required></div>
+        <div class="actions"><button type="submit" class="vert">Enregistrer</button><button type="button" class="secondaire" data-fermer>Annuler</button></div></form>`);
+      $("#vf-f").onsubmit = async (e) => {
+        e.preventDefault();
+        const faite = $("#vf-d").value;
+        fermerModale();
+        try { await action(() => api("POST", "/api/agents/" + v.agent_id + "/visite-faite", { prevue: v.date, faite }), "Visite notée : faite le " + dateFr(faite) + "."); } catch (x) { return; }
+        pageTableau(page);
+      };
+    };
+  });
   lignesCliquables(page);
 }
 
@@ -523,8 +547,67 @@ async function pageSaisieDA(page, id) {
             <a class="bouton secondaire" href="${id ? "#/dossier/" + id : "#/dossiers"}">Annuler</a></div>
         </div>
       </form>
-      <div class="apercu"><div class="carte" id="apercu"><h2>Aperçu de la proforma</h2><p class="doux">Remplissez les dates et au moins un agent.</p></div></div>
+      <div class="apercu">
+        <div class="carte" id="da-piece"><h2>La DA reçue</h2>
+          <p class="doux petit">Affichez le PDF ou la photo de la DA ici pour la recopier sans changer de fenêtre. ${id ? "Un nouveau fichier choisi ici sera ajouté aux documents du dossier." : "Elle sera jointe au dossier (pièce « DA ») à l'enregistrement."}</p>
+          <div id="da-pieces-existantes"></div>
+          <div class="champ"><label for="da-fichier">Fichier de la DA (PDF, PNG ou JPEG, 8 Mo au plus)</label><input id="da-fichier" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"></div>
+          <div id="da-vue" class="da-vue cache"></div></div>
+        <div class="carte" id="apercu"><h2>Aperçu de la proforma</h2><p class="doux">Remplissez les dates et au moins un agent.</p></div></div>
     </div>`);
+
+  // lot 1 (A10) : la DA reçue affichée à côté du formulaire
+  let fichierDA = null, urlVue = null;
+  const lireDataUrl = (b) => new Promise((ok, ko) => { const l = new FileReader(); l.onload = () => ok(l.result); l.onerror = ko; l.readAsDataURL(b); });
+  async function montrerPiece(blob) {
+    const vue = $("#da-vue");
+    if (!vue) return;
+    if (urlVue) { URL.revokeObjectURL(urlVue); urlVue = null; }
+    const debut = new Uint8Array(await blob.slice(0, 5).arrayBuffer());
+    const estPdf = String.fromCharCode(...debut) === "%PDF-";
+    vue.classList.remove("cache");
+    if (estPdf) {
+      urlVue = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
+      vue.innerHTML = html`<iframe title="DA reçue" src="${urlVue}"></iframe>`.s;
+    } else {
+      const lu = await lireDataUrl(blob);
+      if (!/^data:image\/(png|jpeg);/.test(lu)) { vue.innerHTML = html`<p class="doux">Aperçu impossible : PDF, PNG ou JPEG seulement.</p>`.s; return; }
+      vue.innerHTML = html`<img alt="DA reçue" src="${lu}">`.s;
+    }
+  }
+  $("#da-fichier").onchange = (e) => {
+    const f = e.target.files[0];
+    fichierDA = null;
+    if (!f) return;
+    if (f.size > 8 * 1024 * 1024) { e.target.value = ""; toast("Fichier trop lourd (8 Mo au plus).", true); return; }
+    if (!/\.(pdf|png|jpe?g)$/i.test(f.name)) { e.target.value = ""; toast("Format refusé : PDF, PNG ou JPEG seulement.", true); return; }
+    fichierDA = f;
+    montrerPiece(f).catch(() => toast("Lecture du fichier impossible.", true));
+  };
+  if (id) {
+    api("GET", "/api/dossiers/" + id + "/documents").then((r) => {
+      const das = r.documents.filter((x) => x.categorie === "DA");
+      const zone = $("#da-pieces-existantes");
+      if (!zone || !das.length) return;
+      zone.innerHTML = html`<div class="actions">${das.map((x) => html`<button type="button" class="secondaire petit" data-voir-da="${x.id}">Afficher ${x.nom}</button>`)}</div>`.s;
+      $$("[data-voir-da]", zone).forEach((b) => {
+        b.onclick = async () => {
+          try {
+            const reponse = await fetch("/api/documents/" + b.dataset.voirDa, { credentials: "same-origin" });
+            if (!reponse.ok) throw new Error("Document illisible.");
+            await montrerPiece(await reponse.blob());
+          } catch (x) { toast(x.message, true); }
+        };
+      });
+    }).catch(() => { /* pas de documents : rien à montrer */ });
+  }
+  async function joindreDA(did) {
+    if (!fichierDA) return;
+    try {
+      const contenu = await lireDataUrl(fichierDA);
+      await api("POST", "/api/dossiers/" + did + "/pieces", { categorie: "DA", nom: fichierDA.name, contenu });
+    } catch (x) { toast("Dossier enregistré, mais la DA n'a pas pu être jointe : " + x.message + " Ajoutez-la depuis « Documents ».", true); }
+  }
 
   const corpsAgents = $("#da-agents");
   function dessinerAgents() {
@@ -602,10 +685,12 @@ async function pageSaisieDA(page, id) {
     try {
       if (id) {
         await api("PUT", "/api/dossiers/" + id, corps());
+        await joindreDA(id);
         toast("Dossier mis à jour.");
         location.hash = "#/dossier/" + id;
       } else {
         const r = await api("POST", "/api/dossiers", corps());
+        await joindreDA(r.id);
         toast("DA " + r.num_da + " enregistrée : proforma " + r.numero_proforma);
         location.hash = "#/dossier/" + r.id;
       }
@@ -619,12 +704,48 @@ async function pageSaisieDA(page, id) {
 // ---------------------------------------------------------------------------
 const ORDRE_ETAPES = ["Brouillon", "Envoyé", "Validé", "BC reçu", "En cours", "Terminé"];
 
+// « Prochaine étape » : une phrase et un bouton, déduits de l'état du dossier (lot 1)
+function prochaineEtape(r) {
+  const d = r.dossier, id = d.id;
+  const moisCourantIso = auj().slice(0, 7) + "-01";
+  const fs = r.factures.filter((f) => f.statut !== "Remplacée");
+  const aEmettre = fs.filter((f) => f.statut === "À émettre" && f.mois <= moisCourantIso);
+  const aEnvoyer = fs.filter((f) => f.statut === "À envoyer");
+  const enRetard = fs.filter((f) => f.statut === "En retard");
+  const ecartOk = r.ecart_bc !== null && Math.abs(r.ecart_bc) <= 1;
+  const imputation = !d.imputation && ["Envoyé", "Validé", "BC reçu", "En cours"].includes(d.statut)
+    ? " Pensez aussi à demander le n° d'imputation au client." : "";
+  if (d.statut === "Annulé") return null;
+  if (d.statut === "Brouillon")
+    return { texte: "Imprimer la proforma (ou l'enregistrer en PDF) et l'envoyer au client. Le dossier passera « Envoyé » tout seul.", lien: "#/imprimer/proforma/" + id, bouton: "Proforma en PDF" };
+  if (!d.bc_numero)
+    return { texte: "Attendre le bon de commande du client, puis le saisir ci-dessous : les factures seront préparées tout de suite." + imputation, focus: "bc-n", bouton: "Saisir le BC" };
+  if (!ecartOk)
+    return { texte: "Le montant du BC ne correspond pas à la proforma (écart de " + fmt(r.ecart_bc) + " XAF). Vérifiez le BC ou la proforma avec le client.", focus: "bc-m", bouton: "Revoir le BC", alerte: true };
+  if (!r.factures.length)
+    return { texte: "Le BC est conforme : préparez les factures du contrat.", clic: "ds-gen", bouton: "Générer les factures" };
+  if (enRetard.length)
+    return { texte: enRetard.length + " facture(s) en retard de paiement (" + enRetard.map((f) => f.numero).join(", ") + ") : relancer le client." + imputation, lien: "#/factures", statut: "En retard", bouton: "Voir les factures en retard", alerte: true };
+  if (aEmettre.length) {
+    const mois = [...new Set(aEmettre.map((f) => f.mois))];
+    return { texte: "Émettre " + aEmettre.length + " facture(s) : " + mois.map((m) => moisFr(m)).join(", ") + "." + imputation, lien: "#/factures", mois: mois[mois.length - 1].slice(0, 7), bouton: "Aller à l'émission" };
+  }
+  if (aEnvoyer.length)
+    return { texte: "Envoyer au client " + aEnvoyer.length + " facture(s) émise(s), puis les marquer « envoyées »." + imputation, lien: "#/imprimer/factures/" + aEnvoyer.map((f) => f.id).join(","), bouton: "Factures à envoyer" };
+  const prochaine = fs.find((f) => f.statut === "À émettre");
+  if (prochaine) return { texte: "Rien à faire pour l'instant. Prochaine facture : " + moisFr(prochaine.mois) + "." + imputation, calme: true };
+  const impayees = fs.filter((f) => f.numero && f.statut !== "Payée");
+  if (impayees.length) return { texte: "Toutes les factures sont émises et envoyées. " + impayees.length + " attendent leur paiement." + imputation, calme: true };
+  return { texte: "Contrat soldé : toutes les factures sont payées.", calme: true };
+}
+
 async function pageDossier(page, id) {
   const r = await api("GET", "/api/dossiers/" + id);
   const d = r.dossier, pr = r.proforma;
   const iEtape = ORDRE_ETAPES.indexOf(d.statut);
   const nbFact = r.factures.length, nbEmises = r.factures.filter((f) => f.numero && f.statut !== "Remplacée").length;
   const ecartOk = r.ecart_bc !== null && Math.abs(r.ecart_bc) <= 1;
+  const etape = prochaineEtape(r);
   rendre(page, html`
     <div class="entete"><div><h1>${d.numero_proforma}</h1><p>${r.client.nom} · ${d.service} · ${d.lieu} · du ${dateFr(d.date_debut)} au ${dateFr(d.date_fin)}</p></div>
       <div class="actions">
@@ -634,6 +755,8 @@ async function pageDossier(page, id) {
       </div></div>
     <div class="etapes">${ORDRE_ETAPES.map((s, i) => html`<div class="etape ${d.statut === "Annulé" ? "" : i < iEtape ? "fait" : i === iEtape ? "courant" : ""}">${s}</div>`)}</div>
     ${d.statut === "Annulé" ? html`<div class="bandeau danger">Dossier annulé.</div>` : ""}
+    ${etape && peut("admin", "gestion") ? html`<div class="bandeau ${etape.alerte ? "alerte" : etape.calme ? "info" : "prochaine"}" id="ds-etape"><span><b>Prochaine étape :</b> ${etape.texte}</span>
+      ${etape.bouton ? (etape.lien ? html`<a class="bouton" href="${etape.lien}" id="ds-etape-b">${etape.bouton}</a>` : html`<button id="ds-etape-b">${etape.bouton}</button>`) : ""}</div>` : ""}
     <div class="grille g3">
       <div class="kpi accent"><div class="lib">Cumul proforma HT</div><div class="val">${fmt(pr.cumul_ht)}</div><div class="sous">XAF hors taxes</div></div>
       <div class="kpi ${d.bc_numero ? (ecartOk ? "ok" : "danger") : "alerte"}"><div class="lib">Bon de commande</div><div class="val">${d.bc_numero || "En attente"}</div>
@@ -673,12 +796,19 @@ async function pageDossier(page, id) {
     <div class="carte"><div class="entete" data-style="margin-bottom:.5rem"><h2 data-style="margin:0">Factures du contrat</h2>
       <div class="actions">${d.statut !== "Annulé" ? html`<button class="vert" id="ds-gen">${nbFact ? "Mettre à jour les factures prévues" : "Générer les factures"}</button>` : ""}
       ${nbEmises ? html`<a class="bouton secondaire" href="#/imprimer/factures/${r.factures.filter((f) => f.numero && f.statut !== "Remplacée").map((f) => f.id).join(",")}">Toutes les factures en PDF</a>` : ""}</div></div>
-      ${nbFact ? tableFactures(r.factures, false) : html`<p class="doux">Aucune facture encore. À réception du BC, cliquez sur « Générer les factures » : une facture de visite médicale (si due) et une facture par mois, au prorata. Les mois déjà écoulés seront émis en rattrapage.</p>`}
+      ${nbFact ? tableFactures(r.factures, false) : html`<p class="doux">Aucune facture encore. Elles se préparent toutes seules quand le BC est enregistré avec un montant conforme : une facture de visite médicale (si due) et une facture par mois, au prorata. Le bouton « Générer les factures » sert si le BC a un écart que vous acceptez.</p>`}
     </div>
     ${carteHeuresSup(r, id)}
     ${peut("admin", "gestion") ? html`<div class="carte" id="ds-docs"><h2>Documents</h2><p class="doux">Chargement…</p></div>` : ""}`);
   brancherTableFactures(page, () => pageDossier(page, id));
   brancherHeuresSup(page, r, id);
+  const be = $("#ds-etape-b");
+  if (be && etape) be.onclick = (e) => {
+    if (etape.statut) { filtres.factStatut = etape.statut; filtres.factMois = ""; }
+    if (etape.mois) { filtres.factMois = etape.mois; filtres.factStatut = ""; }
+    if (etape.focus) { e.preventDefault(); const c = $("#" + etape.focus); c.scrollIntoView({ behavior: "smooth", block: "center" }); c.focus(); }
+    if (etape.clic) { e.preventDefault(); $("#" + etape.clic).click(); }
+  };
   if (peut("admin", "gestion")) chargerDocuments(id);
 
   $("#ds-statut").onchange = async (e) => {
@@ -698,7 +828,8 @@ async function pageDossier(page, id) {
       if (m === null) return toast("Montant du BC : chiffres uniquement.", true);
       const nbc = Number(etat.params.parametres.bc_chiffres) || 0;
       if (nbc && !new RegExp("^\\d{" + nbc + "}$").test($("#bc-n").value.trim()) && !(await confirmer("N° de BC inhabituel", "Les BC de ce client ont normalement " + nbc + " chiffres. Enregistrer quand même ?"))) return;
-      try { const res = await action(() => api("POST", "/api/dossiers/" + id + "/bc", { bc_numero: $("#bc-n").value.trim(), bc_montant: m, bc_date: $("#bc-d").value })); toast(Math.abs(res.ecart) <= 1 ? "BC enregistré : montant conforme." : "BC enregistré, mais écart de " + fmt(res.ecart) + " XAF.", Math.abs(res.ecart) > 1); } catch (x) { return; }
+      try { const res = await action(() => api("POST", "/api/dossiers/" + id + "/bc", { bc_numero: $("#bc-n").value.trim(), bc_montant: m, bc_date: $("#bc-d").value })); toast(Math.abs(res.ecart) > 1 ? "BC enregistré, mais écart de " + fmt(res.ecart) + " XAF : factures pas encore préparées."
+        : res.factures_creees ? "BC enregistré : montant conforme. " + res.factures_creees + " facture(s) préparée(s)." : "BC enregistré : montant conforme.", Math.abs(res.ecart) > 1); } catch (x) { return; }
       pageDossier(page, id);
     };
   }
@@ -1492,7 +1623,7 @@ function docFactureHS(p, h) {
 
 async function pageImprimer(page, type, arg) {
   const p = etat.params.parametres;
-  let docs, titre, retour, factures = null;
+  let docs, titre, retour, factures = null, proformaBrouillon = null;
   if (type === "fiche-hs" || type === "devis-hs" || type === "facture-hs") {
     const h = (await api("GET", "/api/heures-sup/" + (+arg))).heures_sup;
     const propre = (t) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[\/\\:*?"<>|]/g, "-").replace(/[^\x20-\x7e]/g, "");
@@ -1503,8 +1634,9 @@ async function pageImprimer(page, type, arg) {
   } else if (type === "proforma") {
     const r = await api("GET", "/api/dossiers/" + (+arg));
     const d = r.dossier;
-    titre = "Proforma_ANO_Services_" + d.nom_numero + "_" + dateFr(d.date_debut).replace(/\//g, "-");
+    titre = "Proforma_" + p.raison_sociale.trim().replace(/\s+/g, "_") + "_" + d.nom_numero + "_" + dateFr(d.date_debut).replace(/\//g, "-");
     retour = "#/dossier/" + d.id;
+    if (d.statut === "Brouillon" && peut("admin", "gestion")) proformaBrouillon = d.id;
     docs = docProforma(p, d, r.proforma, r.client);
   } else {
     const ids = String(arg || "").split(",").filter((x) => /^\d+$/.test(x));
@@ -1541,7 +1673,15 @@ async function pageImprimer(page, type, arg) {
   $$(".imp-sel").forEach((c) => { c.onchange = majChoix; });
   if ($("#imp-tout")) { $("#imp-tout").onclick = () => { $$(".imp-sel").forEach((c) => { c.checked = true; }); majChoix(); }; $("#imp-rien").onclick = () => { $$(".imp-sel").forEach((c) => { c.checked = false; }); majChoix(); }; }
   if ($("#imp-word")) $("#imp-word").onclick = () => exporterWord(cochees());
-  $("#imp").onclick = () => window.print();
+  $("#imp").onclick = () => {
+    window.print();
+    // lot 1 : la proforma imprimée ou enregistrée en PDF part au client -> « Envoyé »
+    if (proformaBrouillon) {
+      const did = proformaBrouillon;
+      proformaBrouillon = null;
+      api("POST", "/api/dossiers/" + did + "/proforma-envoyee", {}).then((r) => { if (r.change) toast("Dossier passé à « Envoyé ». Vous pouvez le remettre en « Brouillon » depuis le dossier si besoin."); }).catch(() => {});
+    }
+  };
   window.addEventListener("hashchange", () => { document.title = etat.params.parametres.raison_sociale + " – ERP"; }, { once: true });
 }
 
@@ -1678,6 +1818,12 @@ async function pageParametres(page) {
         <div class="ligne-form lf2">${champ("code_entreprise", "Code entreprise (n° de proforma)")}${champ("prefixe_facture", "Préfixe des factures")}</div>
         <div class="ligne-form lf3">${champ("code_mad", "Code facture mensuelle", "Vide (comme les factures d'ANO) : FA 159/11/2026. Avec un code : FA 159/11-MAD/2026. 11 = mois d'émission.")}${champ("mention_designation", "Nom sous la désignation des factures", "Ligne imprimée sous la 1re ligne de la désignation, avant le nom de l'agent (ex. ANO SERVICE). Vide : la raison sociale en majuscules.")}${champ("code_visite", "Code facture visite médicale", "FA 159/Visite médicale/2026 : même n° que la facture du même mois et du même agent, même si elles sont émises à des jours différents. Un n° émis ne change plus jamais.")}</div>
         <p class="aide" id="p-exemples"></p>
+        <details class="formats-num"><summary>Formats des n° (avancé)</summary>
+          <p class="aide">Laissez vide pour garder la règle actuelle (codes ci-dessus). Pour une autre entreprise, écrivez le format avec ces repères : {N} le n° qui augmente, {MM} le mois, {AAAA} l'année, {AA} l'année sur 2 chiffres, {CODE} le code entreprise, {NOM} le nom du dossier, {PREFIXE} le préfixe des factures. Les n° déjà émis ne changent jamais.</p>
+          ${[["format_proforma", "Proforma", "{N}-{MM}-{CODE}-{NOM}/{AAAA}"], ["format_facture", "Facture du mois", "{PREFIXE} {N}/{MM}/{AAAA}"],
+             ["format_visite", "Facture de visite médicale", "{PREFIXE} {N}/Visite médicale/{AAAA}"], ["format_proforma_h", "Proforma H (heures sup)", "{N}-{MM}-{CODE}-MAD/{AAAA}"],
+             ["format_facture_h", "Facture H (heures sup)", "{PREFIXE} H {N}/{MM}/{AAAA}"]].map(([cle, lib, auto]) => html`<div class="champ"><label for="p-${cle}">${lib}</label><input id="p-${cle}" data-p="${cle}" maxlength="60" value="${p[cle] || ""}" placeholder="Automatique : ${auto}" ${dis}></div>`)}
+        </details>
         <div class="ligne-form lf2">${champ("bc_chiffres", "Chiffres d'un n° de BC client", "0 = pas de contrôle.")}<div></div></div>
         <div class="ligne-form lf2">${champ("alerte_fin_jours", "Alerte fin de contrat (jours avant)")}${champ("alerte_visite_jours", "Alerte visite médicale (jours avant)")}</div></div>
       <div class="carte"><h2>Listes</h2>

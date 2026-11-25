@@ -391,3 +391,34 @@ def numero_proforma_h(n, date_devis, code="ANO", suite="MAD"):
 def numero_facture_h(n, date_emission, prefixe="FA", code="H"):
     """FA H 110/11/2026 (11 = mois d'émission, comme les autres factures)."""
     return ("%s %s %d/%02d/%d" % (prefixe, code or "H", n, date_emission.month, date_emission.year)).strip()
+
+
+# ---------------------------------------------------------------------------
+# Numérotation par formats (brique « Numérotation », lot 1 du 25/11/2026)
+# Un format vide = règle automatique d'ANO ci-dessus (résultat identique).
+# ---------------------------------------------------------------------------
+JETONS_NUMERO = ("N", "MM", "AAAA", "AA", "CODE", "NOM", "PREFIXE")
+
+
+def verifier_format_numero(fmt):
+    """Renvoie un message d'erreur, ou None si le format est utilisable."""
+    if not fmt:
+        return None
+    jetons = re.findall(r"\{([^{}]*)\}", fmt)
+    inconnus = [j for j in jetons if j not in JETONS_NUMERO]
+    if inconnus:
+        return "Repère inconnu : {%s}. Repères possibles : %s." % (inconnus[0], ", ".join("{%s}" % j for j in JETONS_NUMERO))
+    if "N" not in jetons:
+        return "Le format doit contenir {N} (le n° qui augmente de 1 à chaque document)."
+    if re.sub(r"\{[^{}]*\}", "", fmt).count("{") or re.sub(r"\{[^{}]*\}", "", fmt).count("}"):
+        return "Accolade { ou } mal fermée."
+    return None
+
+
+def formater_numero(fmt, n, date_doc, code="", nom="", prefixe=""):
+    """« {PREFIXE} {N}/{MM}/{AAAA} » -> « FA 159/11/2026 »."""
+    valeurs = {"N": str(n), "MM": "%02d" % date_doc.month, "AAAA": str(date_doc.year),
+               "AA": "%02d" % (date_doc.year % 100), "CODE": nom_pour_numero(code),
+               "NOM": nom_pour_numero(nom), "PREFIXE": prefixe or ""}
+    res = re.sub(r"\{(%s)\}" % "|".join(JETONS_NUMERO), lambda m: valeurs[m.group(1)], fmt)
+    return " ".join(res.split())

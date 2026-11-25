@@ -245,6 +245,9 @@ PARAMETRES_INITIAUX = {
     "hs_seuil_semaine": 8,             # 8 premières h de chaque semaine (hors dimanche et férié) à la 1re majoration
     # dimanches et jours fériés à la 3e majoration ; MM-JJ = chaque année, AAAA-MM-JJ = une fois (fêtes mobiles)
     "hs_jours_feries": FERIES_GABON,
+    # numérotation par formats ({N}, {MM}, {AAAA}, {AA}, {CODE}, {NOM}, {PREFIXE}) ; vide = règle automatique ci-dessus
+    "format_proforma": "", "format_facture": "", "format_visite": "",
+    "format_proforma_h": "", "format_facture_h": "",
     "tva_visite": False,               # visite médicale sans TVA (règle ANO)
     "bc_chiffres": 6,                  # longueur habituelle d'un n° de BC (0 = pas de contrôle)
     "lieux": ["Moanda", "Libreville", "Port-Gentil"],
@@ -311,6 +314,7 @@ def initialiser(chemin, vierge=False, nom="", code=""):
             con.execute("INSERT OR IGNORE INTO parametres(cle, valeur) VALUES (?, ?)", (k, json.dumps(v)))
     migrer_interimaires(con)
     migrer_factures(con)
+    migrer_lot1(con)
     con.close()
     try:
         os.chmod(chemin, 0o600)
@@ -429,4 +433,18 @@ def migrer_factures(con):
             con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('mention_designation', ?)",
                         (json.dumps("ANO SERVICE"),))
         con.execute("INSERT INTO parametres(cle, valeur) VALUES ('maj_mention_20261125', 'true')")
+    con.execute("COMMIT")
+
+
+def migrer_lot1(con):
+    """Lot 1 « moins d'oublis » (25/11/2026) : date d'envoi de la proforma,
+    visites médicales réellement faites (par agent)."""
+    con.execute("BEGIN")
+    cols_d = [r[1] for r in con.execute("PRAGMA table_info(dossiers)")]
+    if "envoye_le" not in cols_d:
+        con.execute("ALTER TABLE dossiers ADD COLUMN envoye_le TEXT")
+    cols_a = [r[1] for r in con.execute("PRAGMA table_info(agents)")]
+    if "visites_faites" not in cols_a:
+        # [{"prevue": "AAAA-MM-JJ", "faite": "AAAA-MM-JJ"}, ...]
+        con.execute("ALTER TABLE agents ADD COLUMN visites_faites TEXT NOT NULL DEFAULT '[]'")
     con.execute("COMMIT")

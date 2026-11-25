@@ -61,6 +61,7 @@ jobs:
         working-directory: tests/e2e
         run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
       - run: node tests/e2e/parcours_complet.js
+      - run: node tests/e2e/lot1_moins_oublis.js
 
   # Branche dev : une fois tous les tests verts, le site de test (dev.…) est mis à jour.
   # Même clé limitée que la production, autre commande (« deployer-dev ») : la production

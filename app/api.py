@@ -207,6 +207,10 @@ def _derniere_visite_connue(con, nom, sauf_dossier=None):
         vis = M.dates_visites(dt.date.fromisoformat(r["date_debut"]), dt.date.fromisoformat(r["date_fin"]),
                               dern, r["visite_mode"], val)
         cand = vis[-1] if vis else dern
+        # visites réellement faites (lot 1) : la plus récente compte si elle est plus tardive
+        faites = [dt.date.fromisoformat(v["faite"]) for v in json.loads(r["visites_faites"] or "[]") if v.get("faite")]
+        if faites and (cand is None or max(faites) > cand):
+            cand = max(faites)
         if cand and (meilleur is None or cand > meilleur):
             meilleur = cand
     # ancien intérimaire saisi à la main : dernière visite connue
@@ -510,6 +514,12 @@ def modifier_parametres(ctx, g, body):
     for k in CHAMPS_CODE_PARAM:
         if k in nouv and any(c in nouv[k] for c in "/-\\"):
             raise ErreurAPI(400, "« %s » ne doit contenir ni « / » ni « - » (ils séparent les parties du n°)." % k)
+    for k in FORMATS_NUMERO:
+        if k in p_in:
+            nouv[k] = texte(p_in, k, 60)
+            err = M.verifier_format_numero(nouv[k])
+            if err:
+                raise ErreurAPI(400, err)
     if "code_entreprise" in nouv and not M.nom_pour_numero(nouv["code_entreprise"]):
         raise ErreurAPI(400, "Code entreprise obligatoire (lettres ou chiffres, ex. ANO).")
     for k, (a, b) in CHAMPS_ENTIER_PARAM.items():
@@ -863,6 +873,39 @@ def _codes_facture(p):
             "code_visite": p.get("code_visite", "Visite médicale")}
 
 
+# Numérotation par formats : un format vide dans Paramètres = règle automatique (codes ci-dessus)
+FORMATS_NUMERO = ("format_proforma", "format_facture", "format_visite", "format_proforma_h", "format_facture_h")
+
+
+def _num_format(p, cle, n, date_doc, nom=""):
+    return M.formater_numero(p[cle], n, date_doc, p.get("code_entreprise") or "ANO", nom, p.get("prefixe_facture") or "")
+
+
+def num_proforma(p, seq, date_doc, nom):
+    if p.get("format_proforma"):
+        return _num_format(p, "format_proforma", seq, date_doc, nom)
+    return M.numero_proforma(seq, date_doc, nom, p.get("code_entreprise", "ANO"))
+
+
+def num_facture(p, n, type_facture, date_doc):
+    cle = "format_visite" if type_facture == M.TYPE_VISITE else "format_facture"
+    if p.get(cle):
+        return _num_format(p, cle, n, date_doc)
+    return M.numero_facture(n, type_facture, date_doc, **_codes_facture(p))
+
+
+def num_proforma_h(p, n, date_doc):
+    if p.get("format_proforma_h"):
+        return _num_format(p, "format_proforma_h", n, date_doc)
+    return M.numero_proforma_h(n, date_doc, p.get("code_entreprise") or "ANO", p.get("code_proforma_h") or "MAD")
+
+
+def num_facture_h(p, n, date_doc):
+    if p.get("format_facture_h"):
+        return _num_format(p, "format_facture_h", n, date_doc)
+    return M.numero_facture_h(n, date_doc, p.get("prefixe_facture") or "FA", p.get("code_facture_h") or "H")
+
+
 def prochain_num_da(con, annee):
     """N° de DA automatique quand la DA de COMILOG n'en a pas : DA-AAAA-001,
     DA-AAAA-002… (repart à 001 chaque année)."""
@@ -894,7 +937,7 @@ def apercu_dossier(ctx, g, body):
     p = parametres(con)
     seq = int(p.get("dernier_num_proforma") or 0) + 1
     pro = M.calcul_proforma(d, agents, b["charges"], b)
-    pro["numero_propose"] = M.numero_proforma(seq, d["date_proforma"], d["nom_numero"], p.get("code_entreprise", "ANO"))
+    pro["numero_propose"] = num_proforma(p, seq, d["date_proforma"], d["nom_numero"])
     pro["num_da_propose"] = d["num_da"] or prochain_num_da(con, d["date_proforma"].year)
     pro["dernieres_visites"] = [a["derniere_visite"].isoformat() if a["derniere_visite"] else None for a in agents]
     mats = []
@@ -912,7 +955,7 @@ def creer_dossier(ctx, g, body):
         p = parametres(con)
         mx = con.execute("SELECT COALESCE(MAX(num_seq), 0) FROM dossiers").fetchone()[0]
         seq = max(int(p.get("dernier_num_proforma") or 0), mx) + 1
-        numero = M.numero_proforma(seq, d["date_proforma"], d["nom_numero"], p.get("code_entreprise", "ANO"))
+        numero = num_proforma(p, seq, d["date_proforma"], d["nom_numero"])
         if con.execute("SELECT 1 FROM dossiers WHERE numero_proforma = ?", (numero,)).fetchone():
             raise ErreurAPI(409, "Le n° de proforma %s existe déjà." % numero)
         if d["num_da"]:
@@ -957,6 +1000,7 @@ def _vue_dossier_resume(con, r):
 
 
 def liste_dossiers(ctx, g, body):
+    statuts_automatiques(ctx)
     con = ctx["con"]
     q = ctx["query"]
     sql = "SELECT * FROM dossiers"
@@ -1000,6 +1044,7 @@ def _factures_de(con, did):
 
 
 def detail_dossier(ctx, g, body):
+    statuts_automatiques(ctx)
     con = ctx["con"]
     r = _dossier_row(con, int(g[0]))
     agents = _agents(con, r["id"])
@@ -1058,7 +1103,11 @@ def modifier_dossier(ctx, g, body):
                                      "ni remplacé (les accents et majuscules de son nom peuvent être corrigés)." % a["nom"])
         # le code entreprise d'origine est gardé (repris du n° existant)
         code = r["numero_proforma"].split("-")[2] if r["numero_proforma"].count("-") >= 3 else "ANO"
-        numero = M.numero_proforma(r["num_seq"], d["date_proforma"], d["nom_numero"], code)
+        p_fmt = parametres(con)
+        if p_fmt.get("format_proforma"):
+            numero = num_proforma(p_fmt, r["num_seq"], d["date_proforma"], d["nom_numero"])
+        else:
+            numero = M.numero_proforma(r["num_seq"], d["date_proforma"], d["nom_numero"], code)
         if con.execute("SELECT 1 FROM dossiers WHERE numero_proforma = ? AND id <> ?", (numero, did)).fetchone():
             raise ErreurAPI(409, "Le n° de proforma %s existe déjà." % numero)
         avait_factures = con.execute("SELECT COUNT(*) FROM factures f JOIN agents a ON a.id = f.agent_id "
@@ -1134,8 +1183,69 @@ def bc_dossier(ctx, g, body):
         con.execute("UPDATE dossiers SET bc_numero=?, bc_montant=?, bc_date=?, statut=?, maj_le=? WHERE id=?",
                     (num, montant, dbc.isoformat(), st, db.maintenant(), did))
         pro = _proforma(r, _agents(con, did))
-        journaliser(ctx, "bc_saisi", r["numero_proforma"], "BC %s, %d XAF (écart %d)" % (num, montant, montant - pro["cumul_ht"]))
-    return {"ok": True, "ecart": montant - pro["cumul_ht"]}
+        ecart = montant - pro["cumul_ht"]
+        journaliser(ctx, "bc_saisi", r["numero_proforma"], "BC %s, %d XAF (écart %d)" % (num, montant, ecart))
+        # lot 1 : BC conforme (écart d'arrondi au plus) -> factures prévues créées tout de suite
+        creees = 0
+        deja = con.execute("SELECT COUNT(*) FROM factures f JOIN agents a ON a.id = f.agent_id WHERE a.dossier_id = ?",
+                           (did,)).fetchone()[0]
+        if abs(ecart) <= 1 and not deja:
+            creees = _generer(con, did)
+            con.execute("UPDATE dossiers SET statut = 'En cours', maj_le = ? WHERE id = ?", (db.maintenant(), did))
+            journaliser(ctx, "factures_generees", r["numero_proforma"], "%d prévue(s), dès la saisie du BC" % creees)
+    return {"ok": True, "ecart": ecart, "factures_creees": creees}
+
+
+def proforma_envoyee(ctx, g, body):
+    """Lot 1 : la proforma vient d'être imprimée ou enregistrée en PDF -> « Envoyé »
+    (seulement depuis « Brouillon » ; ne recule jamais un statut)."""
+    con = ctx["con"]
+    did = int(g[0])
+    with Transaction(con):
+        r = _dossier_row(con, did)
+        if r["statut"] != "Brouillon":
+            return {"statut": r["statut"], "change": False}
+        con.execute("UPDATE dossiers SET statut = 'Envoyé', envoye_le = ?, maj_le = ? WHERE id = ?",
+                    (aujourdhui().isoformat(), db.maintenant(), did))
+        journaliser(ctx, "dossier_statut", r["numero_proforma"], "Brouillon → Envoyé (proforma imprimée)")
+    return {"statut": "Envoyé", "change": True}
+
+
+def statuts_automatiques(ctx):
+    """Lot 1 : un dossier « En cours » dont la date de fin est passée devient « Terminé »."""
+    con = ctx["con"]
+    auj = aujourdhui().isoformat()
+    rows = con.execute("SELECT id, numero_proforma FROM dossiers WHERE statut = 'En cours' AND date_fin < ?",
+                       (auj,)).fetchall()
+    if not rows:
+        return
+    with Transaction(con):
+        for r in rows:
+            con.execute("UPDATE dossiers SET statut = 'Terminé', maj_le = ? WHERE id = ? AND statut = 'En cours'",
+                        (db.maintenant(), r["id"]))
+            journaliser(ctx, "dossier_statut", r["numero_proforma"], "En cours → Terminé (date de fin passée)")
+
+
+def visite_faite(ctx, g, body):
+    """Lot 1 : « visite faite le … » pour une visite prévue. La date sert de
+    dernière visite connue pour le contrat suivant et retire l'alerte."""
+    con = ctx["con"]
+    aid = int(g[0])
+    prevue = date_(body, "prevue")
+    faite = date_(body, "faite")
+    if faite > aujourdhui():
+        raise ErreurAPI(400, "La date de la visite ne peut pas être dans le futur.")
+    with Transaction(con):
+        a = con.execute("SELECT a.*, d.numero_proforma FROM agents a JOIN dossiers d ON d.id = a.dossier_id WHERE a.id = ?",
+                        (aid,)).fetchone()
+        if not a:
+            raise ErreurAPI(404, "Agent introuvable.")
+        liste = [v for v in json.loads(a["visites_faites"] or "[]") if v.get("prevue") != prevue.isoformat()]
+        liste.append({"prevue": prevue.isoformat(), "faite": faite.isoformat()})
+        liste.sort(key=lambda v: v["prevue"])
+        con.execute("UPDATE agents SET visites_faites = ? WHERE id = ?", (json.dumps(liste), aid))
+        journaliser(ctx, "visite_faite", a["numero_proforma"], "%s : prévue le %s, faite le %s" % (a["nom"], prevue, faite))
+    return {"ok": True}
 
 
 def _generer(con, did):
@@ -1320,7 +1430,7 @@ def emettre(ctx, g, body):
                 n += 1
                 num_seq = n
                 paire[cle] = (n, r["type"])
-            numero = M.numero_facture(num_seq, r["type"], dfac, **_codes_facture(p))
+            numero = num_facture(p, num_seq, r["type"], dfac)
             if con.execute("SELECT 1 FROM factures WHERE numero = ?", (numero,)).fetchone():
                 raise ErreurAPI(409, "Le n° %s existe déjà : vérifiez le dernier n° de facture." % numero)
             ech = M.echeance(dfac, p.get("delai_paiement_jours", 30))
@@ -1475,7 +1585,15 @@ def remarque_facture(ctx, g, body):
 # ---------------------------------------------------------------------------
 # Tableau de bord
 # ---------------------------------------------------------------------------
+A_RELANCER_IMPUTATION = ("Envoyé", "Validé", "BC reçu", "En cours")
+
+
+def _lien_dossier(r):
+    return {"id": r["id"], "numero": r["numero_proforma"], "depuis": r["envoye_le"] or r["date_proforma"]}
+
+
 def tableau_de_bord(ctx, g, body):
+    statuts_automatiques(ctx)
     con, q = ctx["con"], ctx["query"]
     auj = aujourdhui()
     m = mois_(q["mois"]) if q.get("mois") else M.debut_mois(auj)
@@ -1526,10 +1644,14 @@ def tableau_de_bord(ctx, g, body):
         _, ags_c = _pour_calcul(r, ags)
         for a, ac in zip(ags, ags_c):
             vis = M.dates_visites(d1, d2, ac["derniere_visite"], r["visite_mode"], b["validite_visite_mois"])
-            suivantes = [v for v in vis if v >= auj]
+            faites = {v.get("prevue") for v in json.loads(a["visites_faites"] or "[]")}
+            # une visite prévue et pas encore confirmée reste à faire (même si sa date est passée de peu)
+            suivantes = [v for v in vis if v.isoformat() not in faites
+                         and v >= auj - dt.timedelta(days=int(p["alerte_visite_jours"]))]
             if suivantes and suivantes[0] <= auj + dt.timedelta(days=int(p["alerte_visite_jours"])):
-                alertes_visite.append({"dossier_id": r["id"], "agent": a["nom"], "date": suivantes[0].isoformat(),
-                                       "fin": r["date_fin"]})
+                alertes_visite.append({"dossier_id": r["id"], "agent_id": a["id"], "agent": a["nom"],
+                                       "date": suivantes[0].isoformat(), "fin": r["date_fin"],
+                                       "passee": suivantes[0] < auj})
     alertes_fin.sort(key=lambda x: x["fin"])
     fact = _vue_factures(con.execute(SQL_FACTURES + ORDRE_FACTURES).fetchall(), con)
     valides = [f for f in fact if f["numero"] and not f["remplacee_par_id"]]
@@ -1584,6 +1706,15 @@ def tableau_de_bord(ctx, g, body):
             "en_retard": sum(1 for f in valides if f["statut"] == "En retard"),
             "brouillons": sum(1 for r in dossiers if r["statut"] == "Brouillon"),
             "sans_bc": sum(1 for r in dossiers if r["statut"] in ("Envoyé", "Validé") and not r["bc_numero"]),
+            "imputations": sum(1 for r in dossiers if r["statut"] in A_RELANCER_IMPUTATION and not r["imputation"]),
+            "visites": len(alertes_visite),
+        },
+        # le détail, pour aller droit au dossier concerné depuis « À faire »
+        "a_faire_dossiers": {
+            "sans_bc": [_lien_dossier(r) for r in dossiers if r["statut"] in ("Envoyé", "Validé") and not r["bc_numero"]][:8],
+            "brouillons": [_lien_dossier(r) for r in dossiers if r["statut"] == "Brouillon"][:8],
+            "imputations": [_lien_dossier(r) for r in dossiers
+                            if r["statut"] in A_RELANCER_IMPUTATION and not r["imputation"]][:8],
         },
     }
 
@@ -2058,7 +2189,7 @@ def devis_hs(ctx, g, body):
             n = r["devis_num_seq"]
         else:
             n = _dernier_num(con, "dernier_num_proforma_h", "devis_num_seq", "Proforma H") + 1
-        numero = M.numero_proforma_h(n, ddev, code, p.get("code_proforma_h") or "MAD")
+        numero = num_proforma_h(p, n, ddev)
         if con.execute("SELECT 1 FROM heures_sup WHERE devis_numero = ? AND id <> ?", (numero, hid)).fetchone():
             raise ErreurAPI(409, "Le n° %s existe déjà : vérifiez le dernier n° de Proforma H." % numero)
         con.execute("UPDATE heures_sup SET devis_num_seq=?, devis_numero=?, devis_date=?, maj_le=? WHERE id=?",
@@ -2088,7 +2219,7 @@ def facture_hs(ctx, g, body):
             raise ErreurAPI(400, "Montant à 0 : vérifiez le classement des heures.")
         p = parametres(con)
         n = _dernier_num(con, "dernier_num_facture_h", "facture_num_seq", "facture FA H") + 1
-        numero = M.numero_facture_h(n, dfac, p.get("prefixe_facture") or "FA", p.get("code_facture_h") or "H")
+        numero = num_facture_h(p, n, dfac)
         if con.execute("SELECT 1 FROM heures_sup WHERE facture_numero = ?", (numero,)).fetchone():
             raise ErreurAPI(409, "Le n° %s existe déjà : vérifiez le dernier n° de facture FA H." % numero)
         tva = M.tva(ht, int(p.get("tva_pdm", 1800)))

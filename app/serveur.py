@@ -49,7 +49,7 @@ STATIQUES = {
 }
 
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-       "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+       "frame-src blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 
 A, G, L = "admin", "gestion", "lecture"
 TOUS = (A, G, L)
@@ -79,6 +79,8 @@ ROUTES = [
     ("PUT", r"/api/dossiers/(\d+)", api.modifier_dossier, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/statut", api.statut_dossier, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/bc", api.bc_dossier, EQUIPE),
+    ("POST", r"/api/dossiers/(\d+)/proforma-envoyee", api.proforma_envoyee, EQUIPE),
+    ("POST", r"/api/agents/(\d+)/visite-faite", api.visite_faite, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/generer-factures", api.generer_factures, EQUIPE),
     ("GET", r"/api/dossiers/(\d+)/documents", api.documents_dossier, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/pieces", api.ajouter_piece, EQUIPE),

@@ -102,6 +102,16 @@ class TestsMetier(unittest.TestCase):
         self.assertEqual(tot, {"h1": 8, "h2": 2, "h3": 7})
         self.assertEqual(M.numero_proforma_h(124, d(2026, 10, 21)), "124-10-ANO-MAD/2026")
         self.assertEqual(M.numero_facture_h(110, d(2026, 11, 7)), "FA H 110/11/2026")
+        # lot 1 : formats écrits avec des repères, mêmes n° qu'avant pour ANO
+        self.assertEqual(M.formater_numero("{N}-{MM}-{CODE}-{NOM}/{AAAA}", 348, d(2026, 10, 30), "ano", "Dupont Mbïna"),
+                         M.numero_proforma(348, d(2026, 10, 30), "Dupont Mbïna"))
+        self.assertEqual(M.formater_numero("{PREFIXE} {N}/{MM}/{AAAA}", 159, d(2026, 11, 19), prefixe="FA"), "FA 159/11/2026")
+        self.assertEqual(M.formater_numero("{PREFIXE} H {N}/{MM}/{AAAA}", 110, d(2026, 11, 7), prefixe="FA"),
+                         M.numero_facture_h(110, d(2026, 11, 7)))
+        self.assertEqual(M.formater_numero("{PREFIXE} {N}/{AA}", 7, d(2027, 2, 1)), "7/27")   # préfixe vide : pas d'espace en trop
+        self.assertIsNone(M.verifier_format_numero("{PREFIXE} {N}/Visite médicale/{AAAA}"))
+        self.assertIn("{N}", M.verifier_format_numero("FA {MM}/{AAAA}"))
+        self.assertIn("inconnu", M.verifier_format_numero("{N}/{ANNEE}"))
 
 
 if __name__ == "__main__":
