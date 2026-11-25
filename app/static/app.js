@@ -1072,9 +1072,19 @@ async function pageFactures(page) {
         <div><label for="fa-m">Mois facturé</label><input type="month" id="fa-m" value="${filtres.factMois}"></div>
         <div><label for="fa-s">Statut</label><select id="fa-s"><option value="">Tous</option>${STATUTS_FACT.map((s) => html`<option ${s === filtres.factStatut ? "selected" : ""}>${s}</option>`)}</select></div>
         <div data-style="align-self:end;display:flex;gap:.4rem;flex-wrap:wrap"><button class="secondaire" id="fa-tous">Tous les mois</button><button class="secondaire" id="fa-csv" title="Tableau pour Excel ou Numbers, avec les filtres choisis">Exporter (Excel)</button></div>
-        <div data-style="align-self:end" class="doux petit">${valides.length} facture(s) · ${fmt(valides.reduce((s, f) => s + f.ttc, 0))} XAF TTC${aEmettre ? html` · <b>${aEmettre} à émettre</b>` : ""}</div>
+        <div data-style="align-self:end" class="doux petit">${valides.length} facture(s) · ${fmt(valides.reduce((s, f) => s + f.ttc, 0))} XAF TTC${r.factures_hs.length ? html`<br>+ ${r.factures_hs.length} FA H · ${fmt(r.factures_hs.reduce((s, f) => s + f.ttc, 0))} XAF TTC` : ""}${aEmettre ? html` · <b>${aEmettre} à émettre</b>` : ""}</div>
       </div>
-      ${tableFactures(r.factures, true)}</div>`);
+      ${tableFactures(r.factures, true)}</div>
+    ${r.factures_hs.length ? html`<div class="carte" id="fa-hs"><h2>Heures supplémentaires (FA H)</h2>
+      <p class="aide">Envoi et paiement se notent sur la page du relevé d'heures (bouton Ouvrir).</p>
+      <div class="tableau-wrap"><table><thead><tr><th>Mois</th><th>Agent · proforma</th><th class="num">HT</th><th class="num">TTC</th><th>N° facture</th><th>Date · échéance</th><th>Statut</th><th></th></tr></thead><tbody>
+      ${r.factures_hs.map((f) => html`<tr data-hs="${f.id}"><td>${moisFr(f.mois)}</td>
+        <td>${f.agent}${f.matricule ? html` <span class="matricule">${f.matricule}</span>` : ""}<div class="petit"><a href="#/dossier/${f.dossier_id}">${f.numero_proforma}</a>${f.bc_numero ? " · BC " + f.bc_numero : ""}</div></td>
+        <td class="num">${fmt(f.montant_ht)}</td><td class="num">${fmt(f.ttc)}</td><td class="petit gras">${f.numero}</td>
+        <td class="petit">${dateFr(f.date_facture)}${f.echeance ? html`<div class="doux">éch. ${dateFr(f.echeance)}</div>` : ""}</td>
+        <td>${badge(f.statut)}${f.paye_le ? html`<div class="doux petit">le ${dateFr(f.paye_le)}${f.ref_paiement ? " · " + f.ref_paiement : ""}</div>` : f.envoyee_le ? html`<div class="doux petit">envoyée le ${dateFr(f.envoyee_le)}</div>` : ""}${f.retard_jours ? html`<div class="petit" data-style="color:#b42318">${f.retard_jours} j de retard</div>` : ""}</td>
+        <td class="actions-ligne">${peut("admin", "gestion") ? html`<a class="bouton secondaire petit" href="#/imprimer/facture-hs/${f.id}">PDF</a> <a class="bouton secondaire petit" href="#/hs/${f.id}">Ouvrir</a>` : ""}</td></tr>`)}
+      </tbody></table></div></div>` : ""}`);
   brancherTableFactures(page, () => pageFactures(page));
   $("#fa-m").onchange = (e) => { filtres.factMois = e.target.value; pageFactures(page); };
   $("#fa-s").onchange = (e) => { filtres.factStatut = e.target.value; pageFactures(page); };
