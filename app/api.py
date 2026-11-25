@@ -479,13 +479,16 @@ CHAMPS_TEXTE_PARAM = {
     "raison_sociale": 80, "adresse": 120, "ville": 80, "telephone": 80, "email": 120, "rccm": 80,
     "nif": 40, "cnss": 40, "banque": 80, "compte": 60, "devise": 6, "modalite_reglement": 40, "heures": 120,
     "code_entreprise": 12, "prefixe_facture": 10, "code_mad": 20, "code_visite": 30, "mention_designation": 60,
+    "code_proforma_h": 12, "code_facture_h": 6,
 }
 # morceaux de n° : pas de « / » ni de « - » (ils séparent les parties du n°)
-CHAMPS_CODE_PARAM = ("code_entreprise", "prefixe_facture", "code_mad", "code_visite")
+CHAMPS_CODE_PARAM = ("code_entreprise", "prefixe_facture", "code_mad", "code_visite", "code_proforma_h", "code_facture_h")
 CHAMPS_ENTIER_PARAM = {
     "tva_pdm": (0, 5000), "validite_devis_jours": (1, 365), "delai_paiement_jours": (0, 365),
     "visite_ht": (0, 10_000_000), "validite_visite_mois": (1, 60), "dernier_num_proforma": (0, 10_000_000),
     "alerte_fin_jours": (1, 365), "alerte_visite_jours": (1, 365), "bc_chiffres": (0, 20),
+    "hs_diviseur_centiemes": (100, 100000), "hs_taux1_pdm": (0, 50000), "hs_taux2_pdm": (0, 50000),
+    "hs_taux3_pdm": (0, 50000), "hs_seuil_semaine": (0, 80), "hs_nuit_debut": (0, 23), "hs_nuit_fin": (0, 23),
 }
 
 
@@ -514,8 +517,9 @@ def modifier_parametres(ctx, g, body):
             nouv[k] = entier(p_in, k, a, b)
     if "tva_visite" in p_in:
         nouv["tva_visite"] = booleen(p_in, "tva_visite")
-    if "dernier_num_facture" in p_in:
-        nouv["dernier_num_facture"] = entier(p_in, "dernier_num_facture", 0, 10_000_000, requis=False)
+    for k in ("dernier_num_facture", "dernier_num_proforma_h", "dernier_num_facture_h"):
+        if k in p_in:
+            nouv[k] = entier(p_in, k, 0, 10_000_000, requis=False)
     for k in ("lieux", "services"):
         if k in p_in:
             v = p_in[k]
@@ -987,7 +991,9 @@ def detail_dossier(ctx, g, body):
     d = dict(r)
     d["bareme"] = json.loads(d.pop("bareme_json"))
     factures = _factures_de(con, r["id"])
-    return {"dossier": d, "agents": agents, "client": cl, "proforma": pro, "factures": factures,
+    hs = [_hs_vue(con, x, False) for x in con.execute("SELECT * FROM heures_sup WHERE dossier_id = ? ORDER BY id DESC",
+                                                      (r["id"],)).fetchall()]
+    return {"dossier": d, "agents": agents, "client": cl, "proforma": pro, "factures": factures, "heures_sup": hs,
             "ecart_bc": (r["bc_montant"] - pro["cumul_ht"]) if r["bc_montant"] is not None else None,
             "verrouille": any(f["numero"] for f in factures)}
 
@@ -1030,6 +1036,9 @@ def modifier_dossier(ctx, g, body):
                                      "car un n° de facture reste lié à son agent. Gardez-le dans la liste (les accents et "
                                      "majuscules de son nom peuvent être corrigés)." % (a["nom"], ", ".join(nums[:3])
                                                                                       + (" …" if len(nums) > 3 else "")))
+            if con.execute("SELECT 1 FROM heures_sup WHERE agent_id = ?", (a["id"],)).fetchone():
+                raise ErreurAPI(409, "L'agent « %s » a des heures supplémentaires enregistrées : il ne peut être ni retiré "
+                                     "ni remplacé (les accents et majuscules de son nom peuvent être corrigés)." % a["nom"])
         # le code entreprise d'origine est gardé (repris du n° existant)
         code = r["numero_proforma"].split("-")[2] if r["numero_proforma"].count("-") >= 3 else "ANO"
         numero = M.numero_proforma(r["num_seq"], d["date_proforma"], d["nom_numero"], code)
@@ -1670,14 +1679,24 @@ def documents_dossier(ctx, g, body):
 
 def ajouter_piece(ctx, g, body):
     """Pièce reçue du client (DA, BC, PV…) : PDF, PNG ou JPEG, 8 Mo au plus."""
-    import base64
-    import binascii
     con = ctx["con"]
     did = int(g[0])
     _dossier_row(con, did)
     cat = body.get("categorie")
     if cat not in DOC.CATEGORIES_PIECES:
         raise ErreurAPI(400, "Type de pièce inconnu (DA, BC, PV ou Autre).")
+    nom, contenu, fmt = _fichier_recu(body)
+    with Transaction(con):
+        doc_id = DOC.enregistrer(con, ctx["chemin_db"], did, None, cat, nom, contenu, fmt[0], fmt[1],
+                                 ctx["user"]["id"])
+        journaliser(ctx, "piece_ajoutee", "dossier %d" % did, "%s : %s (%d Ko)" % (cat, nom, len(contenu) // 1024))
+    return {"id": doc_id}
+
+
+def _fichier_recu(body):
+    """Fichier envoyé en base64 : PDF, PNG ou JPEG, 8 Mo au plus -> (nom, contenu, (type, ext))."""
+    import base64
+    import binascii
     nom = texte(body, "nom", 150, True)
     nom = re.sub(r"[\\/\x00-\x1f]", "_", nom).strip() or "piece"
     b64 = body.get("contenu")
@@ -1694,11 +1713,7 @@ def ajouter_piece(ctx, g, body):
     fmt = DOC.format_fichier(contenu)
     if not fmt:
         raise ErreurAPI(400, "Format refusé : PDF, PNG ou JPEG seulement.")
-    with Transaction(con):
-        doc_id = DOC.enregistrer(con, ctx["chemin_db"], did, None, cat, nom, contenu, fmt[0], fmt[1],
-                                 ctx["user"]["id"])
-        journaliser(ctx, "piece_ajoutee", "dossier %d" % did, "%s : %s (%d Ko)" % (cat, nom, len(contenu) // 1024))
-    return {"id": doc_id}
+    return nom, contenu, fmt
 
 
 def telecharger_document(ctx, g, body):
@@ -1817,3 +1832,287 @@ def factures_csv(ctx, g, body):
     nom = "Factures %s - %s.csv" % (parametres(ctx["con"]).get("raison_sociale", ""),
                                     M.libelle_mois(mois_(q["mois"])) if q.get("mois") else "tous les mois")
     return Fichier(contenu, "text/csv; charset=utf-8", M.sans_accents(nom))
+
+
+# ---------------------------------------------------------------------------
+# Heures supplémentaires (circuit de Lola) : relevé COMILOG -> fiche d'attachement
+# -> classement 28/56/75 % -> Proforma H -> facture FA H
+# ---------------------------------------------------------------------------
+from fractions import Fraction  # noqa: E402
+
+HS_MAX_LIGNES = 200
+
+
+def _hs_row(con, hid):
+    r = con.execute("SELECT * FROM heures_sup WHERE id = ?", (hid,)).fetchone()
+    if not r:
+        raise ErreurAPI(404, "Relevé d'heures supplémentaires introuvable.")
+    return r
+
+
+def _hs_params(p):
+    return {"taux": [int(p.get("hs_taux1_pdm", 2800)), int(p.get("hs_taux2_pdm", 5600)), int(p.get("hs_taux3_pdm", 7500))],
+            "diviseur": int(p.get("hs_diviseur_centiemes", 17333)),
+            "seuil": int(p.get("hs_seuil_semaine", 8)),
+            "nuit": (int(p.get("hs_nuit_debut", 21)), int(p.get("hs_nuit_fin", 5)))}
+
+
+def _hs_lignes(body):
+    lignes = body.get("lignes")
+    if not isinstance(lignes, list) or len(lignes) > HS_MAX_LIGNES:
+        raise ErreurAPI(400, "Lignes de la fiche invalides (%d au plus)." % HS_MAX_LIGNES)
+    res = []
+    for i, l in enumerate(lignes):
+        if not isinstance(l, dict):
+            raise ErreurAPI(400, "Ligne %d invalide." % (i + 1))
+        d = date_(l, "date")
+        deb, fin = (str(l.get("debut") or "").strip()[:5], str(l.get("fin") or "").strip()[:5])
+        for t in (deb, fin):
+            if t and M._minutes(t) is None:
+                raise ErreurAPI(400, "Ligne %d : heure « %s » invalide (ex. 20:00)." % (i + 1, t))
+        h = l.get("heures")
+        if h in (None, ""):
+            a, b = M._minutes(deb), M._minutes(fin)
+            if a is None or b is None or a == b:
+                raise ErreurAPI(400, "Ligne %d : indiquez les heures réalisées (ou le début et la fin)." % (i + 1))
+            hf = Fraction((b - a) % 1440, 60)
+        else:
+            try:
+                hf = M.hs_heures(h)
+            except (ValueError, ZeroDivisionError):
+                raise ErreurAPI(400, "Ligne %d : heures réalisées invalides." % (i + 1))
+        if hf <= 0 or hf > 24:
+            raise ErreurAPI(400, "Ligne %d : entre 0 et 24 heures." % (i + 1))
+        res.append({"date": d.isoformat(), "debut": deb, "fin": fin,
+                    "justification": texte(l, "justification", 120), "heures": float(hf)})
+    res.sort(key=lambda x: (x["date"], M._minutes(x["debut"]) or 0))
+    return res
+
+
+def _hs_proposition(lignes, hp):
+    return M.hs_classer([{"date": dt.date.fromisoformat(l["date"]), "debut": l["debut"], "fin": l["fin"],
+                          "heures": Fraction(l["heures"]).limit_denominator(100)} for l in lignes],
+                        hp["seuil"], hp["nuit"][0], hp["nuit"][1])
+
+
+def _hs_vue(con, r, avec_docs=True):
+    x = dict(r)
+    lignes = json.loads(x.pop("lignes_json"))
+    heures = json.loads(x.pop("heures_json")) or {}
+    p = parametres(con)
+    hp = _hs_params(p)
+    drow = _dossier_row(con, r["dossier_id"])
+    ag = con.execute("SELECT a.*, i.matricule FROM agents a LEFT JOIN interimaires i ON i.id = a.interimaire_id "
+                     "WHERE a.id = ?", (r["agent_id"],)).fetchone()
+    cout = r["cout_mensuel"] or M.cout_mensuel(ag["salaire_base"], _bareme(drow)["charges"])
+    prop = _hs_proposition(lignes, hp)
+    retenu = {k: Fraction(str(heures[k])) for k in M.HS_CATEGORIES} if heures else prop
+    calc = M.hs_lignes_montants(cout, [retenu[k] for k in M.HS_CATEGORIES], hp["taux"], hp["diviseur"])
+    total_h = sum((Fraction(l["heures"]).limit_denominator(100) for l in lignes), Fraction(0))
+    cl = con.execute("SELECT * FROM clients WHERE id = ?", (drow["client_id"],)).fetchone()
+    x.update(lignes=lignes, proposition={k: float(v) for k, v in prop.items()},
+             heures={k: float(v) for k, v in retenu.items()}, total_heures=float(total_h),
+             ecart_heures=float(sum(retenu.values()) - total_h), calcul=calc, cout_mensuel=cout,
+             taux_pdm=hp["taux"], agent=ag["nom"], poste=ag["poste"], matricule=ag["matricule"],
+             numero_proforma=drow["numero_proforma"], imputation=drow["imputation"], lieu=drow["lieu"],
+             bc_dossier=drow["bc_numero"],
+             statut_dossier=drow["statut"], client=dict(cl),
+             periode_du=lignes[0]["date"] if lignes else None, periode_au=lignes[-1]["date"] if lignes else None,
+             statut=("Payée" if r["paye_le"] else "Envoyée" if r["envoyee_le"] else "Facturée" if r["facture_numero"]
+                     else "Devis" if r["devis_numero"] else "Saisie"))
+    if avec_docs:
+        x["releves"] = [_vue_document(d) for d in con.execute(
+            "SELECT * FROM documents WHERE hs_id = ? AND retire_le IS NULL ORDER BY id", (r["id"],))]
+    return x
+
+
+def _hs_champs(body, drow=None):
+    return {"direction": texte(body, "direction", 80), "service": texte(body, "service", 80) or (drow["service"] if drow else ""),
+            "section": texte(body, "section", 40) or (drow["imputation"] if drow else ""),
+            "matricule_client": texte(body, "matricule_client", 40), "categorie": texte(body, "categorie", 40),
+            "notes": texte(body, "notes", 500, multiligne=True)}
+
+
+def liste_hs(ctx, g, body):
+    con = ctx["con"]
+    did = int(g[0])
+    _dossier_row(con, did)
+    rows = con.execute("SELECT * FROM heures_sup WHERE dossier_id = ? ORDER BY id DESC", (did,)).fetchall()
+    return {"heures_sup": [_hs_vue(con, r, False) for r in rows]}
+
+
+def creer_hs(ctx, g, body):
+    con = ctx["con"]
+    did = int(g[0])
+    drow = _dossier_row(con, did)
+    if drow["statut"] == "Annulé":
+        raise ErreurAPI(409, "Ce dossier est annulé.")
+    aid = entier(body, "agent_id", 1)
+    if not con.execute("SELECT 1 FROM agents WHERE id = ? AND dossier_id = ?", (aid, did)).fetchone():
+        raise ErreurAPI(400, "Agent inconnu dans ce dossier.")
+    ch = _hs_champs(body, drow)
+    lignes = _hs_lignes(body) if body.get("lignes") is not None else []
+    with Transaction(con):
+        cur = con.execute(
+            "INSERT INTO heures_sup(dossier_id, agent_id, direction, service, section, matricule_client, categorie, notes, "
+            "lignes_json, cree_le, maj_le) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (did, aid, ch["direction"], ch["service"], ch["section"], ch["matricule_client"], ch["categorie"],
+             ch["notes"], json.dumps(lignes), db.maintenant(), db.maintenant()))
+        journaliser(ctx, "hs_cree", drow["numero_proforma"], "%d ligne(s)" % len(lignes))
+    return {"id": cur.lastrowid}
+
+
+def detail_hs(ctx, g, body):
+    con = ctx["con"]
+    return {"heures_sup": _hs_vue(con, _hs_row(con, int(g[0])))}
+
+
+def modifier_hs(ctx, g, body):
+    """Fiche d'attachement et classement. Modifiable tant que la facture FA H n'est pas émise
+    (le n° du devis H, lui, ne change jamais)."""
+    con = ctx["con"]
+    hid = int(g[0])
+    ch = _hs_champs(body)
+    lignes = _hs_lignes(body)
+    heures = body.get("heures")
+    if heures is not None:
+        if not isinstance(heures, dict):
+            raise ErreurAPI(400, "Classement invalide.")
+        h = {}
+        for k in M.HS_CATEGORIES:
+            try:
+                h[k] = M.hs_heures(heures.get(k) if heures.get(k) not in (None, "") else 0)
+            except (ValueError, ZeroDivisionError):
+                raise ErreurAPI(400, "Classement : nombre d'heures invalide.")
+            if h[k] > 2000:
+                raise ErreurAPI(400, "Classement : nombre d'heures trop grand.")
+        heures = {k: float(v) for k, v in h.items()}
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        if r["facture_numero"]:
+            raise ErreurAPI(409, "La facture %s est émise : les heures ne se modifient plus." % r["facture_numero"])
+        con.execute("UPDATE heures_sup SET direction=?, service=?, section=?, matricule_client=?, categorie=?, notes=?, "
+                    "lignes_json=?, heures_json=?, classement_manuel=?, maj_le=? WHERE id=?",
+                    (ch["direction"], ch["service"], ch["section"], ch["matricule_client"], ch["categorie"], ch["notes"],
+                     json.dumps(lignes), json.dumps(heures or {}), 1 if heures else 0, db.maintenant(), hid))
+        journaliser(ctx, "hs_modifie", r["devis_numero"] or "relevé %d" % hid,
+                    "%d ligne(s), classement %s" % (len(lignes), "manuel" if heures else "proposé"))
+    return detail_hs(ctx, g, body)
+
+
+def _dernier_num(con, cle, colonne, libelle):
+    v = parametres(con).get(cle)
+    if v is None:
+        raise ErreurAPI(409, "Renseignez d'abord le dernier n° de %s réellement utilisé (Paramètres)." % libelle,
+                        "NUM_" + cle.upper())
+    mx = con.execute("SELECT COALESCE(MAX(%s), 0) FROM heures_sup" % colonne).fetchone()[0]
+    return max(int(v), mx)
+
+
+def devis_hs(ctx, g, body):
+    """Attribue le n° de Proforma H (une seule fois) ; la date reste modifiable avant la facture."""
+    con = ctx["con"]
+    hid = int(g[0])
+    ddev = date_(body, "date", requis=False) or aujourdhui()
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        if not json.loads(r["lignes_json"]):
+            raise ErreurAPI(400, "Saisissez d'abord les heures de la fiche d'attachement.")
+        if r["facture_numero"]:
+            raise ErreurAPI(409, "La facture est émise : le devis ne change plus.")
+        p = parametres(con)
+        code = p.get("code_entreprise") or "ANO"
+        if r["devis_num_seq"]:
+            n = r["devis_num_seq"]
+        else:
+            n = _dernier_num(con, "dernier_num_proforma_h", "devis_num_seq", "Proforma H") + 1
+        numero = M.numero_proforma_h(n, ddev, code, p.get("code_proforma_h") or "MAD")
+        if con.execute("SELECT 1 FROM heures_sup WHERE devis_numero = ? AND id <> ?", (numero, hid)).fetchone():
+            raise ErreurAPI(409, "Le n° %s existe déjà : vérifiez le dernier n° de Proforma H." % numero)
+        con.execute("UPDATE heures_sup SET devis_num_seq=?, devis_numero=?, devis_date=?, maj_le=? WHERE id=?",
+                    (n, numero, ddev.isoformat(), db.maintenant(), hid))
+        if not r["devis_num_seq"]:
+            con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('dernier_num_proforma_h', ?)", (json.dumps(n),))
+        journaliser(ctx, "hs_devis", numero)
+    return detail_hs(ctx, g, body)
+
+
+def facture_hs(ctx, g, body):
+    """Émet la facture FA H : montant = total du devis H par défaut (modifiable), TVA comme les factures du mois."""
+    con = ctx["con"]
+    hid = int(g[0])
+    dfac = date_(body, "date_facture", requis=False) or aujourdhui()
+    bc = texte(body, "bc_numero", 20)
+    montant = entier(body, "montant_ht", 1, 10_000_000_000, requis=False)
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        if r["facture_numero"]:
+            raise ErreurAPI(409, "Facture déjà émise : %s." % r["facture_numero"])
+        if not r["devis_numero"]:
+            raise ErreurAPI(409, "Faites d'abord le devis H.")
+        vue = _hs_vue(con, r, False)
+        ht = montant if montant is not None else vue["calcul"]["total"]
+        if ht <= 0:
+            raise ErreurAPI(400, "Montant à 0 : vérifiez le classement des heures.")
+        p = parametres(con)
+        n = _dernier_num(con, "dernier_num_facture_h", "facture_num_seq", "facture FA H") + 1
+        numero = M.numero_facture_h(n, dfac, p.get("prefixe_facture") or "FA", p.get("code_facture_h") or "H")
+        if con.execute("SELECT 1 FROM heures_sup WHERE facture_numero = ?", (numero,)).fetchone():
+            raise ErreurAPI(409, "Le n° %s existe déjà : vérifiez le dernier n° de facture FA H." % numero)
+        tva = M.tva(ht, int(p.get("tva_pdm", 1800)))
+        ech = M.echeance(dfac, p.get("delai_paiement_jours", 30))
+        con.execute("UPDATE heures_sup SET facture_num_seq=?, facture_numero=?, facture_date=?, echeance=?, bc_numero=?, "
+                    "montant_ht=?, tva=?, ttc=?, cout_mensuel=?, heures_json=?, maj_le=? WHERE id=?",
+                    (n, numero, dfac.isoformat(), ech.isoformat(), bc, ht, tva, ht + tva, vue["cout_mensuel"],
+                     json.dumps(vue["heures"]), db.maintenant(), hid))
+        con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('dernier_num_facture_h', ?)", (json.dumps(n),))
+        journaliser(ctx, "hs_facture", numero, "HT %d%s" % (ht, " (montant saisi)" if montant is not None else ""))
+    return detail_hs(ctx, g, body)
+
+
+def suivi_hs(ctx, g, body):
+    """Facture FA H envoyée et/ou payée (ou paiement annulé)."""
+    con = ctx["con"]
+    hid = int(g[0])
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        if not r["facture_numero"]:
+            raise ErreurAPI(409, "Facture pas encore émise.")
+        if "envoyee_le" in body:
+            d = date_(body, "envoyee_le", requis=False)
+            con.execute("UPDATE heures_sup SET envoyee_le=? WHERE id=?", (d.isoformat() if d else None, hid))
+        if "paye_le" in body:
+            d = date_(body, "paye_le", requis=False)
+            m = entier(body, "montant_paye", 1, 10_000_000_000, requis=False)
+            con.execute("UPDATE heures_sup SET paye_le=?, montant_paye=?, ref_paiement=? WHERE id=?",
+                        (d.isoformat() if d else None, (m if m is not None else r["ttc"]) if d else None,
+                         texte(body, "reference", 80) if d else "", hid))
+        journaliser(ctx, "hs_suivi", r["facture_numero"], json.dumps({k: body.get(k) for k in ("envoyee_le", "paye_le")}))
+    return detail_hs(ctx, g, body)
+
+
+def releve_hs(ctx, g, body):
+    """Relevé d'heures envoyé par le client (scan PDF ou photo), rangé avec le dossier."""
+    con = ctx["con"]
+    hid = int(g[0])
+    r = _hs_row(con, hid)
+    nom, contenu, fmt = _fichier_recu(body)
+    with Transaction(con):
+        doc_id = DOC.enregistrer(con, ctx["chemin_db"], r["dossier_id"], None, "Autre", "Relevé heures sup. - " + nom,
+                                 contenu, fmt[0], fmt[1], ctx["user"]["id"])
+        con.execute("UPDATE documents SET hs_id = ? WHERE id = ?", (hid, doc_id))
+        journaliser(ctx, "hs_releve", r["devis_numero"] or "relevé %d" % hid, "%s (%d Ko)" % (nom, len(contenu) // 1024))
+    return {"id": doc_id}
+
+
+def supprimer_hs(ctx, g, body):
+    con = ctx["con"]
+    hid = int(g[0])
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        if r["devis_numero"]:
+            raise ErreurAPI(409, "Le devis %s a un n° : ce relevé ne se supprime plus." % r["devis_numero"])
+        con.execute("UPDATE documents SET hs_id = NULL WHERE hs_id = ?", (hid,))
+        con.execute("DELETE FROM heures_sup WHERE id = ?", (hid,))
+        journaliser(ctx, "hs_supprime", "relevé %d" % hid)
+    return {"ok": True}

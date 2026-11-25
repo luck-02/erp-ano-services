@@ -281,7 +281,7 @@ document.addEventListener("keydown", (e) => {
 function rolesPage(nom, a1) {
   const p = PAGES.find((x) => x.h === "#/" + nom);
   if (p) return p.roles;
-  if (nom === "dossier" || nom === "modifier-da") return ["admin", "gestion"];
+  if (nom === "dossier" || nom === "modifier-da" || nom === "hs") return ["admin", "gestion"];
   if (nom === "imprimer") return a1 === "factures" ? ["admin", "gestion", "lecture"] : ["admin", "gestion"];
   return null;
 }
@@ -304,6 +304,7 @@ async function router() {
     if (nom === "tableau" || !nom) await pageTableau(page);
     else if (nom === "dossiers") await pageDossiers(page);
     else if (nom === "dossier") await pageDossier(page, +a1);
+    else if (nom === "hs") await pageHS(page, +a1);
     else if (nom === "nouvelle-da") await pageSaisieDA(page, null);
     else if (nom === "modifier-da") await pageSaisieDA(page, +a1);
     else if (nom === "factures") await pageFactures(page);
@@ -674,8 +675,10 @@ async function pageDossier(page, id) {
       ${nbEmises ? html`<a class="bouton secondaire" href="#/imprimer/factures/${r.factures.filter((f) => f.numero && f.statut !== "Remplacée").map((f) => f.id).join(",")}">Toutes les factures en PDF</a>` : ""}</div></div>
       ${nbFact ? tableFactures(r.factures, false) : html`<p class="doux">Aucune facture encore. À réception du BC, cliquez sur « Générer les factures » : une facture de visite médicale (si due) et une facture par mois, au prorata. Les mois déjà écoulés seront émis en rattrapage.</p>`}
     </div>
+    ${carteHeuresSup(r, id)}
     ${peut("admin", "gestion") ? html`<div class="carte" id="ds-docs"><h2>Documents</h2><p class="doux">Chargement…</p></div>` : ""}`);
   brancherTableFactures(page, () => pageDossier(page, id));
+  brancherHeuresSup(page, r, id);
   if (peut("admin", "gestion")) chargerDocuments(id);
 
   $("#ds-statut").onchange = async (e) => {
@@ -1027,10 +1030,281 @@ function docFacture(p, f) {
     <div class="fa-pied">RCCM ${p.rccm} – NIF ${p.nif} – N° CNSS ${p.cnss}<br>Compte bancaire ${p.banque} ${p.compte}</div></div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Heures supplémentaires (circuit de Lola) : 1 relevé du client -> 2 fiche d'attachement
+// -> 3 classement 28/56/75 % -> 4 Proforma H -> 5 facture FA H
+// ---------------------------------------------------------------------------
+const hFr = (h) => (h === null || h === undefined ? "" : Number(h).toLocaleString("fr-FR", { maximumFractionDigits: 2 }));
+const plageFr = (l) => (l.debut && l.fin ? l.debut.replace(":00", "h").replace(":", "h") + " à " + l.fin.replace(":00", "h").replace(":", "h") : "");
+const tauxFr = (pdm) => "+" + (pdm / 100).toLocaleString("fr-FR") + "%";
+const ETAPES_HS = ["Relevé", "Fiche", "Classement", "Devis H", "Facture H"];
+
+function carteHeuresSup(r, id) {
+  const hs = r.heures_sup || [];
+  const ouvert = r.dossier.statut !== "Annulé";
+  return html`<div class="carte"><div class="entete" data-style="margin-bottom:.5rem"><h2 data-style="margin:0">Heures supplémentaires</h2>
+    ${ouvert ? html`<div class="actions">${r.agents.length > 1 ? html`<select id="hs-agent" aria-label="Agent" data-style="width:auto">${r.agents.map((a) => html`<option value="${a.id}">${a.nom}</option>`)}</select>` : ""}
+      <button class="secondaire" id="hs-nouveau">+ Nouveau relevé d'heures</button></div>` : ""}</div>
+    ${hs.length ? html`<table><thead><tr><th>Agent</th><th>Période</th><th class="num">Heures</th><th>Devis H</th><th>Facture H</th><th class="num">HT</th><th>État</th></tr></thead><tbody>
+      ${hs.map((h) => html`<tr data-href="#/hs/${h.id}"><td>${h.agent}</td><td class="petit">${h.periode_du ? dateFr(h.periode_du) + " – " + dateFr(h.periode_au) : "—"}</td>
+        <td class="num">${hFr(h.total_heures)}</td><td>${h.devis_numero || "—"}</td><td>${h.facture_numero || "—"}</td>
+        <td class="num">${fmt(h.montant_ht !== null ? h.montant_ht : h.calcul.total)}</td><td>${badge(h.statut === "Saisie" ? "Brouillon" : h.statut === "Devis" ? "À émettre" : h.statut === "Facturée" ? "Émise" : h.statut)}<div class="doux petit">${h.statut}</div></td></tr>`)}
+    </tbody></table>` : html`<p class="doux">Aucun relevé. Quand le client envoie le relevé des heures supplémentaires d'un agent, créez un relevé : vous y joindrez le scan, saisirez la fiche d'attachement, puis ferez le devis H et la facture FA H.</p>`}</div>`;
+}
+
+function brancherHeuresSup(page, r, id) {
+  const b = $("#hs-nouveau");
+  if (!b) return;
+  b.onclick = async () => {
+    const agent_id = $("#hs-agent") ? +$("#hs-agent").value : r.agents[0].id;
+    try { const x = await api("POST", "/api/dossiers/" + id + "/heures-sup", { agent_id }); location.hash = "#/hs/" + x.id; } catch (e) { toast(e.message, true); }
+  };
+}
+
+function ligneHS(l, dis) {
+  return html`<tr><td><input type="date" data-l="date" aria-label="Date" value="${l.date || ""}" ${dis}></td>
+    <td><input type="time" data-l="debut" aria-label="Début" value="${l.debut || ""}" ${dis}></td>
+    <td><input type="time" data-l="fin" aria-label="Fin" value="${l.fin || ""}" ${dis}></td>
+    <td><input data-l="justification" aria-label="Justification" maxlength="120" value="${l.justification || ""}" ${dis}></td>
+    <td><input data-l="heures" aria-label="Heures réalisées" class="montant" inputmode="decimal" data-style="width:5rem" value="${l.heures === undefined || l.heures === null ? "" : hFr(l.heures)}" ${dis}></td>
+    <td>${dis ? "" : html`<button type="button" class="lien petit" data-l-suppr title="Retirer la ligne">✕</button>`}</td></tr>`;
+}
+
+async function pageHS(page, id) {
+  const h = (await api("GET", "/api/heures-sup/" + id)).heures_sup;
+  const p = etat.params.parametres;
+  const fige = !!h.facture_numero;
+  const dis = fige ? "disabled" : "";
+  const iEtape = h.facture_numero ? 4 : h.devis_numero ? 3 : h.lignes.length ? 2 : h.releves.length ? 1 : 0;
+  const cats = [["h1", h.taux_pdm[0]], ["h2", h.taux_pdm[1]], ["h3", h.taux_pdm[2]]];
+  rendre(page, html`
+    <div class="entete"><div><h1>Heures supplémentaires · ${h.agent}</h1><p><a href="#/dossier/${h.dossier_id}">${h.numero_proforma}</a> · ${h.client.nom} · ${h.poste}${h.periode_du ? " · du " + dateFr(h.periode_du) + " au " + dateFr(h.periode_au) : ""}</p></div>
+      <div class="actions">${!h.devis_numero ? html`<button class="secondaire" id="hs-suppr">Supprimer ce relevé</button>` : ""}</div></div>
+    <div class="etapes">${ETAPES_HS.map((s, i) => html`<div class="etape ${i < iEtape ? "fait" : i === iEtape ? "courant" : ""}">${i + 1}. ${s}</div>`)}</div>
+    ${fige ? html`<div class="bandeau info">Facture ${h.facture_numero} émise : la fiche et le classement ne se modifient plus.</div>` : ""}
+
+    <div class="carte"><h2>1. Relevé envoyé par le client</h2>
+      ${h.releves.length ? html`<table><tbody>${h.releves.map((d) => html`<tr><td>${d.nom}</td><td class="petit doux">${dateFr(d.ajoute_le.slice(0, 10))} · ${tailleFr(d.taille)}</td><td><button class="secondaire" data-doc-tel="${d.id}">Télécharger</button></td></tr>`)}</tbody></table>` : html`<p class="doux">Joignez le scan du relevé (PDF ou photo) : il est gardé avec le dossier.</p>`}
+      <form id="hs-f-rel" data-style="margin-top:.5rem"><div class="ligne-form lf2">
+        <div class="champ"><label for="hs-rel">Fichier (PDF, PNG ou JPEG, 8 Mo au plus)</label><input id="hs-rel" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" required></div>
+        <div class="champ"><span class="doux petit">&nbsp;</span><button type="submit" class="secondaire" id="hs-rel-ok">Joindre le relevé</button></div></div></form></div>
+
+    <form id="hs-f">
+    <div class="carte"><div class="entete" data-style="margin-bottom:.5rem"><h2 data-style="margin:0">2. Fiche d'attachement</h2>
+      ${h.lignes.length ? html`<div class="actions"><a class="bouton secondaire" href="#/imprimer/fiche-hs/${id}">Fiche d'attachement en PDF</a></div>` : ""}</div>
+      <div class="ligne-form lf3">
+        <div class="champ"><label for="hs-direction">Direction</label><input id="hs-direction" maxlength="80" value="${h.direction}" placeholder="ex. DRHST" ${dis}></div>
+        <div class="champ"><label for="hs-service">Service</label><input id="hs-service" maxlength="80" value="${h.service}" ${dis}></div>
+        <div class="champ"><label for="hs-section">Section</label><input id="hs-section" maxlength="40" value="${h.section}" ${dis}></div></div>
+      <div class="ligne-form lf3">
+        <div class="champ"><label for="hs-matricule">Matricule (chez le client)</label><input id="hs-matricule" maxlength="40" value="${h.matricule_client}" placeholder="ex. MAD" ${dis}></div>
+        <div class="champ"><label for="hs-categorie">Catégorie</label><input id="hs-categorie" maxlength="40" value="${h.categorie}" ${dis}></div><div></div></div>
+      <p class="aide">Une ligne par plage d'heures du relevé. Avec le début et la fin, les heures réalisées se calculent seules (et les heures de nuit sont reconnues pour le classement).</p>
+      <table><thead><tr><th>Date</th><th>Début</th><th>Fin</th><th>Justification</th><th class="num">Heures réalisées</th><th></th></tr></thead>
+        <tbody id="hs-lignes">${(h.lignes.length ? h.lignes : [{}]).map((l) => ligneHS(l, dis))}</tbody>
+        <tfoot><tr class="total"><td colspan="4">Total</td><td class="num" id="hs-total">${hFr(h.total_heures)} h</td><td></td></tr></tfoot></table>
+      ${fige ? "" : html`<button type="button" class="lien" id="hs-plus">+ Ajouter une ligne</button>`}</div>
+
+    <div class="carte"><h2>3. Classement des heures</h2>
+      <p class="aide">Proposition : les ${p.hs_seuil_semaine} premières heures de chaque semaine (jours ouvrables) à ${tauxFr(h.taux_pdm[0])}, le reste et le dimanche à ${tauxFr(h.taux_pdm[1])}, la nuit (${p.hs_nuit_debut}h – ${p.hs_nuit_fin}h) à ${tauxFr(h.taux_pdm[2])}. Corrigez à la main si besoin, comme dans le tableau Excel.</p>
+      <label class="case"><input type="checkbox" id="hs-manuel" ${h.classement_manuel ? "checked" : ""} ${dis}> Classement à la main</label>
+      <table><thead><tr><th>Désignation</th><th class="num">Proposé</th><th class="num">Retenu (heures)</th><th class="num">Taux horaire</th><th class="num">Total</th></tr></thead><tbody>
+        ${cats.map(([k, t], i) => html`<tr><td>Heures supp à ${(t / 100).toLocaleString("fr-FR")}% (${tauxFr(t)} heures normales)</td><td class="num doux">${hFr(h.proposition[k])}</td>
+          <td class="num"><input data-h="${k}" aria-label="Heures retenues à ${tauxFr(t)}" class="montant" inputmode="decimal" data-style="width:6rem" value="${hFr(h.heures[k])}" ${h.classement_manuel && !fige ? "" : "disabled"}></td>
+          <td class="num">${fmt(h.calcul.lignes[i].taux_horaire)}</td><td class="num gras">${fmt(h.calcul.lignes[i].total)}</td></tr>`)}
+        <tr class="total"><td>Montant total (coût mensuel ${fmt(h.cout_mensuel)} ÷ ${(p.hs_diviseur_centiemes / 100).toLocaleString("fr-FR")} h = ${fmt(h.calcul.taux_horaire)} / h)</td><td class="num">${hFr(h.total_heures)}</td><td class="num">${hFr(h.heures.h1 + h.heures.h2 + h.heures.h3)}</td><td></td><td class="num">${fmt(h.calcul.total)}</td></tr>
+      </tbody></table>
+      ${Math.abs(h.ecart_heures) > 0.001 ? html`<div class="bandeau alerte">Le classement retenu compte ${hFr(h.ecart_heures)} h de ${h.ecart_heures > 0 ? "plus" : "moins"} que la fiche.</div>` : ""}
+      ${fige ? "" : html`<div class="actions" data-style="margin-top:.75rem"><button type="submit" class="vert">Enregistrer la fiche et le classement</button></div>`}</div>
+    </form>
+
+    <div class="grille g2">
+      <div class="carte"><h2>4. Devis H (Proforma H)</h2>
+        ${h.devis_numero ? html`<p>N° <b>${h.devis_numero}</b> du ${dateFr(h.devis_date)} · ${fmt(h.calcul.total)} XAF HT</p>` : html`<p class="doux">Le n° de Proforma H est attribué à la création (série à part des proformas de mise à disposition).</p>`}
+        ${fige ? "" : html`<div class="ligne-form lf2"><div class="champ"><label for="hs-ddev">Date du devis</label><input id="hs-ddev" type="date" value="${h.devis_date || auj()}"></div>
+          <div class="champ"><span class="doux petit">&nbsp;</span><button id="hs-devis" ${h.lignes.length ? "" : "disabled"}>${h.devis_numero ? "Changer la date" : "Créer le devis H"}</button></div></div>`}
+        ${h.devis_numero ? html`<a class="bouton secondaire" href="#/imprimer/devis-hs/${id}">Devis H en PDF</a>` : ""}</div>
+      <div class="carte"><h2>5. Facture FA H</h2>
+        ${h.facture_numero ? html`<table><tbody>
+            <tr><td class="doux">N°</td><td class="gras">${h.facture_numero}</td></tr><tr><td class="doux">Émise le</td><td>${dateFr(h.facture_date)}</td></tr>
+            <tr><td class="doux">BC</td><td>${h.bc_numero || "—"}</td></tr><tr><td class="doux">HT / TTC</td><td>${fmt(h.montant_ht)} / ${fmt(h.ttc)} XAF</td></tr>
+            <tr><td class="doux">Envoyée</td><td>${h.envoyee_le ? dateFr(h.envoyee_le) : html`<button class="lien" id="hs-env">marquer envoyée aujourd'hui</button>`}</td></tr>
+            <tr><td class="doux">Payée</td><td>${h.paye_le ? html`${dateFr(h.paye_le)} · ${fmt(h.montant_paye)} XAF ${h.ref_paiement ? "· " + h.ref_paiement : ""} <button class="lien petit" id="hs-nonpaye">annuler</button>` : html`<button class="lien" id="hs-paye">saisir le paiement</button>`}</td></tr></tbody></table>
+          <a class="bouton secondaire" href="#/imprimer/facture-hs/${id}">Facture FA H en PDF</a>`
+        : h.devis_numero ? html`<div class="ligne-form lf3">
+            <div class="champ"><label for="hs-dfac">Date d'émission</label><input id="hs-dfac" type="date" value="${auj()}"></div>
+            <div class="champ"><label for="hs-bc">N° de BC</label><input id="hs-bc" maxlength="20" inputmode="numeric" value="${h.bc_dossier || ""}"></div>
+            <div class="champ"><label for="hs-ht">Montant HT</label><input id="hs-ht" class="montant" inputmode="numeric" value="${fmt(h.calcul.total)}"></div></div>
+            <p class="aide">Par défaut, le montant du devis H. Changez-le seulement si le BC ou le PV du client donne un autre montant.</p>
+            <button class="vert" id="hs-fac">Émettre la facture FA H</button>`
+        : html`<p class="doux">Faites d'abord le devis H.</p>`}</div>
+    </div>`);
+
+  $$("[data-doc-tel]", page).forEach((b) => { b.onclick = async () => { try { await telecharger("/api/documents/" + b.dataset.docTel); } catch (e) { toast(e.message, true); } }; });
+  $("#hs-f-rel").onsubmit = (e) => {
+    e.preventDefault();
+    const f = $("#hs-rel").files[0];
+    if (!f) return toast("Choisissez un fichier.", true);
+    if (f.size > 8 * 1024 * 1024) return toast("Fichier trop lourd (8 Mo au plus).", true);
+    const lecteur = new FileReader();
+    lecteur.onload = async () => {
+      try { await action(() => api("POST", "/api/heures-sup/" + id + "/releve", { nom: f.name, contenu: lecteur.result }), "Relevé joint : " + f.name); pageHS(page, id); } catch (x) { /* affiché */ }
+    };
+    lecteur.readAsDataURL(f);
+  };
+  if ($("#hs-suppr")) $("#hs-suppr").onclick = async () => {
+    if (!(await confirmer("Supprimer ce relevé ?", "La fiche saisie sera perdue (le scan joint reste dans les documents du dossier).", "Supprimer", "danger"))) return;
+    try { await api("POST", "/api/heures-sup/" + id + "/supprimer", {}); location.hash = "#/dossier/" + h.dossier_id; } catch (e) { toast(e.message, true); }
+  };
+  const corps = $("#hs-lignes");
+  const nombre = (s) => { const t = String(s || "").replace(",", ".").replace(/[\sHh]/g, ""); return /^\d{1,3}(\.\d{1,2})?$/.test(t) ? parseFloat(t) : null; };
+  const duree = (a, b) => { if (!a || !b) return null; const m = (x) => +x.slice(0, 2) * 60 + +x.slice(3, 5); const d = (m(b) - m(a) + 1440) % 1440; return d ? d / 60 : null; };
+  const majTotal = () => {
+    let t = 0;
+    $$("tr", corps).forEach((tr) => {
+      const hh = $("[data-l=heures]", tr);
+      const d = duree($("[data-l=debut]", tr).value, $("[data-l=fin]", tr).value);
+      if (d !== null && !hh.dataset.touche) hh.value = hFr(d);
+      t += nombre(hh.value) || 0;
+    });
+    $("#hs-total").textContent = hFr(t) + " h";
+  };
+  const brancher = () => {
+    $$("tr", corps).forEach((tr) => {
+      $$("input", tr).forEach((i) => { i.oninput = () => { if (i.dataset.l === "heures") i.dataset.touche = "1"; majTotal(); }; });
+      const s = $("[data-l-suppr]", tr);
+      if (s) s.onclick = () => { tr.remove(); majTotal(); };
+    });
+  };
+  brancher();
+  if ($("#hs-plus")) $("#hs-plus").onclick = () => {
+    const der = $$("tr", corps).pop();
+    const tmp = document.createElement("tbody");
+    tmp.innerHTML = ligneHS({ date: der ? $("[data-l=date]", der).value : "" }, "").s;
+    corps.appendChild(tmp.firstElementChild);
+    appliquerStyles(corps);
+    brancher();
+  };
+  if ($("#hs-manuel")) $("#hs-manuel").onchange = (e) => { $$("[data-h]").forEach((i) => { i.disabled = !e.target.checked; }); };
+  $("#hs-f").onsubmit = async (e) => {
+    e.preventDefault();
+    const lignes = [];
+    for (const tr of $$("tr", corps)) {
+      const v = (k) => $("[data-l=" + k + "]", tr).value.trim();
+      if (!v("date") && !v("heures") && !v("debut")) continue;
+      const hh = v("heures");
+      if (hh && nombre(hh) === null) return toast("Heures réalisées invalides : " + hh, true);
+      lignes.push({ date: v("date"), debut: v("debut"), fin: v("fin"), justification: v("justification"), heures: hh ? nombre(hh) : null });
+    }
+    let heures = null;
+    if ($("#hs-manuel").checked) {
+      heures = {};
+      for (const i of $$("[data-h]")) { const n = nombre(i.value || "0"); if (n === null) return toast("Classement : nombre d'heures invalide.", true); heures[i.dataset.h] = n; }
+    }
+    const corpsReq = { direction: $("#hs-direction").value, service: $("#hs-service").value, section: $("#hs-section").value,
+      matricule_client: $("#hs-matricule").value, categorie: $("#hs-categorie").value, lignes, heures };
+    try { await action(() => api("PUT", "/api/heures-sup/" + id, corpsReq), "Fiche enregistrée."); pageHS(page, id); } catch (x) { /* affiché */ }
+  };
+  if ($("#hs-devis")) $("#hs-devis").onclick = async () => {
+    try { await action(() => api("POST", "/api/heures-sup/" + id + "/devis", { date: $("#hs-ddev").value }), "Devis H enregistré."); pageHS(page, id); } catch (x) { /* affiché */ }
+  };
+  if ($("#hs-fac")) $("#hs-fac").onclick = async () => {
+    const m = entierSaisi($("#hs-ht").value);
+    if (m === null || m <= 0) return toast("Montant HT : chiffres uniquement.", true);
+    if (!(await confirmer("Émettre la facture FA H ?", "Un n° définitif sera attribué : " + fmt(m) + " XAF HT. La fiche et le classement ne se modifieront plus.", "Émettre"))) return;
+    const corpsReq = { date_facture: $("#hs-dfac").value, bc_numero: $("#hs-bc").value.trim() };
+    if (m !== h.calcul.total) corpsReq.montant_ht = m;
+    try { await action(() => api("POST", "/api/heures-sup/" + id + "/facture", corpsReq), "Facture émise."); pageHS(page, id); } catch (x) { /* affiché */ }
+  };
+  const suivi = async (corpsReq, msg) => { try { await action(() => api("POST", "/api/heures-sup/" + id + "/suivi", corpsReq), msg); pageHS(page, id); } catch (x) { /* affiché */ } };
+  if ($("#hs-env")) $("#hs-env").onclick = () => suivi({ envoyee_le: auj() }, "Facture marquée envoyée.");
+  if ($("#hs-nonpaye")) $("#hs-nonpaye").onclick = () => suivi({ paye_le: null }, "Paiement annulé.");
+  if ($("#hs-paye")) $("#hs-paye").onclick = () => {
+    ouvrirModale(html`<h2>Paiement de ${h.facture_numero}</h2><form id="hs-f-pay">
+      <div class="ligne-form lf3"><div class="champ"><label for="hp-d">Reçu le</label><input id="hp-d" type="date" value="${auj()}" required></div>
+      <div class="champ"><label for="hp-m">Montant reçu</label><input id="hp-m" class="montant" inputmode="numeric" value="${fmt(h.ttc)}"></div>
+      <div class="champ"><label for="hp-r">Référence</label><input id="hp-r" maxlength="80"></div></div>
+      <div class="actions"><button type="submit" class="vert">Enregistrer</button><button type="button" class="secondaire" id="hp-x">Annuler</button></div></form>`);
+    $("#hp-x").onclick = fermerModale;
+    $("#hs-f-pay").onsubmit = (e) => { e.preventDefault(); const m = entierSaisi($("#hp-m").value); fermerModale(); suivi({ paye_le: $("#hp-d").value, montant_paye: m, reference: $("#hp-r").value }, "Paiement enregistré."); };
+  };
+}
+
+// Documents imprimables des heures supplémentaires, calqués sur ceux de Lola
+function blocClient(c, classe) {
+  return html`<div class="${classe}">Nom du client : ${c.nom}<br>${c.adresse}<br>${c.ville}${c.telephone ? html`<br>Téléphone : ${c.telephone}` : ""}</div>`;
+}
+function docFicheHS(p, h) {
+  return html`<div class="doc pf hs"><div class="pf-cadre">
+    <div class="pf-tete"><div class="pf-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
+    <div class="hs-titre">Fiche d'attachement pour la réalisation d'heures supplémentaires</div>
+    <div class="pf-infos"><div class="pf-gauche hs-ident">
+        ${h.direction ? html`<div><b>Direction :</b> ${h.direction}</div>` : ""}
+        <div class="pf-gi">Service : ${h.service}</div>
+        ${h.section ? html`<div class="pf-b">Section : ${h.section}</div>` : ""}
+        ${h.matricule_client ? html`<div class="pf-b">Matricule : ${h.matricule_client}</div>` : ""}
+        ${h.categorie ? html`<div class="pf-b">Catégorie : ${h.categorie}</div>` : ""}
+        <div class="pf-b">${h.agent}</div></div>
+      ${blocClient(h.client, "pf-client")}</div>
+    <div class="hs-planif">Planification d'heures supplémentaires pour raisons de service, selon les modalités suivantes :</div>
+    <table class="hs-table"><thead><tr><th>Heures prévues</th><th>Date</th><th>Justifications</th><th>Heures supplémentaires réalisées</th></tr></thead><tbody>
+      ${h.lignes.map((l) => html`<tr><td>${plageFr(l)}</td><td>${dateFr(l.date)}</td><td>${l.justification}</td><td>${hFr(l.heures)} H</td></tr>`)}
+      <tr class="hs-tot"><td colspan="3">Total</td><td>${hFr(h.total_heures)} H</td></tr></tbody></table>
+    <div class="hs-signs"><div><b>Signature de l'agent :</b><div class="petit">Avant :<br>Après :<br>Payées :<br>Récupérées :</div></div>
+      <div class="hs-resp"><b>Signature Responsable ${p.raison_sociale} :</b>${imgSignature()}</div></div>
+  </div><div class="pf-pied">RCCM ${p.rccm} – NIF ${p.nif} – N° CNSS ${p.cnss}<br>Compte bancaire ${p.banque} ${p.compte}</div></div>`;
+}
+function docDevisHS(p, h) {
+  const valable = +p.validite_devis_jours === 30 ? "1mois" : p.validite_devis_jours + " jours";
+  const c = h.calcul;
+  return html`<div class="doc pf hs"><div class="pf-cadre">
+    <div class="pf-tete"><div class="pf-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
+    <div class="pf-bandeau"><div class="pf-titre">Proforma H</div><div class="pf-num">${h.devis_numero}</div></div>
+    <div class="pf-infos"><div class="pf-gauche">
+        <div class="pf-date">Devis du ${dateFr(h.devis_date)}</div><br>
+        <div class="pf-gi">Service Demandeur : ${h.service}</div></div>
+      ${blocClient(h.client, "pf-client")}</div>
+    <div class="pf-bi">Nombre d'agents (${h.poste}) : 1</div>
+    <div class="pf-b">${h.agent}</div>
+    ${h.imputation ? html`<div>Imputation : ${h.imputation}</div>` : ""}
+    <div class="pf-cout hs-cout"><span>Coût mensuel ( ${p.heures} )</span><span>:</span><span class="pf-cout-val">${fmt(h.cout_mensuel)}</span><span class="pf-xaf">XAF</span></div>
+    <table class="hs-table hs-devis"><thead><tr><th>Désignation</th><th>Taux Horaires</th><th>Nombre d'heures</th><th>Total</th></tr></thead><tbody>
+      <tr><td class="g">Heures normales</td><td>${fmt(c.taux_horaire)}</td><td>0</td><td></td></tr>
+      ${c.lignes.map((l) => html`<tr><td class="g">Heures supp à ${(l.taux_pdm / 100).toLocaleString("fr-FR")}% (${tauxFr(l.taux_pdm)} heures normales)</td><td>${fmt(l.taux_horaire)}</td><td>${hFr(l.heures)}</td><td>${fmt(l.total)}</td></tr>`)}
+      <tr class="hs-tot"><td colspan="3">Montant Total</td><td>${fmt(c.total)}</td></tr></tbody></table>
+    <div class="pf-valable">Devis valable ${valable}</div>
+    <div class="pf-sign">Signature du client avec mention "bon pour accord" :</div>
+    <div class="pf-resp">${imgSignature()}<div>Le responsable</div></div>
+  </div><div class="pf-pied">RCCM ${p.rccm} – NIF ${p.nif} – N° CNSS ${p.cnss}<br>Compte bancaire ${p.banque} ${p.compte}</div></div>`;
+}
+function docFactureHS(p, h) {
+  const men = (p.mention_designation || p.raison_sociale || "").trim().toUpperCase();
+  return html`<div class="doc fa">
+    <div class="fa-tete"><div class="fa-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
+    <div class="fa-infos"><div class="fa-gauche">
+        <div>Date d'émission : ${dateFr(h.facture_date)}</div><div>Emis par : ${p.raison_sociale}</div>
+        <div>Commande client N° : ${h.bc_numero}</div></div>
+      <div class="fa-client"><div>Nom du client : ${h.client.nom}</div><div>${h.client.adresse}</div><div>${h.client.ville}</div>${h.client.telephone ? html`<div>Téléphone : ${h.client.telephone}</div>` : ""}</div></div>
+    <div class="fa-titre">Facture N° ${h.facture_numero}</div>
+    <table class="fa-table"><thead><tr><th>Désignation des produits ou des prestations</th><th>Quantité</th><th>Unité</th><th>Prix unitaire HT</th><th>TOTAL HT</th></tr></thead>
+      <tbody><tr><td>Heures supplémentaires de ${h.agent} - ${h.poste}<br>${men}</td><td>-</td><td>Heures</td><td>${fmtPt(h.montant_ht)}</td><td>${fmtPt(h.montant_ht)}</td></tr></tbody></table>
+    <table class="fa-totaux"><tbody><tr><td>Total HT</td><td>${fmtPt(h.montant_ht)}</td></tr><tr><td>TVA (${pct(p.tva_pdm)})</td><td>${fmtPt(h.tva)}</td></tr>
+      <tr class="fa-trait"><td colspan="2"></td></tr><tr><td>Total TTC</td><td>${fmtPt(h.ttc)}</td></tr></tbody></table>
+    <div class="fa-sign"><b>Signature :</b>${imgSignature()}</div>
+    <div class="fa-pied">RCCM ${p.rccm} – NIF ${p.nif} – N° CNSS ${p.cnss}<br>Compte bancaire ${p.banque} ${p.compte}</div></div>`;
+}
+
 async function pageImprimer(page, type, arg) {
   const p = etat.params.parametres;
   let docs, titre, retour, factures = null;
-  if (type === "proforma") {
+  if (type === "fiche-hs" || type === "devis-hs" || type === "facture-hs") {
+    const h = (await api("GET", "/api/heures-sup/" + (+arg))).heures_sup;
+    const propre = (t) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[\/\\:*?"<>|]/g, "-").replace(/[^\x20-\x7e]/g, "");
+    retour = "#/hs/" + h.id;
+    if (type === "fiche-hs") { titre = propre("Fiche d'attachement des heures supplementaires - " + dateFr(h.periode_au || auj()).replace(/\//g, ".") + "_" + h.agent); docs = docFicheHS(p, h); }
+    else if (type === "devis-hs") { if (!h.devis_numero) throw new Error("Créez d'abord le devis H."); titre = propre("Devis d'heures supplementaires - " + dateFr(h.devis_date).replace(/\//g, ".") + "_" + h.agent); docs = docDevisHS(p, h); }
+    else { if (!h.facture_numero) throw new Error("Émettez d'abord la facture FA H."); titre = propre(h.facture_numero.replace(/\//g, "-") + " " + p.raison_sociale + " - " + h.agent + " - " + h.poste); docs = docFactureHS(p, h); }
+  } else if (type === "proforma") {
     const r = await api("GET", "/api/dossiers/" + (+arg));
     const d = r.dossier;
     titre = "Proforma_ANO_Services_" + d.nom_numero + "_" + dateFr(d.date_debut).replace(/\//g, "-");
@@ -1214,6 +1488,15 @@ async function pageParametres(page) {
         <div class="champ"><label for="p-lieux">Lieux (un par ligne)</label><textarea id="p-lieux" rows="4" ${dis}>${p.lieux.join("\n")}</textarea></div>
         <div class="champ"><label for="p-services">Services demandeurs (un par ligne)</label><textarea id="p-services" rows="4" ${dis}>${p.services.join("\n")}</textarea></div></div>
     </div>
+    <div class="carte"><h2>Heures supplémentaires</h2>
+      <div class="ligne-form lf2">${champ("dernier_num_proforma_h", "Dernier n° de Proforma H utilisé", p.dernier_num_proforma_h === null ? "À renseigner avant le 1er devis H (ex. 124)." : "Le prochain devis H prendra ce n° + 1.")}
+        ${champ("dernier_num_facture_h", "Dernier n° de facture FA H utilisé", p.dernier_num_facture_h === null ? "À renseigner avant la 1re facture FA H (ex. 110)." : "La prochaine facture FA H prendra ce n° + 1.")}</div>
+      <div class="ligne-form lf3">${champ("code_proforma_h", "Code du n° de Proforma H", "124-10-ANO-MAD/2026 : le code est « MAD ».")}${champ("code_facture_h", "Code des factures H", "FA H 110/11/2026 : le code est « H » (11 = mois d'émission).")}
+        <div class="champ"><label for="p-hs-div">Heures par mois</label><input id="p-hs-div" class="montant" value="${(p.hs_diviseur_centiemes / 100).toLocaleString("fr-FR")}" ${dis}></div></div>
+      <div class="ligne-form lf3">${[1, 2, 3].map((i) => html`<div class="champ"><label for="p-hs-t${i}">Majoration ${i} (%)</label><input id="p-hs-t${i}" class="montant" value="${(p["hs_taux" + i + "_pdm"] / 100).toLocaleString("fr-FR")}" ${dis}></div>`)}</div>
+      <div class="ligne-form lf3">${champ("hs_seuil_semaine", "Heures par semaine à la 1re majoration", "Proposition de classement : les premières heures de la semaine (jours ouvrables) à la majoration 1, le reste et le dimanche à la majoration 2.")}
+        ${champ("hs_nuit_debut", "Nuit : début (heure)", "Les heures de nuit vont à la majoration 3.")}${champ("hs_nuit_fin", "Nuit : fin (heure)")}</div>
+      <p class="aide">Le classement proposé reste modifiable à la main sur chaque relevé.</p></div>
     <div class="carte"><h2>Logo et cachet sur les documents</h2>
       <div class="grille g2">
         <div><p class="doux petit">Logo (en-tête de la proforma et des factures)</p><img class="apercu-image" id="p-img-logo" src="/api/logo" alt="Logo">
@@ -1265,7 +1548,15 @@ async function pageParametres(page) {
     if (tva === null) return toast("TVA : nombre attendu (ex. 18).", true);
     par.tva_pdm = tva;
     par.tva_visite = $("#p-tva-visite").checked;
-    if (par.dernier_num_facture === "") par.dernier_num_facture = null;
+    for (const k of ["dernier_num_facture", "dernier_num_proforma_h", "dernier_num_facture_h"]) if (par[k] === "") par[k] = null;
+    for (const i of [1, 2, 3]) {
+      const t = pdmSaisi($("#p-hs-t" + i).value);
+      if (t === null) return toast("Majoration " + i + " : nombre attendu (ex. 28).", true);
+      par["hs_taux" + i + "_pdm"] = t;
+    }
+    const div = pdmSaisi($("#p-hs-div").value);
+    if (!div) return toast("Heures par mois : nombre attendu (ex. 173,33).", true);
+    par.hs_diviseur_centiemes = div;
     par.lieux = $("#p-lieux").value.split("\n");
     par.services = $("#p-services").value.split("\n");
     const charges = [];

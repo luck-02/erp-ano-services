@@ -132,6 +132,40 @@ CREATE TABLE IF NOT EXISTS documents (
     retire_le TEXT                          -- pièce retirée de la liste (le fichier est gardé)
 );
 CREATE INDEX IF NOT EXISTS ix_documents_dossier ON documents(dossier_id);
+-- Heures supplémentaires : relevé COMILOG -> fiche d'attachement -> classement -> Proforma H -> FA H
+CREATE TABLE IF NOT EXISTS heures_sup (
+    id INTEGER PRIMARY KEY,
+    dossier_id INTEGER NOT NULL REFERENCES dossiers(id),
+    agent_id INTEGER NOT NULL REFERENCES agents(id),
+    direction TEXT NOT NULL DEFAULT '',
+    service TEXT NOT NULL DEFAULT '',
+    section TEXT NOT NULL DEFAULT '',
+    matricule_client TEXT NOT NULL DEFAULT '',
+    categorie TEXT NOT NULL DEFAULT '',
+    lignes_json TEXT NOT NULL DEFAULT '[]',      -- fiche d'attachement : date, début, fin, justification, heures
+    heures_json TEXT NOT NULL DEFAULT '{}',      -- classement retenu {h1, h2, h3} (proposé puis modifiable)
+    classement_manuel INTEGER NOT NULL DEFAULT 0,
+    devis_num_seq INTEGER UNIQUE,
+    devis_numero TEXT UNIQUE,
+    devis_date TEXT,
+    facture_num_seq INTEGER UNIQUE,
+    facture_numero TEXT UNIQUE,
+    facture_date TEXT,
+    echeance TEXT,
+    bc_numero TEXT NOT NULL DEFAULT '',
+    montant_ht INTEGER,                          -- figé à l'émission (par défaut = total du devis)
+    tva INTEGER,
+    ttc INTEGER,
+    cout_mensuel INTEGER,                        -- figé à l'émission de la facture
+    envoyee_le TEXT,
+    paye_le TEXT,
+    montant_paye INTEGER,
+    ref_paiement TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    cree_le TEXT NOT NULL,
+    maj_le TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_hs_dossier ON heures_sup(dossier_id);
 CREATE TABLE IF NOT EXISTS journal (
     id INTEGER PRIMARY KEY,
     quand TEXT NOT NULL,
@@ -172,6 +206,15 @@ PARAMETRES_INITIAUX = {
     "code_mad": "",
     "code_visite": "Visite médicale",
     "mention_designation": "",         # ligne sous la désignation (ex. ANO SERVICE) ; vide = raison sociale
+    # heures supplémentaires (Proforma H 124-10-ANO-MAD/2026, facture FA H 110/11/2026)
+    "dernier_num_proforma_h": None,    # à renseigner avant le 1er devis H (dernier n° réellement utilisé)
+    "dernier_num_facture_h": None,     # idem pour les factures FA H
+    "code_proforma_h": "MAD",
+    "code_facture_h": "H",
+    "hs_diviseur_centiemes": 17333,    # 173,33 heures par mois
+    "hs_taux1_pdm": 2800, "hs_taux2_pdm": 5600, "hs_taux3_pdm": 7500,
+    "hs_seuil_semaine": 8,             # proposition : 8 premières h de la semaine (jours ouvrables) à 28 %
+    "hs_nuit_debut": 21, "hs_nuit_fin": 5,   # proposition : heures de nuit à 75 %
     "tva_visite": False,               # visite médicale sans TVA (règle ANO)
     "bc_chiffres": 6,                  # longueur habituelle d'un n° de BC (0 = pas de contrôle)
     "lieux": ["Moanda", "Libreville", "Port-Gentil"],
@@ -209,7 +252,8 @@ def parametres_vierges(nom, code):
     for k in ("adresse", "ville", "telephone", "email", "rccm", "nif", "cnss", "banque", "compte"):
         p[k] = ""
     p.update(raison_sociale=nom, code_entreprise=re.sub(r"[^A-Z0-9]", "", code.upper())[:12] or "ENT",
-             dernier_num_proforma=0, dernier_num_facture=0, lieux=[], services=[],
+             dernier_num_proforma=0, dernier_num_facture=0, dernier_num_proforma_h=0, dernier_num_facture_h=0,
+             lieux=[], services=[],
              maj_compteurs_20261124=True)       # compteurs d'ANO : jamais appliqués ici
     return p
 
@@ -336,6 +380,9 @@ def migrer_factures(con):
         con.execute("INSERT INTO parametres(cle, valeur) VALUES ('maj_numeros_20261125', 'true')")
     # « ANO SERVICE » sous la désignation des factures (comme les originaux), une seule fois,
     # seulement pour ANO Services et si personne n'a encore rempli le champ. Aucun n° émis touché.
+    cols_d = [r[1] for r in con.execute("PRAGMA table_info(documents)")]
+    if "hs_id" not in cols_d:
+        con.execute("ALTER TABLE documents ADD COLUMN hs_id INTEGER REFERENCES heures_sup(id)")
     if not con.execute("SELECT 1 FROM parametres WHERE cle = 'maj_mention_20261125'").fetchone():
         r = con.execute("SELECT valeur FROM parametres WHERE cle = 'raison_sociale'").fetchone()
         rs = _sans_accents(json.loads(r[0]) if r else "").upper().strip()

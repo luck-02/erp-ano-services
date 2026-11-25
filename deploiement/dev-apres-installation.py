@@ -56,8 +56,14 @@ def remplir_essai(reg, domaine):
         return "essai : absente"
     con = sqlite3.connect(e["chemin_db_abs"])
     try:
+        sans_hs = False
         if con.execute("SELECT COUNT(*) FROM dossiers").fetchone()[0]:
-            return "essai : déjà des dossiers, " + mention_une_fois(con)
+            msg = "essai : déjà des dossiers, " + mention_une_fois(con)
+            d1 = con.execute("SELECT id FROM dossiers WHERE nom_numero = 'MOUELE' AND statut <> 'Annulé'").fetchone()
+            # heures supplémentaires fictives ajoutées une fois aux données déjà là
+            if not d1 or con.execute("SELECT 1 FROM parametres WHERE cle = 'maj_hs_essai'").fetchone():
+                return msg
+            sans_hs = True
         mdp = "Tmp-" + secrets.token_urlsafe(18)
         ident = "remplissage-auto"
         if con.execute("SELECT 1 FROM utilisateurs WHERE identifiant = ?", (ident,)).fetchone():
@@ -71,6 +77,10 @@ def remplir_essai(reg, domaine):
         try:
             c = client(domaine)
             c.connexion("essai", ident, mdp)
+            if sans_hs:
+                F.ajouter_heures_sup(c, d1[0])
+                con.execute("INSERT INTO parametres(cle, valeur) VALUES ('maj_hs_essai', 'true')")
+                return msg + ", heures supplémentaires fictives ajoutées"
             r = F.remplir(c)
         finally:
             # compte inutilisable ensuite (gardé désactivé : il signe les lignes du journal)
@@ -78,7 +88,7 @@ def remplir_essai(reg, domaine):
             con.execute("UPDATE utilisateurs SET actif = 0, mdp_hash = ? WHERE identifiant = ?",
                         (S.hacher_mdp(secrets.token_urlsafe(32)), ident))
             con.commit()
-        return "essai : remplie (%d dossiers fictifs)" % len(r)
+        return "essai : remplie (%d dossiers fictifs)" % len([k for k in r if k != "heures_sup"])
     finally:
         con.close()
 
@@ -99,7 +109,7 @@ def recreer_verif(reg, donnees, domaine, mdp):
     c = client(domaine)
     c.connexion("verif", "direction", mdp)
     r = F.remplir(c)
-    return "verif : recréée (%d dossiers fictifs)" % len(r)
+    return "verif : recréée (%d dossiers fictifs)" % len([k for k in r if k != "heures_sup"])
 
 
 def main(argv):

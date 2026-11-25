@@ -566,6 +566,64 @@ paths:
         - {name: min, in: query, description: "Montant HT minimum", schema: {type: integer}}
         - {name: max, in: query, description: "Montant HT maximum", schema: {type: integer}}
       responses: {"200": {description: OK, content: {application/json: {example: {total: 1, tronque: false, resultats: [{type: facture, id: 12, titre: FA 59/09/2026, statut: Remplacée, detail: "CLIENT FICTIF · mise à disposition · Septembre 2026", agents: AGENT Fictif, date: "2026-09-30", montant_ht: 859500, ttc: 1014210, dossier_id: 4, lien: "#/imprimer/factures/12"}]}}}}, "400": {description: Filtre invalide}}
+  /api/dossiers/{id}/heures-sup:
+    get:
+      tags: [Heures supplémentaires]
+      summary: Relevés d'heures supplémentaires du dossier
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses: {"200": {description: OK}}
+    post:
+      tags: [Heures supplémentaires]
+      summary: Nouveau relevé pour un agent du dossier (fiche d'attachement facultative à la création)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {example: {agent_id: 3, direction: DRHST, service: Laboratoire, section: "1256", matricule_client: MAD, categorie: C08A}}}}
+      responses: {"200": {description: "{id}"}, "400": {description: Agent inconnu ou ligne invalide}, "409": {description: Dossier annulé}}
+  /api/heures-sup/{id}:
+    get:
+      tags: [Heures supplémentaires]
+      summary: Détail (fiche, classement proposé et retenu, calcul, devis H, facture FA H, relevés joints)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses: {"200": {description: OK, content: {application/json: {example: {heures_sup: {devis_numero: 124-10-ANO-MAD/2026, facture_numero: FA H 110/11/2026, total_heures: 70, heures: {h1: 27, h2: 28, h3: 15}, calcul: {taux_horaire: 7430, total: 776311}}}}}}}
+    put:
+      tags: [Heures supplémentaires]
+      summary: "Fiche d'attachement et classement (heures: null = proposition automatique) ; refusé après la facture"
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {example: {direction: DRHST, service: Laboratoire, lignes: [{date: "2026-10-13", debut: "20:00", fin: "23:00", justification: Bilans des urgences, heures: 3}], heures: {h1: 27, h2: 28, h3: 15}}}}}
+      responses: {"200": {description: OK}, "400": {description: Ligne invalide}, "409": {description: Facture déjà émise}}
+  /api/heures-sup/{id}/devis:
+    post:
+      tags: [Heures supplémentaires]
+      summary: Proforma H (n° attribué une seule fois, série à part)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {example: {date: "2026-10-21"}}}}
+      responses: {"200": {description: OK}, "409": {description: Dernier n° de Proforma H à renseigner (Paramètres)}}
+  /api/heures-sup/{id}/facture:
+    post:
+      tags: [Heures supplémentaires]
+      summary: Émet la facture FA H (montant du devis par défaut, TVA comme les factures du mois)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {example: {date_facture: "2026-11-07", bc_numero: "493349", montant_ht: 776311}}}}
+      responses: {"200": {description: OK}, "409": {description: Devis H manquant, facture déjà émise ou dernier n° FA H à renseigner}}
+  /api/heures-sup/{id}/suivi:
+    post:
+      tags: [Heures supplémentaires]
+      summary: Facture FA H envoyée / payée (null annule)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {example: {envoyee_le: "2026-11-08", paye_le: "2026-12-20", montant_paye: 916047, reference: VIR 123}}}}
+      responses: {"200": {description: OK}}
+  /api/heures-sup/{id}/releve:
+    post:
+      tags: [Heures supplémentaires]
+      summary: Joint le relevé du client (PDF, PNG ou JPEG en base64, 8 Mo au plus)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {example: {nom: releve.pdf, contenu: "data:application/pdf;base64,JVBERi0..."}}}}
+      responses: {"200": {description: "{id}"}, "400": {description: Format refusé}, "413": {description: Trop lourd}}
+  /api/heures-sup/{id}/supprimer:
+    post:
+      tags: [Heures supplémentaires]
+      summary: Supprime un relevé tant que le devis H n'a pas de n°
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses: {"200": {description: OK}, "409": {description: Devis H déjà numéroté}}
   /api/logo:
     get:
       tags: [Paramètres]

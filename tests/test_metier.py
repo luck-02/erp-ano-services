@@ -3,6 +3,7 @@ import datetime as dt
 import os
 import sys
 import unittest
+from fractions import Fraction
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app"))
 import db  # noqa: E402
@@ -75,6 +76,25 @@ class TestsMetier(unittest.TestCase):
     def test_arrondi(self):
         self.assertEqual(M.arrondi(2.5), 3)
         self.assertEqual(M.tva(1064042, 1800), 191528)
+
+    def test_heures_supplementaires(self):
+        # devis H d'exemple : coût mensuel 1 287 760, 27 h à 28 %, 28 h à 56 %, 15 h à 75 % -> 776 311
+        r = M.hs_lignes_montants(1287760, [27, 28, 15], [2800, 5600, 7500])
+        self.assertEqual(r["taux_horaire"], 7430)
+        self.assertEqual([x["taux_horaire"] for x in r["lignes"]], [9510, 11590, 13002])
+        self.assertEqual([x["total"] for x in r["lignes"]], [256764, 324522, 195025])
+        self.assertEqual(r["total"], 776311)
+        self.assertEqual(M.hs_part_nuit("20:00", "23:00"), Fraction(2, 3))
+        self.assertEqual(M.hs_part_nuit("23:00", "01:00"), 1)
+        self.assertEqual(M.hs_part_nuit("08:00", "16:00"), 0)
+        d = dt.date
+        lignes = [{"date": d(2026, 10, 12), "debut": "15:00", "fin": "21:00", "heures": 6},   # lundi
+                  {"date": d(2026, 10, 13), "debut": "15:00", "fin": "19:00", "heures": 4},   # mardi
+                  {"date": d(2026, 10, 18), "debut": "08:00", "fin": "12:00", "heures": 4},   # dimanche
+                  {"date": d(2026, 10, 19), "debut": "22:00", "fin": "02:00", "heures": 4}]   # nuit
+        self.assertEqual(M.hs_classer(lignes), {"h1": 8, "h2": 6, "h3": 4})
+        self.assertEqual(M.numero_proforma_h(124, d(2026, 10, 21)), "124-10-ANO-MAD/2026")
+        self.assertEqual(M.numero_facture_h(110, d(2026, 11, 7)), "FA H 110/11/2026")
 
 
 if __name__ == "__main__":

@@ -300,3 +300,107 @@ def statut_facture(f, aujourd_hui):
     if f.get("echeance") and aujourd_hui > dt.date.fromisoformat(f["echeance"]):
         return "En retard"
     return "Envoyée"
+
+
+# ---------------------------------------------------------------------------
+# Heures supplémentaires (circuit de Lola, 25/11/2026) :
+# relevé COMILOG -> fiche d'attachement -> classement 28/56/75 % -> Proforma H -> facture FA H
+# ---------------------------------------------------------------------------
+HS_CATEGORIES = ("h1", "h2", "h3")
+
+
+def hs_taux_horaire(cout, diviseur_centiemes=17333):
+    """Taux horaire exact (fraction) = coût mensuel ÷ 173,33 heures."""
+    return Fraction(int(cout) * 100, int(diviseur_centiemes))
+
+
+def hs_heures(v):
+    """Heures saisies (8, 7,5, « 3 H ») -> Fraction au quart d'heure près."""
+    if isinstance(v, (int, float)):
+        f = Fraction(v).limit_denominator(100)
+    else:
+        t = str(v or "").upper().replace("H", "").replace(",", ".").strip()
+        if not re.fullmatch(r"\d{1,3}(\.\d{1,2})?", t):
+            raise ValueError("heures")
+        f = Fraction(t)
+    return f
+
+
+def hs_lignes_montants(cout, heures, taux_pdm, diviseur_centiemes=17333):
+    """Une ligne par catégorie : taux horaire majoré (arrondi, affiché) et total,
+    calculé sur le taux exact puis arrondi une seule fois par ligne (comme le devis de Lola).
+    heures et taux_pdm : listes de même longueur (ex. [27, 28, 15] et [2800, 5600, 7500])."""
+    th = hs_taux_horaire(cout, diviseur_centiemes)
+    res = []
+    for h, t in zip(heures, taux_pdm):
+        maj = th * (10000 + int(t)) / 10000
+        res.append({"heures": float(Fraction(h)), "taux_pdm": int(t), "taux_horaire": arrondi(maj),
+                    "total": arrondi(maj * Fraction(h))})
+    return {"taux_horaire": arrondi(th), "lignes": res, "total": sum(x["total"] for x in res)}
+
+
+def _minutes(hhmm):
+    if not hhmm:
+        return None
+    m = re.fullmatch(r"(\d{1,2})[:hH](\d{2})?", str(hhmm).strip())
+    if not m or int(m.group(1)) > 24 or int(m.group(2) or 0) > 59:
+        return None
+    return int(m.group(1)) * 60 + int(m.group(2) or 0)
+
+
+def hs_part_nuit(debut, fin, nuit_debut=21, nuit_fin=5):
+    """Fraction de la plage [debut, fin) (HH:MM, peut passer minuit) tombée la nuit."""
+    d, f = _minutes(debut), _minutes(fin)
+    if d is None or f is None or d == f:
+        return None
+    if f <= d:
+        f += 24 * 60
+    nd, nf = nuit_debut * 60, nuit_fin * 60
+    nuit = 0
+    for jour in (-1, 0, 1):          # nuits de la veille, du jour et du lendemain
+        a = nd + jour * 1440
+        b = (nf + (jour + 1) * 1440) if nf <= nd else nf + jour * 1440
+        nuit += max(0, min(f, b) - max(d, a))
+    return Fraction(nuit, f - d)
+
+
+def hs_classer(lignes, seuil_semaine=8, nuit_debut=21, nuit_fin=5, jours_repos=(6,)):
+    """Classement PROPOSÉ (modifiable) des heures réalisées :
+    - heures de nuit -> h3 (75 %)
+    - jour de repos (dimanche par défaut) -> h2 (56 %)
+    - jours ouvrables : les `seuil_semaine` premières heures de la semaine -> h1 (28 %), au-delà -> h2.
+    lignes : [{"date": date, "debut": "20:00", "fin": "23:00", "heures": Fraction}]"""
+    tot = {"h1": Fraction(0), "h2": Fraction(0), "h3": Fraction(0)}
+    deja = {}
+    for l in sorted(lignes, key=lambda x: (x["date"], _minutes(x.get("debut")) or 0)):
+        h = Fraction(l["heures"])
+        pn = hs_part_nuit(l.get("debut"), l.get("fin"), nuit_debut, nuit_fin) or Fraction(0)
+        nuit = h * pn
+        jour = h - nuit
+        tot["h3"] += nuit
+        if l["date"].weekday() in jours_repos:
+            tot["h2"] += jour
+            continue
+        sem = l["date"].isocalendar()[:2]
+        reste = max(Fraction(0), Fraction(seuil_semaine) - deja.get(sem, 0))
+        a28 = min(jour, reste)
+        deja[sem] = deja.get(sem, 0) + a28
+        tot["h1"] += a28
+        tot["h2"] += jour - a28
+    # au quart d'heure, sans perdre d'heure au total
+    res = {k: Fraction(round(v * 4), 4) for k, v in tot.items()}
+    ecart = sum((Fraction(l["heures"]) for l in lignes), Fraction(0)) - sum(res.values())
+    if ecart:
+        k = max(res, key=lambda x: res[x])
+        res[k] += ecart
+    return res
+
+
+def numero_proforma_h(n, date_devis, code="ANO", suite="MAD"):
+    """124-10-ANO-MAD/2026 (série à part des proformas de mise à disposition)."""
+    return "%d-%02d-%s-%s/%d" % (n, date_devis.month, code, suite or "MAD", date_devis.year)
+
+
+def numero_facture_h(n, date_emission, prefixe="FA", code="H"):
+    """FA H 110/11/2026 (11 = mois d'émission, comme les autres factures)."""
+    return ("%s %s %d/%02d/%d" % (prefixe, code or "H", n, date_emission.month, date_emission.year)).strip()

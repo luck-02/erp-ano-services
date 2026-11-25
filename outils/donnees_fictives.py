@@ -140,6 +140,7 @@ def remplir(c):
     c.ok("POST", "/api/dossiers/%d/pieces" % d1, {"categorie": "DA", "nom": "DA fictive MOUELE.pdf",
                                                     "contenu": base64.b64encode(_pdf_fictif("DA fictive - MOUELE")).decode()})
     r["agent_seul"] = d1
+    r["heures_sup"] = ajouter_heures_sup(c, d1)
 
     # 2. groupe de 9 infirmiers, une facture par mois pour tout le groupe
     agents9 = [{"nom": "%s %s Fictif" % (n, p), "poste": "IDE", "salaire_base": 650000}
@@ -214,6 +215,35 @@ def remplir(c):
     c.ok("POST", "/api/dossiers/%d/statut" % d6, {"statut": "Annulé"})
     r["annule"] = d6
     return r
+
+
+
+def ajouter_heures_sup(c, did):
+    """Heures supplémentaires fictives sur un dossier : un relevé facturé et payé, un relevé au stade du devis."""
+    p = c.ok("GET", "/api/parametres")["parametres"]
+    maj = {k: v for k, v in (("dernier_num_proforma_h", 20), ("dernier_num_facture_h", 10)) if p.get(k) is None}
+    if maj:
+        c.ok("PUT", "/api/parametres", {"parametres": maj})
+    ag = c.ok("GET", "/api/dossiers/%d" % did)["agents"][0]["id"]
+    fiche = {"direction": "DIRECTION FICTIVE", "service": "Laboratoire (fictif)", "section": "0000", "matricule_client": "MAD",
+             "categorie": "C00A", "heures": None}
+    l1 = [{"date": "2026-10-05", "debut": "16:00", "fin": "20:00", "justification": "Clôture mensuelle (fictif)"},
+          {"date": "2026-10-06", "debut": "16:00", "fin": "21:00", "justification": "Inventaire (fictif)"},
+          {"date": "2026-10-11", "debut": "08:00", "fin": "14:00", "justification": "Permanence (fictif)"},
+          {"date": "2026-10-14", "debut": "20:00", "fin": "23:00", "justification": "Urgence (fictif)"}]
+    h1 = c.ok("POST", "/api/dossiers/%d/heures-sup" % did, {"agent_id": ag})["id"]
+    c.ok("POST", "/api/heures-sup/%d/releve" % h1, {"nom": "Releve heures fictif.pdf",
+                                                    "contenu": base64.b64encode(_pdf_fictif("Releve d'heures fictif")).decode()})
+    c.ok("PUT", "/api/heures-sup/%d" % h1, dict(fiche, lignes=l1))
+    c.ok("POST", "/api/heures-sup/%d/devis" % h1, {"date": "2026-10-20"})
+    c.ok("POST", "/api/heures-sup/%d/facture" % h1, {"date_facture": "2026-11-05", "bc_numero": "900011"})
+    c.ok("POST", "/api/heures-sup/%d/suivi" % h1, {"envoyee_le": "2026-11-06"})
+    h2 = c.ok("POST", "/api/dossiers/%d/heures-sup" % did, {"agent_id": ag})["id"]
+    c.ok("PUT", "/api/heures-sup/%d" % h2, dict(fiche, lignes=[
+        {"date": "2026-11-09", "debut": "17:00", "fin": "21:00", "justification": "Audit (fictif)"},
+        {"date": "2026-11-15", "debut": "22:00", "fin": "02:00", "justification": "Garde de nuit (fictif)"}]))
+    c.ok("POST", "/api/heures-sup/%d/devis" % h2, {"date": "2026-11-20"})
+    return [h1, h2]
 
 
 if __name__ == "__main__":

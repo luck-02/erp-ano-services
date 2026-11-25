@@ -83,6 +83,15 @@ ROUTES = [
     ("GET", r"/api/dossiers/(\d+)/documents", api.documents_dossier, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/pieces", api.ajouter_piece, EQUIPE),
     ("GET", r"/api/documents/(\d+)", api.telecharger_document, EQUIPE),
+    ("GET", r"/api/dossiers/(\d+)/heures-sup", api.liste_hs, EQUIPE),
+    ("POST", r"/api/dossiers/(\d+)/heures-sup", api.creer_hs, EQUIPE),
+    ("GET", r"/api/heures-sup/(\d+)", api.detail_hs, EQUIPE),
+    ("PUT", r"/api/heures-sup/(\d+)", api.modifier_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/devis", api.devis_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/facture", api.facture_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/suivi", api.suivi_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/releve", api.releve_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/supprimer", api.supprimer_hs, EQUIPE),
     ("POST", r"/api/documents/(\d+)/retirer", api.retirer_piece, (A,)),
     ("GET", r"/api/factures", api.liste_factures, TOUS),
     ("GET", r"/api/factures/word", api.factures_word, EQUIPE),
@@ -287,7 +296,7 @@ class Gestionnaire(BaseHTTPRequestHandler):
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 return self._erreur(400, "Requête invalide.")
-            if n > (TAILLE_MAX_PIECE if fonction is api.ajouter_piece else TAILLE_MAX):
+            if n > (TAILLE_MAX_PIECE if fonction in (api.ajouter_piece, api.releve_hs) else TAILLE_MAX):
                 return self._erreur(413, "Requête trop volumineuse.")
             brut = self.rfile.read(n) if n > 0 else b"{}"
             self._corps_lu = True

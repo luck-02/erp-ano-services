@@ -911,6 +911,89 @@ class TestsAPI(unittest.TestCase):
         self.assertEqual(self.admin.req("GET", "/api/parametres")[1]["parametres"]["mention_designation"], "")
         self.admin.req("PUT", "/api/parametres", {"parametres": {"mention_designation": "ANO SERVICE"}})
 
+    def test_25_heures_supplementaires(self):
+        """Relevé -> fiche -> classement -> Proforma H -> FA H (circuit de Lola), n° à part, montant du devis par défaut."""
+        import base64
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
+        import metier as M
+        a = self.admin
+        dos = [x for x in a.req("GET", "/api/dossiers")[1]["dossiers"] if x["statut"] != "Annulé"][0]
+        st, d = a.req("GET", "/api/dossiers/%d" % dos["id"])
+        ag = d["agents"][0]
+        st, j = a.req("POST", "/api/dossiers/%d/heures-sup" % dos["id"], {"agent_id": 999999})
+        self.assertEqual(st, 400)
+        st, j = a.req("POST", "/api/dossiers/%d/heures-sup" % dos["id"], {"agent_id": ag["id"], "direction": "DRHST"})
+        self.assertEqual(st, 200, j)
+        hid = j["id"]
+        pdf = b"%PDF-1.4\n% releve fictif\n%%EOF\n"
+        st, j = a.req("POST", "/api/heures-sup/%d/releve" % hid, {"nom": "releve.pdf", "contenu": base64.b64encode(pdf).decode()})
+        self.assertEqual(st, 200, j)
+        st, j = a.req("POST", "/api/heures-sup/%d/devis" % hid, {})
+        self.assertEqual(st, 400)                                     # pas encore d'heures
+        lignes = [{"date": "2026-10-12", "debut": "15:00", "fin": "21:00", "justification": "Bilans des urgences"},
+                  {"date": "2026-10-13", "debut": "15:00", "fin": "19:00", "heures": "4"},
+                  {"date": "2026-10-18", "debut": "08:00", "fin": "12:00", "heures": 4},
+                  {"date": "2026-10-19", "debut": "22:00", "fin": "02:00", "heures": "4 H"}]
+        corps = {"direction": "DRHST", "service": "Laboratoire", "section": "1256", "matricule_client": "MAD",
+                 "categorie": "C08A", "lignes": lignes, "heures": None}
+        st, j = a.req("PUT", "/api/heures-sup/%d" % hid, corps)
+        self.assertEqual(st, 200, j)
+        h = j["heures_sup"]
+        self.assertEqual(h["total_heures"], 18)
+        self.assertEqual(h["lignes"][0]["heures"], 6)                 # calculée depuis début / fin
+        self.assertEqual(h["heures"], {"h1": 8, "h2": 6, "h3": 4})    # proposition
+        self.assertEqual(len(h["releves"]), 1)
+        cout = h["cout_mensuel"]
+        self.assertEqual(cout, d["proforma"]["agents"][0]["cout_mensuel"])
+        # classement à la main
+        st, j = a.req("PUT", "/api/heures-sup/%d" % hid, dict(corps, heures={"h1": 7, "h2": "7,5", "h3": 3.5}))
+        self.assertEqual(st, 200, j)
+        h = j["heures_sup"]
+        attendu = M.hs_lignes_montants(cout, [7, 7.5, 3.5], [2800, 5600, 7500])["total"]
+        self.assertEqual(h["calcul"]["total"], attendu)
+        self.assertEqual(h["ecart_heures"], 0)
+        # dernier n° pas renseigné : refus clair
+        st, j = a.req("POST", "/api/heures-sup/%d/devis" % hid, {"date": "2026-10-21"})
+        self.assertEqual((st, j.get("code")), (409, "NUM_DERNIER_NUM_PROFORMA_H"), j)
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"dernier_num_proforma_h": "123", "dernier_num_facture_h": 109}})
+        self.assertEqual(st, 200, j)
+        st, j = a.req("POST", "/api/heures-sup/%d/devis" % hid, {"date": "2026-10-21"})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["heures_sup"]["devis_numero"], "124-10-ANO-MAD/2026")
+        st, j = a.req("POST", "/api/heures-sup/%d/devis" % hid, {"date": "2026-10-22"})
+        self.assertEqual(j["heures_sup"]["devis_numero"], "124-10-ANO-MAD/2026")   # n° gardé
+        self.assertEqual(a.req("GET", "/api/parametres")[1]["parametres"]["dernier_num_proforma_h"], 124)
+        st, j = a.req("POST", "/api/heures-sup/%d/supprimer" % hid, {})
+        self.assertEqual(st, 409)
+        # facture FA H : montant du devis par défaut, TVA 18 %
+        st, j = a.req("POST", "/api/heures-sup/%d/facture" % hid, {"date_facture": "2026-11-07", "bc_numero": "493349"})
+        self.assertEqual(st, 200, j)
+        f = j["heures_sup"]
+        self.assertEqual(f["facture_numero"], "FA H 110/11/2026")
+        self.assertEqual((f["montant_ht"], f["tva"], f["ttc"]), (attendu, M.tva(attendu, 1800), attendu + M.tva(attendu, 1800)))
+        self.assertEqual(f["statut"], "Facturée")
+        st, j = a.req("PUT", "/api/heures-sup/%d" % hid, corps)
+        self.assertEqual(st, 409)                                     # figé après émission
+        st, j = a.req("POST", "/api/heures-sup/%d/facture" % hid, {})
+        self.assertEqual(st, 409)
+        st, j = a.req("POST", "/api/heures-sup/%d/suivi" % hid, {"envoyee_le": "2026-11-08", "paye_le": "2026-12-20", "reference": "VIR 1"})
+        self.assertEqual((st, j["heures_sup"]["statut"], j["heures_sup"]["montant_paye"]), (200, "Payée", f["ttc"]))
+        # 2e relevé : montant saisi (BC différent), n° suivants ; le dossier les liste
+        st, j = a.req("POST", "/api/dossiers/%d/heures-sup" % dos["id"], {"agent_id": ag["id"], "lignes": lignes[:1]})
+        h2 = j["id"]
+        a.req("POST", "/api/heures-sup/%d/devis" % h2, {"date": "2026-11-02"})
+        st, j = a.req("POST", "/api/heures-sup/%d/facture" % h2, {"date_facture": "2026-11-30", "montant_ht": 50000})
+        self.assertEqual((j["heures_sup"]["facture_numero"], j["heures_sup"]["montant_ht"]), ("FA H 111/11/2026", 50000), j)
+        self.assertEqual(j["heures_sup"]["devis_numero"], "125-11-ANO-MAD/2026")
+        st, d2 = a.req("GET", "/api/dossiers/%d" % dos["id"])
+        self.assertEqual(len(d2["heures_sup"]), 2)
+        self.assertNotIn("FA H", "".join(x["numero"] or "" for x in d2["factures"]))   # séries séparées
+        # lignes invalides
+        for mauvais in ([{"date": "2026-10-12"}], [{"date": "2026-10-12", "heures": "30"}], [{"date": "x", "heures": 2}],
+                        [{"date": "2026-10-12", "debut": "25:00", "fin": "26:00"}]):
+            st, j = a.req("POST", "/api/dossiers/%d/heures-sup" % dos["id"], {"agent_id": ag["id"], "lignes": mauvais})
+            self.assertEqual(st, 400, (mauvais, j))
+
     def test_99_parametres_entreprise(self):
         """V1 B2B : codes de n°, TVA visite et images réglables ; ANO inchangé par défaut."""
         a = self.admin

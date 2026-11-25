@@ -9,6 +9,8 @@ Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git
 
 ## En cours (branche dev)
 
+- Heures supplémentaires, dans l'ordre de Lola : relevé du client joint au dossier, fiche d'attachement (heures calculées depuis début et fin, PDF), classement 28/56/75 % proposé puis modifiable, Proforma H (n° à part, ex. 124-10-ANO-MAD/2026), facture FA H (ex. FA H 110/11/2026) au montant du devis par défaut, envoi et paiement. Taux horaire = coût mensuel ÷ 173,33 ; calcul identique au devis d'exemple (776 311). Derniers n°, majorations et règle de classement dans Paramètres. Site de test : 2 relevés fictifs sur le dossier MOUELE.
+
 - Mise en conformité des données existantes, automatique au démarrage (une seule fois) : « ANO SERVICE » renseigné sous la désignation pour l'entreprise ANO Services si le champ est vide ; aucun n° émis, montant ou copie archivée n'est modifié. Les factures pas encore émises suivent d'elles-mêmes les nouvelles règles (n° partagé visite / mois). Site de test : « ANO SERVICE » aussi dans « essai » et « verif ».
 
 - Factures : nom de l'entreprise sous la 1re ligne de la désignation, avant l'agent, comme sur les factures d'ANO (« ANO SERVICE ») ; réglable dans Paramètres > Numérotation (vide = raison sociale en majuscules), à l'écran, en PDF et en Word.

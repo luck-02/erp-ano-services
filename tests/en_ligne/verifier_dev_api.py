@@ -148,6 +148,18 @@ def main():
     r = a.ok("GET", "/api/recherche?q=fictif")
     verifier(all(x["type"] != "client" or "fictif" in x["titre"].lower() for x in r["resultats"]), "recherche limitée à l'entreprise")
 
+    print("\n7 bis. Heures supplémentaires")
+    d1 = [x for x in a.ok("GET", "/api/dossiers")["dossiers"] if "MOUELE" in x["numero_proforma"]][0]
+    hs = a.ok("GET", "/api/dossiers/%d" % d1["id"])["heures_sup"]
+    verifier(len(hs) == 2, "MOUELE : 2 relevés d'heures supplémentaires", len(hs))
+    h = a.ok("GET", "/api/heures-sup/%d" % hs[-1]["id"])["heures_sup"]
+    verifier(h["facture_numero"] and h["facture_numero"].startswith("FA H ") and h["montant_ht"] == h["calcul"]["total"],
+             "facture FA H au montant du devis H", h["facture_numero"])
+    verifier(h["ttc"] == h["montant_ht"] + h["tva"] and h["tva"] == round(h["montant_ht"] * 0.18), "FA H : TVA 18 % et TTC")
+    verifier(abs(sum(h["heures"].values()) - h["total_heures"]) < 0.01 and h["releves"], "classement = total de la fiche, relevé joint")
+    verifier(a.req("PUT", "/api/heures-sup/%d" % h["id"], {"lignes": []})[0] == 409, "relevé facturé : plus modifiable")
+    verifier(l_.req("GET", "/api/heures-sup/%d" % h["id"])[0] == 403, "Lecture : pas d'accès aux heures supplémentaires")
+
     print("\n8. Isolation des entreprises et sécurité")
     jeton = a.cookie.split("=", 1)[1].split(".", 1)[1]
     autre = nouveau()

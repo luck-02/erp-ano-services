@@ -48,7 +48,8 @@ async function connexion(page) {
 
 const PAGES = [['#/tableau', '.kpi'], ['#/dossiers', 'table'], ['#/dossier/2', '#ds-docs table'], ['#/dossier/4', '#ds-docs table'],
   ['#/factures', '#fa-m'], ['#/nouvelle-da', '#f-da'], ['#/clients', '#cl-plus'], ['#/interimaires', '.entete'],
-  ['#/journal', '.entete'], ['#/parametres', 'form'], ['#/utilisateurs', '.entete'], ['#/recherche/ndong', '.r-table']];
+  ['#/journal', '.entete'], ['#/parametres', 'form'], ['#/utilisateurs', '.entete'], ['#/recherche/ndong', '.r-table'],
+  ['#/hs/2', '#hs-lignes']];
 
 (async () => {
   const navigateur = await chromium.launch(process.env.CHROMIUM_ARGS ? { args: [process.env.CHROMIUM_ARGS] } : {});
@@ -111,6 +112,17 @@ const PAGES = [['#/tableau', '.kpi'], ['#/dossiers', 'table'], ['#/dossier/2', '
     const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#imp-word')]);
     const w = path.join(OUT, dl.suggestedFilename()); await dl.saveAs(w);
     verifier(fs.readFileSync(w).slice(0, 2).toString() === 'PK', 'export Word des factures du groupe (' + dl.suggestedFilename() + ')');
+
+    // heures supplémentaires : fiche d'attachement, Proforma H et facture FA H, chacune sur 1 page
+    for (const [t, motif, lib] of [['fiche-hs', /Fiche d'attachement/, 'fiche d\'attachement'], ['devis-hs', /Proforma H[\s\S]*Montant Total/, 'Proforma H'],
+      ['facture-hs', /Facture N° FA H [\s\S]*Heures supplémentaires de/, 'facture FA H']]) {
+      await page.goto(SITE + '/#/imprimer/' + t + '/1'); await page.waitForSelector('.doc');
+      const txt = await page.textContent('.doc');
+      const f = path.join(OUT, t + '.pdf');
+      await page.pdf({ path: f, format: 'A4', printBackground: true });
+      const nb = (fs.readFileSync(f).toString('latin1').match(/\/Type\s*\/Page[^s]/g) || []).length;
+      verifier(motif.test(txt) && nb === 1 && !/600.000/.test(txt), lib + ' imprimable sur 1 page, sans salaire', nb);
+    }
 
     // recherche globale : touche « / », plusieurs mots, filtres
     await page.goto(SITE + '/#/tableau'); await page.waitForSelector('.kpi');

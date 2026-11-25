@@ -284,6 +284,23 @@ label.case input { width: auto; }
 /* pied de page centré, comme sur les factures */
 .pf-pied { margin-top: auto; text-align: center; font-size: 10pt; line-height: 1.4; }
 
+/* --- heures supplémentaires (fiche d'attachement, Proforma H) --- */
+.hs .pf-cadre { padding-right: 4mm; }
+.hs-titre { background: #595959; color: #fff; font-weight: 700; font-size: 14pt; text-align: center; padding: 1mm 3mm; margin: 4mm 0 2mm; }
+.hs-ident { line-height: 1.45; }
+.hs-planif { border: 1px solid #000; font-style: italic; text-align: center; padding: 1.5mm; margin: 4mm 0 2mm; font-size: 9.5pt; }
+.hs-table { width: 100%; margin-top: 2mm; }
+.hs-table th, .hs-table td { border: 1px solid #000 !important; text-align: center; vertical-align: middle; padding: 1mm 2mm; font-size: 9.5pt; }
+.hs-table th { font-size: 9.5pt; }
+.hs-table td.g, .hs-devis th:first-child { text-align: left; font-weight: 700; }
+.hs-devis th:first-child { font-style: italic; }
+.hs-table tr.hs-tot td { font-weight: 700; }
+.hs-table tr.hs-tot td:first-child { text-align: right; font-style: italic; }
+.hs-cout { justify-content: flex-start; border: 1px solid #000; padding: .5mm 2mm; margin: 2mm 0; }
+.hs-signs { display: flex; justify-content: space-between; margin-top: 5mm; line-height: 1.6; }
+.hs-resp { display: flex; flex-direction: column; align-items: center; }
+.hs-resp .sig-img { width: 25mm; }
+
 /* --- facture --- */
 .fa { font-size: 11pt; padding: 12mm 14mm 8mm; }
 /* facture : double trait épais sous le logo, bloc ANO en Arial sans trait (comme la facture 152 bis) */
