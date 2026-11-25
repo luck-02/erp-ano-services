@@ -174,7 +174,8 @@ class TestsAPI(unittest.TestCase):
         self.assertEqual((st, j["emises"]), (200, 3), j)
         st, f = a.req("GET", "/api/factures?ids=" + ",".join(map(str, j["ids"])))
         nums = [x["numero"] for x in f["factures"]]
-        self.assertEqual(nums, ["FA 153/11-Visite Médicale/2026", "FA 154/11-MAD/2026", "FA 155/12-MAD/2026"])
+        # visite + facture de novembre émises ensemble -> même n° 153 ; 12 = mois d'émission
+        self.assertEqual(nums, ["FA 153/Visite médicale/2026", "FA 153/12/2026", "FA 154/12/2026"])
         self.assertEqual(f["factures"][0]["echeance"], "2027-01-31")   # 05/12 + 30 j -> fin janvier
         # relancer : rien de plus
         st, j2 = a.req("POST", "/api/factures/emettre", {"mois": "2026-12", "rattrapage": True})
@@ -186,14 +187,14 @@ class TestsAPI(unittest.TestCase):
         # facture bis selon PV
         st, j = a.req("POST", "/api/factures/%d/bis" % nov["id"], {"montant_ht": 1060000, "date_pv": "2026-12-20"})
         self.assertEqual(st, 200, j)
-        self.assertEqual(j["numero"], "FA 154 bis/11-MAD/2026")
+        self.assertEqual(j["numero"], "FA 153 bis/12/2026")
         st, j3 = a.req("POST", "/api/factures/%d/bis" % nov["id"], {"montant_ht": 1, "date_pv": "2026-12-20"})
         self.assertEqual(st, 409)
         # paiement de la bis
         st, fb = a.req("GET", "/api/factures?ids=%d,%d" % (nov["id"], j["id"]))
         st_par_num = {x["numero"]: x for x in fb["factures"]}
-        self.assertEqual(st_par_num["FA 154/11-MAD/2026"]["statut"], "Remplacée")
-        bis = st_par_num["FA 154 bis/11-MAD/2026"]
+        self.assertEqual(st_par_num["FA 153/12/2026"]["statut"], "Remplacée")
+        bis = st_par_num["FA 153 bis/12/2026"]
         self.assertEqual(bis["ttc"], 1060000 + 190800)
         st, j = a.req("POST", "/api/factures/paiement", {"ids": [bis["id"]], "date": "2027-03-15", "reference": "VIR-0001"})
         self.assertEqual(j["modifiees"], 1)
@@ -208,7 +209,7 @@ class TestsAPI(unittest.TestCase):
         self.assertIn("COMILOG SA - Facture Novembre 2026 - ", urllib.parse.unquote(a.derniere.getheader("Content-Disposition")))
         z = zipfile.ZipFile(io.BytesIO(doc))
         xml = z.read("word/document.xml").decode()
-        self.assertIn("N° FA 153/11-Visite Médicale/2026", xml)
+        self.assertIn("N° FA 153/Visite médicale/2026", xml)
         self.assertIn("TVA (18 %)</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w=\"1600\" w:type=\"dxa\"/><w:vAlign w:val=\"top\"/></w:tcPr><w:p><w:pPr><w:spacing w:before=\"60\" w:after=\"60\"/></w:pPr><w:r><w:rPr><w:sz w:val=\"22\"/><w:szCs w:val=\"22\"/></w:rPr><w:t xml:space=\"preserve\">0<", xml)   # visite : TVA (18 %) = 0
         self.assertNotIn("Modalité", xml)
         for interne in ("Imputation", "IMP-01", "CLI001", vis["numero_proforma"], "DA-"):
@@ -219,7 +220,7 @@ class TestsAPI(unittest.TestCase):
         self.assertEqual(st, 200)
         z = zipfile.ZipFile(io.BytesIO(doc))
         self.assertEqual(len(z.namelist()), 2)
-        xml = z.read([n for n in z.namelist() if "154 bis" in n][0])
+        xml = z.read([n for n in z.namelist() if "153 bis" in n][0])
         xml = zipfile.ZipFile(io.BytesIO(xml)).read("word/document.xml").decode()
         self.assertIn("Ajustement selon PV", xml)
         self.assertIn("Facture Novembre 2026", xml)
@@ -237,7 +238,7 @@ class TestsAPI(unittest.TestCase):
         self.assertIn("text/csv", a.derniere.getheader("Content-Type"))
         txt = csv.decode("utf-8-sig")
         self.assertTrue(txt.startswith("N° facture;Mois;Type"))
-        self.assertIn("FA 154 bis/11-MAD/2026", txt)
+        self.assertIn("FA 153 bis/12/2026", txt)
         self.assertNotIn("576300", txt)                 # jamais le salaire de base
         self.assertEqual(serveur.api._cellule_csv("=SOMME(A1)"), "'=SOMME(A1)")
         self.assertEqual(serveur.api._cellule_csv('a;"b"'), '"a;""b"""')
@@ -261,14 +262,33 @@ class TestsAPI(unittest.TestCase):
         a = self.admin
         st, d = a.req("GET", "/api/dossiers/%d" % self.did)
         self.assertTrue(d["verrouille"])
+        st, f0 = a.req("GET", "/api/factures?dossier=%d" % self.did)
+        emises0 = {x["id"]: (x["numero"], x["montant_ht"]) for x in f0["factures"] if x["numero"]}
+        # v3.5.0 : la proforma reste modifiable après émission ; les factures émises ne bougent pas
         corps = da_reference()
         corps["agents"][0]["salaire_base"] = 600000
-        st, j = a.req("PUT", "/api/dossiers/%d" % self.did, corps)
-        self.assertEqual(st, 409)
-        corps = da_reference()
         corps["imputation"] = "IMP-02"
         st, j = a.req("PUT", "/api/dossiers/%d" % self.did, corps)
         self.assertEqual(st, 200, j)
+        self.assertEqual(j["emises_gardees"], len(emises0))
+        st, f1 = a.req("GET", "/api/factures?dossier=%d" % self.did)
+        apres = {x["id"]: x for x in f1["factures"]}
+        for fid, (num, ht) in emises0.items():
+            self.assertEqual((apres[fid]["numero"], apres[fid]["montant_ht"]), (num, ht))   # inchangées
+        prevues = [x for x in f1["factures"] if not x["numero"] and x["type"] == "MAD" and x["jours"] == x["jours_mois"]]
+        self.assertTrue(prevues and all(x["montant_ht"] == 1146000 for x in prevues))      # 600 000 × 1,91
+        # ajouter puis retirer un agent (sans facture émise) : permis
+        corps2 = da_reference()
+        corps2["imputation"] = "IMP-02"
+        corps2["agents"].append({"nom": "AUTRE Fictif", "poste": "p", "salaire_base": 100000})
+        st, j = a.req("PUT", "/api/dossiers/%d" % self.did, corps2)
+        self.assertEqual(st, 200, j)
+        corps3 = da_reference()
+        corps3["imputation"] = "IMP-02"
+        st, j = a.req("PUT", "/api/dossiers/%d" % self.did, corps3)
+        self.assertEqual(st, 200, j)
+        st, f3 = a.req("GET", "/api/factures?dossier=%d" % self.did)
+        self.assertEqual(sorted(x["id"] for x in f3["factures"] if x["numero"]), sorted(emises0))
         st, j = a.req("POST", "/api/dossiers/%d/statut" % self.did, {"statut": "Annulé"})
         self.assertEqual(st, 409)
 
@@ -558,7 +578,7 @@ class TestsAPI(unittest.TestCase):
         self.assertFalse(j["conversion_pdf"])
         fact = [d for d in j["documents"] if d["categorie"] == "Facture"]
         self.assertEqual(len(fact), 4)                  # visite, novembre, décembre, bis
-        self.assertIn("FA 154 bis/11-MAD/2026", [d["facture_numero"] for d in fact])
+        self.assertIn("FA 153 bis/12/2026", [d["facture_numero"] for d in fact])
         for d in j["documents"]:
             self.assertNotIn("fichier", d)              # le nom sur le disque reste interne
             self.assertNotIn("sha256", d)
@@ -650,13 +670,109 @@ class TestsAPI(unittest.TestCase):
         finally:
             os.environ["ANO_SOFFICE"] = ancien
 
+    def test_20_retours_v350(self):
+        """v3.5.0 : facture modifiable après émission, paiement plafonné au TTC,
+        facture groupée (ex. 9 infirmiers), visite émise seule = n° à elle."""
+        import io
+        import zipfile
+        a = self.admin
+        # --- dossier groupé : 3 agents, 2 mois pleins, une seule facture par mois
+        corps = {"client_id": 1, "service": "DRH", "lieu": "Moanda (2) / Owendo (1)", "date_debut": "2027-03-01",
+                 "date_fin": "2027-04-30", "visite_mode": "Non", "nom_numero": "(3) Infirmiers_IDE",
+                 "facture_groupee": True, "agents": [
+                     {"nom": "GROUPE Un Fictif", "poste": "IDE", "salaire_base": 674220},
+                     {"nom": "GROUPE Deux Fictif", "poste": "IDE", "salaire_base": 674220},
+                     {"nom": "GROUPE Trois Fictif", "poste": "IDE", "salaire_base": 674220}]}
+        st, j = a.req("POST", "/api/dossiers", corps)
+        self.assertEqual(st, 200, j)
+        self.assertIn("-ANO-(3) INFIRMIERS_IDE/", j["numero_proforma"])
+        gid = j["id"]
+        st, d = a.req("GET", "/api/dossiers/%d" % gid)
+        self.assertEqual(d["dossier"]["facture_groupee"], 1)
+        self.assertEqual(d["proforma"]["cout_mensuel_total"], 3863281)   # 3 × 1 287 760,2 -> arrondi une fois
+        st, j = a.req("POST", "/api/dossiers/%d/bc" % gid, {"bc_numero": "700001", "bc_montant": d["proforma"]["cumul_ht"]})
+        st, j = a.req("POST", "/api/dossiers/%d/generer-factures" % gid, {})
+        self.assertEqual((st, j["total"]), (200, 2), j)
+        st, f = a.req("GET", "/api/factures?dossier=%d" % gid)
+        fs = f["factures"]
+        self.assertEqual([x["montant_ht"] for x in fs], [3863281, 3863281])
+        self.assertEqual(fs[0]["agent"], "GROUPE_GROUPE_GROUPE")
+        self.assertEqual((fs[0]["groupe"], fs[0]["nb_agents"]), (1, 3))
+        # le salaire est visible dans la liste des dossiers (direction / gestion)
+        st, l = a.req("GET", "/api/dossiers")
+        self.assertEqual([x for x in l["dossiers"] if x["id"] == gid][0]["salaires"], [674220] * 3)
+        # --- émission : n° au format réel, 03 = mois d'émission
+        st, pa = a.req("GET", "/api/parametres")
+        n0 = pa["parametres"]["dernier_num_facture"]
+        st, j = a.req("POST", "/api/factures/emettre", {"ids": [fs[0]["id"]], "date_facture": "2027-03-31"})
+        self.assertEqual(j["emises"], 1, j)
+        st, f = a.req("GET", "/api/factures?ids=%d" % fs[0]["id"])
+        fa = f["factures"][0]
+        self.assertEqual(fa["numero"], "FA %d/03/2027" % (n0 + 1))
+        st, doc = a.req("GET", "/api/factures/word?ids=%d" % fa["id"])
+        xml = zipfile.ZipFile(io.BytesIO(doc)).read("word/document.xml").decode()
+        self.assertIn("MAD de 3 IDE", xml)
+        self.assertIn(">Mois<", xml)
+        # --- modifier la facture émise : n° gardé, TVA recalculée, unité changée, copie gardée
+        st, docs0 = a.req("GET", "/api/dossiers/%d/documents" % gid)
+        st, j = a.req("PUT", "/api/factures/%d" % fa["id"], {"montant_ht": 3800000, "unite": "Forfait", "jours": 31,
+                                                              "date_facture": "2027-04-02"})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["ttc"], 3800000 + 684000)
+        st, f = a.req("GET", "/api/factures?ids=%d" % fa["id"])
+        fm = f["factures"][0]
+        self.assertEqual((fm["numero"], fm["montant_ht"], fm["tva"], fm["unite"], fm["date_facture"]),
+                         (fa["numero"], 3800000, 684000, "Forfait", "2027-04-02"))
+        self.assertEqual(fm["echeance"], "2027-05-31")
+        st, docs1 = a.req("GET", "/api/dossiers/%d/documents" % gid)
+        self.assertEqual(len(docs1["documents"]), len(docs0["documents"]) + 1)
+        st, doc = a.req("GET", "/api/factures/word?ids=%d" % fa["id"])
+        xml = zipfile.ZipFile(io.BytesIO(doc)).read("word/document.xml").decode()
+        self.assertIn(">Forfait<", xml)
+        self.assertIn("3.800.000", xml)
+        st, jr = a.req("GET", "/api/journal")
+        self.assertIn("facture_modifiee", {x["action"] for x in jr["journal"]})
+        # une facture prévue corrigée à la main n'est plus écrasée par « Mettre à jour les factures »
+        st, j = a.req("PUT", "/api/factures/%d" % fs[1]["id"], {"montant_ht": 123})
+        self.assertEqual(st, 200, j)
+        st, j = a.req("POST", "/api/dossiers/%d/generer-factures" % gid, {})
+        st, f = a.req("GET", "/api/factures?ids=%d" % fs[1]["id"])
+        self.assertEqual(f["factures"][0]["montant_ht"], 123)
+        # --- paiement : jamais plus que le TTC
+        st, j = a.req("POST", "/api/factures/paiement", {"ids": [fa["id"]], "date": "2027-05-10", "montant": 99999999})
+        self.assertEqual(st, 400, j)
+        self.assertIn("dépasse", j["erreur"])
+        st, j = a.req("POST", "/api/factures/paiement", {"ids": [fa["id"]], "date": "2027-05-10"})
+        self.assertEqual(j["modifiees"], 1)
+        st, j = a.req("PUT", "/api/factures/%d" % fa["id"], {"montant_ht": 1})
+        self.assertEqual(st, 409)                       # payée : annuler le paiement d'abord
+        st, t = a.req("GET", "/api/tableau-de-bord?mois=2027-03")
+        self.assertGreaterEqual(t["reste_a_encaisser"], 0)
+        self.assertEqual(t["trop_percus"], [])
+        mars = [x for x in t["serie"] if x["mois"] == "2027-03-01"][0]
+        self.assertEqual((mars["facture_ttc"], mars["paye"]), (3800000 + 684000, 3800000 + 684000))
+        # --- visite médicale seule : n° à elle (FA N/Visite médicale/AAAA)
+        corps = {"client_id": 1, "service": "DAF", "lieu": "Moanda", "date_debut": "2027-06-01", "date_fin": "2027-07-31",
+                 "visite_mode": "Auto", "agents": [{"nom": "VISITE Seule Fictive", "poste": "p", "salaire_base": 200000}]}
+        st, j = a.req("POST", "/api/dossiers", corps)
+        vid = j["id"]
+        a.req("POST", "/api/dossiers/%d/generer-factures" % vid, {"forcer": True})
+        st, f = a.req("GET", "/api/factures?dossier=%d" % vid)
+        vis = [x for x in f["factures"] if x["type"] == "VISITE"][0]
+        mad = [x for x in f["factures"] if x["type"] == "MAD"][0]
+        st, j = a.req("POST", "/api/factures/emettre", {"ids": [vis["id"]], "date_facture": "2027-06-05"})
+        st, j = a.req("POST", "/api/factures/emettre", {"ids": [mad["id"]], "date_facture": "2027-06-06"})
+        st, f = a.req("GET", "/api/factures?ids=%d,%d" % (vis["id"], mad["id"]))
+        nums = sorted(x["numero"] for x in f["factures"])
+        self.assertEqual(nums, sorted(["FA %d/Visite médicale/2027" % (n0 + 2), "FA %d/06/2027" % (n0 + 3)]))
+
     def test_99_parametres_entreprise(self):
         """V1 B2B : codes de n°, TVA visite et images réglables ; ANO inchangé par défaut."""
         a = self.admin
         st, p = a.req("GET", "/api/parametres")
         d = p["parametres"]
         self.assertEqual((d["code_entreprise"], d["prefixe_facture"], d["code_mad"], d["tva_visite"], d["bc_chiffres"]),
-                         ("ANO", "FA", "MAD", False, 6))
+                         ("ANO", "FA", "", False, 6))
         st, j = a.req("PUT", "/api/parametres", {"parametres": {"code_mad": "A/B"}})
         self.assertEqual(st, 400)                       # « / » interdit dans un code
         st, j = a.req("PUT", "/api/parametres", {"parametres": {"code_entreprise": "  "}})

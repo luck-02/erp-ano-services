@@ -151,8 +151,17 @@ def echeance(date_facture, delai_jours):
 # ---------------------------------------------------------------------------
 def nom_pour_numero(texte):
     t = sans_accents(texte or "").upper()
-    t = re.sub(r"[^A-Z0-9 \-]", "", t)
+    t = re.sub(r"[^A-Z0-9 ()_\-]", "", t)
     return re.sub(r"\s+", " ", t).strip()
+
+
+def noms_groupe(noms):
+    """Ligne des noms comme sur les documents d'ANO : 1 agent = nom complet ;
+    plusieurs = 1er mot de chaque nom, séparés par « _ » (DUPONT_MBINA_…)."""
+    noms = [str(n).strip() for n in noms if str(n).strip()]
+    if len(noms) == 1:
+        return noms[0]
+    return "_".join(premier_mot(n).upper() for n in noms)
 
 
 def premier_mot(texte):
@@ -179,14 +188,12 @@ def calcul_proforma(dossier, agents, charges, params):
     validite = int(params.get("validite_visite_mois", 12))
     lignes_agents = []
     total_base = 0
-    total_cout = 0
     nb_visites = 0
     for a in agents:
         cout = cout_mensuel(a["salaire_base"], charges)
         vis = dates_visites(debut, fin, a.get("derniere_visite"), dossier.get("visite_mode", "Auto"), validite)
         nb_visites += len(vis)
         total_base += int(a["salaire_base"])
-        total_cout += cout
         lignes_agents.append({
             "nom": a["nom"], "poste": a["poste"], "salaire_base": int(a["salaire_base"]),
             "cout_mensuel": cout, "visites": [v.isoformat() for v in vis],
@@ -198,6 +205,10 @@ def calcul_proforma(dossier, agents, charges, params):
         tot = arrondi(Fraction(total_base * int(c["taux_pdm"]), 10000))
         detail.append({"libelle": c["libelle"], "taux_pdm": int(c["taux_pdm"]), "nb": nb,
                        "pu": arrondi(Fraction(tot, nb)) if nb else 0, "total": tot})
+    # Coût mensuel du groupe calculé sans arrondi par agent, arrondi une seule fois,
+    # comme la proforma Excel (9 × 674 220 × 1,91 = 11 589 841,8 -> 11 589 842)
+    cout_exact = Fraction(total_base * coefficient_pdm(charges), 10000)
+    total_cout = arrondi(cout_exact)
     mois = []
     somme_prorata = Fraction(0)
     for m, j, jm in mois_couverts(debut, fin):
@@ -205,10 +216,10 @@ def calcul_proforma(dossier, agents, charges, params):
         somme_prorata += p
         mois.append({"mois": m.isoformat(), "libelle": libelle_mois(m), "jours": j, "jours_mois": jm,
                      "prorata": float(p), "complet": j == jm,
-                     "montant": float(total_cout * p)})
+                     "montant": float(cout_exact * p)})
     visites_ht = nb_visites * visite_ht
     # Cumul : prorata non arrondi mois par mois, arrondi une seule fois
-    cumul_ht = visites_ht + arrondi(total_cout * somme_prorata)
+    cumul_ht = visites_ht + arrondi(cout_exact * somme_prorata)
     t = tva(cumul_ht, params["tva_pdm"])
     return {
         "agents": lignes_agents, "nb_agents": nb, "coefficient_pdm": coefficient_pdm(charges),
@@ -221,6 +232,26 @@ def calcul_proforma(dossier, agents, charges, params):
 # ---------------------------------------------------------------------------
 # Factures
 # ---------------------------------------------------------------------------
+def lignes_factures_groupe(dossier, agents, charges, params):
+    """Facture groupée (ex. 9 infirmiers : une seule facture par mois pour tout le
+    groupe, quantité 1 mois). Montant = coût du groupe au prorata, arrondi une fois.
+    Visites : une facture par mois où il y en a, quantité = nombre de visites."""
+    debut, fin = dossier["date_debut"], dossier["date_fin"]
+    total_base = sum(int(a["salaire_base"]) for a in agents)
+    cout_exact = Fraction(total_base * coefficient_pdm(charges), 10000)
+    visites = {}
+    for a in agents:
+        for v in dates_visites(debut, fin, a.get("derniere_visite"), dossier.get("visite_mode", "Auto"),
+                               int(params.get("validite_visite_mois", 12))):
+            visites[debut_mois(v)] = visites.get(debut_mois(v), 0) + 1
+    res = [{"type": TYPE_VISITE, "mois": m, "jours": n, "jours_mois": None,
+            "montant_ht": n * int(params["visite_ht"])} for m, n in sorted(visites.items())]
+    for m, j, jm in mois_couverts(debut, fin):
+        res.append({"type": TYPE_MAD, "mois": m, "jours": j, "jours_mois": jm,
+                    "montant_ht": arrondi(cout_exact * Fraction(j, jm))})
+    return res
+
+
 def lignes_factures_agent(dossier, agent, charges, params):
     """Factures prévues pour un agent : visites (au mois de chaque visite)
     puis une facture par mois couvert, montant au prorata."""
@@ -237,14 +268,20 @@ def lignes_factures_agent(dossier, agent, charges, params):
     return res
 
 
-def numero_facture(n, type_facture, mois, prefixe="FA", code_mad="MAD", code_visite="Visite Médicale"):
-    """FA 161/11-MAD/2026 ; préfixe et codes réglables par entreprise (Paramètres)."""
-    libelle = code_visite if type_facture == TYPE_VISITE else code_mad
-    return ("%s %d/%02d-%s/%d" % (prefixe, n, mois.month, libelle, mois.year)).strip()
+def numero_facture(n, type_facture, date_emission, prefixe="FA", code_mad="", code_visite="Visite médicale"):
+    """Règle des factures réelles d'ANO (Luc, 25/11/2026) :
+    - facture du mois : FA 159/11/2026 (11 = mois d'émission ; avec un code : FA 159/11-MAD/2026)
+    - visite médicale : FA 159/Visite médicale/2026 (même n° que la facture du mois
+      émise avec elle ; n° à elle si elle est émise seule)
+    Préfixe et codes réglables par entreprise (Paramètres)."""
+    if type_facture == TYPE_VISITE:
+        return ("%s %d/%s/%d" % (prefixe, n, code_visite or "Visite médicale", date_emission.year)).strip()
+    suite = "-" + code_mad if code_mad else ""
+    return ("%s %d/%02d%s/%d" % (prefixe, n, date_emission.month, suite, date_emission.year)).strip()
 
 
 def numero_bis(numero):
-    """FA 152/08-MAD/2026 -> FA 152 bis/08-MAD/2026"""
+    """FA 152/08/2026 -> FA 152 bis/08/2026"""
     if "/" in numero:
         i = numero.index("/")
         return numero[:i] + " bis" + numero[i:]

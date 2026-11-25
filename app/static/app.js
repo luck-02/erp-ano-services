@@ -121,6 +121,7 @@ function ouvrirModale(contenu, large) {
   m.innerHTML = html`<div class="boite ${large ? "large" : ""}">${contenu}</div>`.s;
   m.classList.remove("cache");
   appliquerStyles(m);
+  marquerObligatoires(m);
   const premier = $("input, select, textarea", m);
   if (premier) premier.focus();
   return m;
@@ -261,6 +262,15 @@ async function demarrerApp() {
 
 window.addEventListener("hashchange", () => { if (etat.user) router(); });
 
+// Rôles permis par page (les mêmes contrôles sont faits par le serveur)
+function rolesPage(nom, a1) {
+  const p = PAGES.find((x) => x.h === "#/" + nom);
+  if (p) return p.roles;
+  if (nom === "dossier" || nom === "modifier-da") return ["admin", "gestion"];
+  if (nom === "imprimer") return a1 === "factures" ? ["admin", "gestion", "lecture"] : ["admin", "gestion"];
+  return null;
+}
+
 async function router() {
   fermerModale();
   const h = location.hash || "#/tableau";
@@ -269,6 +279,12 @@ async function router() {
   if (!page) return;
   page.innerHTML = '<p class="doux">Chargement…</p>';
   const [, nom, a1, a2] = h.split("/");
+  // Page non permise pour ce rôle (lien ancien, favori, autre compte) : on va à la page d'accueil du rôle
+  const roles = rolesPage(nom, a1);
+  if (roles && !roles.includes(etat.user.role)) {
+    location.replace("#/tableau");
+    return;
+  }
   try {
     if (nom === "tableau" || !nom) await pageTableau(page);
     else if (nom === "dossiers") await pageDossiers(page);
@@ -310,9 +326,9 @@ function carteAFaire(a) {
 
 async function pageTableau(page) {
   const t = await api("GET", "/api/tableau-de-bord?mois=" + filtres.mois);
-  const premier = t.serie.findIndex((s) => s.a_facturer_ht || s.facture_ht || s.paye);
+  const premier = t.serie.findIndex((s) => s.a_facturer_ht || s.facture_ttc || s.paye);
   t.serie = premier < 0 ? t.serie.slice(-1) : t.serie.slice(premier);
-  const maxi = Math.max(1, ...t.serie.map((s) => Math.max(s.a_facturer_ht, s.facture_ht, s.paye)));
+  const maxi = Math.max(1, ...t.serie.map((s) => Math.max(s.a_facturer_ht, s.facture_ttc, s.paye)));
   const largeur = (v) => Math.round((100 * v) / maxi) + "%";
   page.innerHTML = html`
     <div class="entete"><div><h1>Tableau de bord</h1><p>Situation du mois de ${t.libelle}</p></div>
@@ -320,6 +336,7 @@ async function pageTableau(page) {
     ${t.num_facture_manquant && peut("admin") ? html`<div class="bandeau alerte"><span>Avant d'émettre la première facture, indiquez le <b>dernier n° de facture</b> réellement utilisé (ex. 152).</span><a class="bouton" href="#/parametres">Ouvrir les paramètres</a></div>` : ""}
     ${peut("admin", "gestion") ? carteAFaire(t.a_faire) : ""}
     ${t.ecarts_bc.length ? html`<div class="bandeau danger"><span>Écart entre BC et proforma : ${t.ecarts_bc.map((e) => html`<a href="#/dossier/${e.dossier_id}">${e.numero}</a> (${fmt(e.ecart)} XAF) `)}</span></div>` : ""}
+    ${t.trop_percus && t.trop_percus.length && peut("admin", "gestion") ? html`<div class="bandeau alerte"><span>Paiement plus grand que la facture (erreur de saisie ?) : ${t.trop_percus.map((x) => html`<b>${x.numero}</b> (payé ${fmt(x.paye)} pour ${fmt(x.ttc)} TTC) `)}. Annulez le paiement dans « Factures » puis ressaisissez-le.</span></div>` : ""}
     <div class="grille g4">
       <div class="kpi accent"><div class="lib">Personnes en contrat</div><div class="val">${t.personnes_en_contrat}</div><div class="sous">${t.nouveaux} nouveau(x), ${t.fins} fin(s) dans le mois${t.personnes_en_attente ? html`<br>+ ${t.personnes_en_attente} en attente de validation` : ""}</div></div>
       <div class="kpi"><div class="lib">À facturer (HT)</div><div class="val">${fmt(t.a_facturer_total_ht)}</div><div class="sous">dont visites médicales ${fmt(t.visites_ht)} · TTC ${fmt(t.a_facturer_ttc)}</div></div>
@@ -343,11 +360,11 @@ async function pageTableau(page) {
           ${t.alertes_visite.map((a) => html`<tr class="cliquable" data-href="#/dossier/${a.dossier_id}"><td>${a.agent}</td><td>${dateFr(a.date)}</td><td>${dateFr(a.fin)}</td></tr>`)}</tbody></table>` : html`<p class="doux">Aucune visite à prévoir dans les ${etat.params.parametres.alerte_visite_jours} jours.</p>`}</div>
     </div>
     <div class="carte"><h2>Mois par mois (12 derniers mois au plus)</h2>
-      <div class="legende"><span class="l-prevu">Prévu (HT)</span><span class="l-facture">Facturé (HT)</span><span class="l-paye">Payé (TTC)</span></div>
-      <div class="tableau-wrap"><table class="barres"><thead><tr><th>Mois</th><th class="num">Prévu HT</th><th class="num">Facturé HT</th><th class="num">Payé</th><th data-style="width:40%"></th></tr></thead><tbody>
-      ${t.serie.map((s) => html`<tr><td>${s.libelle}</td><td class="num">${fmt(s.a_facturer_ht)}</td><td class="num">${fmt(s.facture_ht)}</td><td class="num">${fmt(s.paye)}</td>
+      <div class="legende"><span class="l-prevu">Prévu (HT)</span><span class="l-facture">Facturé (TTC)</span><span class="l-paye">Payé (TTC)</span></div>
+      <div class="tableau-wrap"><table class="barres"><thead><tr><th>Mois</th><th class="num">Prévu HT</th><th class="num">Facturé TTC</th><th class="num">Payé TTC</th><th data-style="width:40%"></th></tr></thead><tbody>
+      ${t.serie.map((s) => html`<tr><td>${s.libelle}</td><td class="num">${fmt(s.a_facturer_ht)}</td><td class="num">${fmt(s.facture_ttc)}</td><td class="num">${fmt(s.paye)}</td>
         <td><div class="barre-fond"><div class="barre-val bv-prevu" data-style="width:${largeur(s.a_facturer_ht)}"></div></div>
-            <div class="barre-fond" data-style="margin-top:2px"><div class="barre-val bv-facture" data-style="width:${largeur(s.facture_ht)}"></div></div>
+            <div class="barre-fond" data-style="margin-top:2px"><div class="barre-val bv-facture" data-style="width:${largeur(s.facture_ttc)}"></div></div>
             <div class="barre-fond" data-style="margin-top:2px"><div class="barre-val bv-paye" data-style="width:${largeur(s.paye)}"></div></div></td></tr>`)}
       </tbody></table></div>
       <p class="aide">« Prévu » = montants au prorata des contrats validés + visites médicales dues dans le mois.</p></div>`.s;
@@ -371,7 +388,19 @@ function appliquerStyles(racine) {
 function lignesCliquables(racine) {
   $$("tr[data-href]", racine).forEach((tr) => { tr.onclick = (e) => { if (!e.target.closest("button, input, a")) location.hash = tr.dataset.href; }; });
 }
-function rendre(page, contenu) { page.innerHTML = contenu.s; appliquerStyles(page); lignesCliquables(page); }
+function rendre(page, contenu) { page.innerHTML = contenu.s; appliquerStyles(page); lignesCliquables(page); marquerObligatoires(page); }
+
+// Aide d'un champ : petite icône ⓘ, le texte s'affiche au survol (ou au toucher / clavier)
+function aideIcone(contenu) {
+  return html`<span class="info" tabindex="0" aria-label="Aide">i<span class="bulle" role="tooltip">${contenu}</span></span>`;
+}
+// Astérisque rouge sur le libellé de chaque champ obligatoire
+function marquerObligatoires(racine) {
+  $$("input[required], select[required], textarea[required]", racine).forEach((el) => {
+    const l = el.id && $('label[for="' + el.id + '"]', racine);
+    if (l && !$(".requis", l)) l.insertAdjacentHTML("beforeend", ' <span class="requis" aria-hidden="true">*</span>');
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Dossiers
@@ -390,16 +419,17 @@ async function pageDossiers(page) {
         <div><select id="d-st"><option value="">Tous les statuts</option>${etat.params.statuts.map((s) => html`<option ${s === filtres.dosStatut ? "selected" : ""}>${s}</option>`)}</select></div>
         <div class="doux petit" data-style="align-self:center">${r.dossiers.length} dossier(s)</div>
       </div>
-      <div class="tableau-wrap"><table><thead><tr><th>N° proforma</th><th>Agent(s)</th><th>Service · lieu</th><th>Période</th><th class="num">Cumul HT</th><th>BC</th><th>Factures</th><th>Statut</th></tr></thead><tbody>
+      <div class="tableau-wrap"><table><thead><tr><th>N° proforma</th><th>Agent(s)</th><th>Service · lieu</th><th>Période</th><th class="num">Salaire de base</th><th class="num">Cumul HT</th><th>BC</th><th>Factures</th><th>Statut</th></tr></thead><tbody>
       ${r.dossiers.length ? r.dossiers.map((d) => html`<tr class="cliquable" data-href="#/dossier/${d.id}">
         <td class="gras">${d.numero_proforma}</td>
         <td>${d.agents.map((n, i) => html`${i ? ", " : ""}${n}${d.matricules[i] ? html` <span class="matricule">${d.matricules[i]}</span>` : ""}`)}<div class="doux petit">${[...new Set(d.postes)].join(", ")}</div></td>
         <td>${d.service}<div class="doux petit">${d.lieu}</div></td>
         <td class="petit">${dateFr(d.date_debut)} → ${dateFr(d.date_fin)}</td>
+        <td class="num">${d.salaires.map((x, i) => html`${i ? html`<br>` : ""}${fmt(x)}`)}</td>
         <td class="num">${fmt(d.cumul_ht)}</td>
         <td>${d.bc_numero || html`<span class="doux">—</span>`}${d.ecart_bc !== null && Math.abs(d.ecart_bc) > 1 ? html`<div class="badge b-Annulé">écart ${fmt(d.ecart_bc)}</div>` : ""}</td>
         <td class="petit">${d.nb_factures ? html`${d.nb_emises} / ${d.nb_factures} émises` : html`<span class="doux">—</span>`}</td>
-        <td>${badge(d.statut)}</td></tr>`) : html`<tr><td colspan="8" class="doux">Aucun dossier. Commencez par « Nouvelle DA ».</td></tr>`}
+        <td>${badge(d.statut)}</td></tr>`) : html`<tr><td colspan="9" class="doux">Aucun dossier. Commencez par « Nouvelle DA ».</td></tr>`}
       </tbody></table></div></div>`);
   let minuteur;
   $("#d-q").oninput = (e) => { clearTimeout(minuteur); minuteur = setTimeout(() => { filtres.dosQ = e.target.value; pageDossiers(page).then(() => { const i = $("#d-q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
@@ -413,13 +443,14 @@ async function pageSaisieDA(page, id) {
   const [cl, det, it] = await Promise.all([api("GET", "/api/clients"), id ? api("GET", "/api/dossiers/" + id) : null, api("GET", "/api/interimaires")]);
   const connus = it.interimaires;
   const p = etat.params.parametres;
-  const d = det ? det.dossier : { client_id: (cl.clients[0] || {}).id, visite_mode: "Auto", date_proforma: auj(), service: "", lieu: "", num_da: "", imputation: "", date_debut: "", date_fin: "", notes: "", nom_numero: "" };
+  const d = det ? det.dossier : { client_id: (cl.clients[0] || {}).id, visite_mode: "Auto", date_proforma: auj(), service: "", lieu: "", num_da: "", imputation: "", date_debut: "", date_fin: "", notes: "", nom_numero: "", facture_groupee: 0 };
   const agents = det ? det.agents.map((a) => ({ nom: a.nom, poste: a.poste, salaire_base: a.salaire_base, derniere_visite: a.derniere_visite || "" })) : [{ nom: "", poste: "", salaire_base: "", derniere_visite: "" }];
   const verrou = det && det.verrouille;
   rendre(page, html`
     <div class="entete"><div><h1>${id ? "Modifier la DA " + det.dossier.numero_proforma : "Nouvelle DA"}</h1>
-      <p>Saisissez la demande d'achat du client : la proforma se calcule à droite au fur et à mesure.</p></div></div>
-    ${verrou ? html`<div class="bandeau alerte">Des factures sont déjà émises : seuls le n° de DA, le service, l'imputation, le lieu et les notes peuvent changer.</div>` : ""}
+      <p>Saisissez la demande d'achat du client : la proforma se calcule à droite au fur et à mesure.
+        <span class="legende-requis"><span class="requis">*</span> champ obligatoire · <span class="info-ex">i</span> survolez pour l'aide</span></p></div></div>
+    ${verrou ? html`<div class="bandeau alerte">Des factures sont déjà émises : elles gardent leurs montants. Vos changements s'appliquent à la proforma et aux factures pas encore émises. Pour corriger une facture émise, utilisez « Modifier » sur la facture.</div>` : ""}
     <div class="da">
       <form id="f-da" autocomplete="off">
         <div class="carte"><h2>1. La demande</h2>
@@ -429,8 +460,8 @@ async function pageSaisieDA(page, id) {
           </div>
           <div class="ligne-form lf3">
             <div class="champ"><label for="da-lieu">Lieu de travail</label><input id="da-lieu" list="l-lieux" value="${d.lieu}" required maxlength="80"></div>
-            <div class="champ"><label for="da-num">N° de DA</label><input id="da-num" value="${d.num_da}" maxlength="60" placeholder="Automatique"><div class="aide">Laissez vide : n° donné automatiquement (<span id="da-num-auto">DA-AAAA-001</span>). Sinon, saisissez celui de la DA.</div></div>
-            <div class="champ"><label for="da-imp">N° d'imputation</label><input id="da-imp" value="${d.imputation}" maxlength="80"><div class="aide">Souvent en bleu sur la DA. Non bloquant.</div></div>
+            <div class="champ"><label for="da-num">N° de DA ${aideIcone(html`Laissez vide : n° donné automatiquement (<span id="da-num-auto">DA-AAAA-001</span>). Sinon, saisissez celui de la DA.`)}</label><input id="da-num" value="${d.num_da}" maxlength="60" placeholder="Automatique"></div>
+            <div class="champ"><label for="da-imp">N° d'imputation ${aideIcone("Souvent en bleu sur la DA. Facultatif : imprimé sur la proforma seulement s'il est rempli.")}</label><input id="da-imp" value="${d.imputation}" maxlength="80"></div>
           </div>
           <datalist id="l-services">${p.services.map((s) => html`<option value="${s}">`)}</datalist>
           <datalist id="l-interimaires">${connus.map((x) => html`<option value="${x.nom}">${x.matricule} · ${x.poste}</option>`)}</datalist>
@@ -438,24 +469,23 @@ async function pageSaisieDA(page, id) {
         </div>
         <div class="carte"><h2>2. La période</h2>
           <div class="ligne-form lf3">
-            <div class="champ"><label for="da-d1">Date de début</label><input type="date" id="da-d1" value="${d.date_debut}" required ${verrou ? "disabled" : ""}></div>
-            <div class="champ"><label for="da-d2">Date de fin</label><input type="date" id="da-d2" value="${d.date_fin}" required ${verrou ? "disabled" : ""}></div>
-            <div class="champ"><label>Visite médicale</label><div class="radios" id="da-visite">
-              <label class="${d.visite_mode === "Auto" ? "choisi" : ""}"><input type="radio" name="visite" value="Auto" ${d.visite_mode === "Auto" ? "checked" : ""} ${verrou ? "disabled" : ""}>Automatique</label>
-              <label class="${d.visite_mode === "Non" ? "choisi" : ""}"><input type="radio" name="visite" value="Non" ${d.visite_mode === "Non" ? "checked" : ""} ${verrou ? "disabled" : ""}>Aucune</label></div>
-              <div class="aide">Automatique : au début si la dernière a plus d'un an, puis chaque année.</div></div>
+            <div class="champ"><label for="da-d1">Date de début</label><input type="date" id="da-d1" value="${d.date_debut}" required></div>
+            <div class="champ"><label for="da-d2">Date de fin</label><input type="date" id="da-d2" value="${d.date_fin}" required></div>
+            <div class="champ"><label>Visite médicale ${aideIcone("Automatique : au début si la dernière a plus d'un an, puis chaque année.")}</label><div class="radios" id="da-visite">
+              <label class="${d.visite_mode === "Auto" ? "choisi" : ""}"><input type="radio" name="visite" value="Auto" ${d.visite_mode === "Auto" ? "checked" : ""}>Automatique</label>
+              <label class="${d.visite_mode === "Non" ? "choisi" : ""}"><input type="radio" name="visite" value="Non" ${d.visite_mode === "Non" ? "checked" : ""}>Aucune</label></div></div>
           </div>
         </div>
         <div class="carte"><h2>3. Les agents</h2>
-          <table class="agents-saisie"><thead><tr><th>Nom et prénoms</th><th>Poste</th><th>Salaire de base</th><th>Dernière visite</th><th></th></tr></thead>
+          <table class="agents-saisie"><thead><tr><th>Nom et prénoms <span class="requis" aria-hidden="true">*</span></th><th>Poste <span class="requis" aria-hidden="true">*</span></th><th>Salaire de base <span class="requis" aria-hidden="true">*</span></th><th>Dernière visite ${aideIcone("Laissez vide : elle est retrouvée automatiquement si l'agent a déjà eu un contrat.")}</th><th></th></tr></thead>
           <tbody id="da-agents"></tbody></table>
-          ${verrou ? "" : html`<button type="button" class="secondaire petit" id="da-plus">+ Ajouter un agent</button>`}
-          <p class="aide">Dernière visite : laissez vide, elle est retrouvée automatiquement si l'agent a déjà eu un contrat.</p>
+          <button type="button" class="secondaire petit" id="da-plus">+ Ajouter un agent</button>
+          <label class="case" id="da-grp-l"><input type="checkbox" id="da-grp" ${d.facture_groupee ? "checked" : ""}> Une seule facture par mois pour tout le groupe ${aideIcone("Exemple : 9 infirmiers sur le même BC. Une facture « MAD de 9 … » par mois au lieu d'une par agent. Sans effet sur les factures déjà émises.")}</label>
         </div>
         <div class="carte"><h2>4. La proforma</h2>
           <div class="ligne-form lf2">
-            <div class="champ"><label for="da-dp">Date de la proforma</label><input type="date" id="da-dp" value="${d.date_proforma}" ${verrou ? "disabled" : ""}></div>
-            <div class="champ"><label for="da-nom">Nom dans le n° de proforma</label><input id="da-nom" value="${d.nom_numero}" maxlength="40" placeholder="1er mot du nom" ${verrou ? "disabled" : ""}><div class="aide">ex. DUPONT MBINA</div></div>
+            <div class="champ"><label for="da-dp">Date de la proforma</label><input type="date" id="da-dp" value="${d.date_proforma}"></div>
+            <div class="champ"><label for="da-nom">Nom dans le n° de proforma ${aideIcone("Facultatif. Vide = 1er mot du nom du 1er agent. ex. DUPONT MBINA")}</label><input id="da-nom" value="${d.nom_numero}" maxlength="40" placeholder="1er mot du nom"></div>
           </div>
           <div class="champ"><label for="da-notes">Notes internes</label><textarea id="da-notes" rows="2" maxlength="2000">${d.notes}</textarea></div>
           <div class="erreur-form" id="da-err"></div>
@@ -469,11 +499,11 @@ async function pageSaisieDA(page, id) {
   const corpsAgents = $("#da-agents");
   function dessinerAgents() {
     corpsAgents.innerHTML = agents.map((a, i) => html`<tr data-i="${i}">
-      <td><input data-c="nom" aria-label="Nom de l'agent ${i + 1}" list="l-interimaires" value="${a.nom}" maxlength="120" placeholder="NOM Prénoms" required ${verrou ? "disabled" : ""}></td>
-      <td><input data-c="poste" aria-label="Poste de l'agent ${i + 1}" value="${a.poste}" maxlength="120" required ${verrou ? "disabled" : ""}></td>
-      <td><input data-c="salaire_base" aria-label="Salaire de base de l'agent ${i + 1}" class="montant" inputmode="numeric" value="${a.salaire_base === "" ? "" : fmt(a.salaire_base)}" placeholder="0" required ${verrou ? "disabled" : ""}></td>
-      <td><input data-c="derniere_visite" aria-label="Dernière visite médicale de l'agent ${i + 1}" type="date" value="${a.derniere_visite}" ${verrou ? "disabled" : ""}></td>
-      <td>${agents.length > 1 && !verrou ? html`<button type="button" class="lien" data-suppr="${i}" title="Retirer">✕</button>` : ""}</td></tr>`).join("");
+      <td><input data-c="nom" aria-label="Nom de l'agent ${i + 1}" list="l-interimaires" value="${a.nom}" maxlength="120" placeholder="NOM Prénoms" required></td>
+      <td><input data-c="poste" aria-label="Poste de l'agent ${i + 1}" value="${a.poste}" maxlength="120" required></td>
+      <td><input data-c="salaire_base" aria-label="Salaire de base de l'agent ${i + 1}" class="montant" inputmode="numeric" value="${a.salaire_base === "" ? "" : fmt(a.salaire_base)}" placeholder="0" required></td>
+      <td><input data-c="derniere_visite" aria-label="Dernière visite médicale de l'agent ${i + 1}" type="date" value="${a.derniere_visite}"></td>
+      <td>${agents.length > 1 ? html`<button type="button" class="lien" data-suppr="${i}" title="Retirer">✕</button>` : ""}</td></tr>`).join("");
     $$("input", corpsAgents).forEach((inp) => {
       inp.oninput = () => {
         const i = +inp.closest("tr").dataset.i;
@@ -498,7 +528,7 @@ async function pageSaisieDA(page, id) {
       client_id: +$("#da-client").value, service: $("#da-service").value, lieu: $("#da-lieu").value, num_da: $("#da-num").value,
       imputation: $("#da-imp").value, date_debut: $("#da-d1").value, date_fin: $("#da-d2").value,
       visite_mode: ($("#da-visite input:checked") || {}).value || "Auto", date_proforma: $("#da-dp").value || auj(),
-      nom_numero: $("#da-nom").value, notes: $("#da-notes").value,
+      nom_numero: $("#da-nom").value, notes: $("#da-notes").value, facture_groupee: !!($("#da-grp") && $("#da-grp").checked),
       agents: agents.map((a) => ({ nom: a.nom, poste: a.poste, salaire_base: a.salaire_base === "" ? null : a.salaire_base, derniere_visite: a.derniere_visite || null })),
     };
   }
@@ -529,6 +559,7 @@ async function pageSaisieDA(page, id) {
       appliquerStyles(zone);
       $("#da-err").textContent = "";
       if ($("#da-num-auto")) $("#da-num-auto").textContent = c.num_da ? "DA-AAAA-001" : pr.num_da_propose;
+      if ($("#da-num") && !id) $("#da-num").placeholder = "Automatique : " + pr.num_da_propose;
     } catch (e) {
       if (n === numeroApercu) zone.innerHTML = html`<h2>Aperçu de la proforma</h2><div class="bandeau alerte petit">${e.message}</div>`.s;
     }
@@ -585,6 +616,7 @@ async function pageDossier(page, id) {
         <tr><td class="doux">Imputation</td><td>${d.imputation || html`<span class="badge b-À émettre">à demander</span>`}</td></tr>
         <tr><td class="doux">Date proforma</td><td>${dateFr(d.date_proforma)}</td></tr>
         <tr><td class="doux">Visite médicale</td><td>${d.visite_mode === "Auto" ? "Automatique (annuelle)" : "Aucune"}</td></tr>
+        ${r.agents.length > 1 ? html`<tr><td class="doux">Factures</td><td>${d.facture_groupee ? "Une seule facture par mois pour le groupe" : "Une facture par agent et par mois"}</td></tr>` : ""}
         ${d.notes ? html`<tr><td class="doux">Notes</td><td>${d.notes}</td></tr>` : ""}</tbody></table></div>
       <div class="carte"><h2>Bon de commande (PO)</h2>
         ${d.statut === "Annulé" ? html`<p class="doux">—</p>` : html`<form id="f-bc"><div class="ligne-form lf3">
@@ -713,7 +745,11 @@ async function chargerDocuments(id) {
 }
 
 // Tableau de factures commun (page Factures et détail de dossier)
+const UNITES = ["Jours", "Mois", "Heures", "Forfait", "1"];
+const facturesAffichees = new Map();
 function tableFactures(factures, avecDossier) {
+  facturesAffichees.clear();
+  factures.forEach((f) => facturesAffichees.set(f.id, f));
   return html`<div class="tableau-wrap"><table id="t-fact"><thead><tr>
     <th><input type="checkbox" id="f-tout" title="Tout sélectionner"></th><th>Mois</th><th>Type</th>${avecDossier ? html`<th>Agent · proforma</th>` : html`<th>Agent</th>`}
     <th class="num">HT</th><th class="num">TTC</th><th>N° facture</th><th>Date · échéance</th><th>Statut</th><th></th></tr></thead><tbody>
@@ -727,10 +763,12 @@ function tableFactures(factures, avecDossier) {
       <td class="petit">${f.date_facture ? dateFr(f.date_facture) : ""}${f.echeance ? html`<div class="doux">éch. ${dateFr(f.echeance)}</div>` : ""}</td>
       <td>${badge(f.statut)}${f.paye_le ? html`<div class="doux petit">le ${dateFr(f.paye_le)}${f.ref_paiement ? " · " + f.ref_paiement : ""}</div>` : f.envoyee_le ? html`<div class="doux petit">envoyée le ${dateFr(f.envoyee_le)}</div>` : ""}${f.retard_jours ? html`<div class="petit" data-style="color:#b42318">${f.retard_jours} j de retard</div>` : ""}</td>
       <td class="actions-ligne">${f.numero && f.statut !== "Remplacée" ? html`<a class="bouton secondaire petit" href="#/imprimer/factures/${f.id}" title="Cette facture seule en PDF">PDF</a>${peut("admin", "gestion") ? html` <button class="secondaire petit" data-word="${f.id}" title="Cette facture seule en Word modifiable">Word</button>` : ""}` : ""}
+        ${peut("admin", "gestion") && !f.paye_le && !f.remplacee_par_id ? html`<button class="secondaire petit" data-modif="${f.id}" title="Corriger cette facture (le n° ne change pas)">Modifier</button>` : ""}
         ${peut("admin", "gestion") && f.numero && f.type !== "BIS" && !f.paye_le && !f.remplacee_par_id ? html`<button class="secondaire petit" data-bis="${f.id}" title="Facture ajustée selon le PV">Bis (PV)</button>` : ""}
         ${peut("admin", "gestion") && f.paye_le ? html`<button class="lien petit" data-annpay="${f.id}">annuler paiement</button>` : ""}</td></tr>`) : html`<tr><td colspan="10" class="doux">Aucune facture.</td></tr>`}
     </tbody></table></div>
     ${peut("admin", "gestion") && factures.length ? html`<div class="actions" data-style="margin-top:.75rem"><span class="doux petit" id="f-nb">0 sélectionnée(s)</span>
+      <button class="petit lien" type="button" id="f-aucune">Tout désélectionner</button>
       <button class="petit" data-act="emettre">Émettre (donner un n°)</button>
       <button class="petit secondaire" data-act="envoyee">Marquer envoyée(s)</button>
       <button class="petit vert" data-act="paiement">Enregistrer un paiement</button>
@@ -745,6 +783,8 @@ function brancherTableFactures(page, rafraichir) {
   const majNb = () => { const n = $("#f-nb", page); if (n) n.textContent = sel().length + " sélectionnée(s)"; };
   $$(".f-sel", t).forEach((c) => { c.onchange = majNb; });
   $("#f-tout", t).onchange = (e) => { $$(".f-sel", t).forEach((c) => { c.checked = e.target.checked; }); majNb(); };
+  const aucune = $("#f-aucune", page);
+  if (aucune) aucune.onclick = () => { $$(".f-sel", t).forEach((c) => { c.checked = false; }); $("#f-tout", t).checked = false; majNb(); };
   $$("[data-act]", page).forEach((b) => {
     b.onclick = async () => {
       const ids = sel();
@@ -773,6 +813,7 @@ function brancherTableFactures(page, rafraichir) {
     };
   });
   $$("[data-word]", t).forEach((b) => { b.onclick = () => exporterWord([+b.dataset.word]); });
+  $$("[data-modif]", t).forEach((b) => { b.onclick = () => dialogueModifierFacture(facturesAffichees.get(+b.dataset.modif), rafraichir); });
   $$("[data-bis]", t).forEach((b) => {
     b.onclick = () => {
       const id = +b.dataset.bis;
@@ -795,6 +836,33 @@ function brancherTableFactures(page, rafraichir) {
       try { await api("POST", "/api/factures/" + b.dataset.annpay + "/annuler-paiement", {}); toast("Paiement annulé."); rafraichir(); } catch (x) { toast(x.message, true); }
     };
   });
+}
+
+function dialogueModifierFacture(f, rafraichir) {
+  if (!f) return;
+  const uniteDefaut = f.type === "MAD" ? "Jours" : f.type === "VISITE" ? "1" : "Forfait";
+  const m = ouvrirModale(html`<form id="f-mf"><h2>Modifier la facture ${f.numero || "prévue"}</h2>
+    <p class="doux petit">${TYPES[f.type]} · ${f.agent} · ${moisFr(f.mois)}.
+      ${f.numero ? "Le n° ne change pas. La TVA et le TTC sont recalculés et une nouvelle copie est gardée dans les documents du dossier." : "Cette facture ne sera plus recalculée automatiquement depuis la proforma."}
+      ${f.envoyee_le ? html`<b>Elle a déjà été envoyée au client le ${dateFr(f.envoyee_le)} : pensez à lui renvoyer la version corrigée.</b>` : ""}</p>
+    <div class="ligne-form lf3">
+      ${f.type === "MAD" ? html`<div class="champ"><label for="mf-q">Quantité ${aideIcone("Nombre de jours (ou d'unités) facturés.")}</label><input id="mf-q" inputmode="numeric" value="${f.jours}"></div>` : ""}
+      <div class="champ"><label for="mf-u">Unité ${aideIcone("Écrite dans la colonne « Unité » de la facture. Vide = " + uniteDefaut + ".")}</label><input id="mf-u" list="l-unites" maxlength="20" value="${f.unite || ""}" placeholder="${uniteDefaut}"><datalist id="l-unites">${UNITES.map((u) => html`<option value="${u}">`)}</datalist></div>
+      <div class="champ"><label for="mf-ht">Montant HT <span class="requis">*</span></label><input id="mf-ht" class="montant" inputmode="numeric" value="${fmt(f.montant_ht)}" required></div>
+    </div>
+    ${f.numero ? html`<div class="champ"><label for="mf-d">Date de la facture</label><input type="date" id="mf-d" value="${f.date_facture}"></div>` : ""}
+    <div class="champ"><label for="mf-r">Remarque interne</label><input id="mf-r" maxlength="300" value="${f.remarque}"></div>
+    <div class="pied"><button type="button" class="secondaire" data-fermer>Annuler</button><button type="submit">Enregistrer</button></div></form>`);
+  $("#mf-ht", m).onblur = (e) => { const v = entierSaisi(e.target.value); if (v !== null) e.target.value = fmt(v); };
+  $("#f-mf", m).onsubmit = async (e) => {
+    e.preventDefault();
+    const ht = entierSaisi($("#mf-ht").value);
+    if (ht === null) return toast("Montant HT : chiffres uniquement.", true);
+    const corps = { montant_ht: ht, unite: $("#mf-u").value, remarque: $("#mf-r").value };
+    if ($("#mf-q")) { const q = entierSaisi($("#mf-q").value); if (q === null) return toast("Quantité : chiffres uniquement.", true); corps.jours = q; }
+    if ($("#mf-d")) corps.date_facture = $("#mf-d").value;
+    try { const r = await api("PUT", "/api/factures/" + f.id, corps); toast("Facture enregistrée : " + fmt(r.ttc) + " XAF TTC."); fermerModale(); rafraichir(); } catch (x) { toast(x.message, true); }
+  };
 }
 
 function dialogueEmettre(cible, rafraichir) {
@@ -867,9 +935,11 @@ const imgSignature = () => html`<img class="sig-img" src="/api/signature" alt="C
 const fmtPt = (n) => fmt(n).replace(/[\s  ]/g, ".");
 const dateLong = (iso) => (iso ? parseInt(iso.slice(8, 10), 10) + " " + MOIS[+iso.slice(5, 7) - 1] + " " + iso.slice(0, 4) : "");
 
+// 1 agent : nom complet ; plusieurs : 1er mot de chaque nom séparé par « _ » (comme les proformas d'ANO)
+const nomsGroupe = (noms) => (noms.length === 1 ? noms[0] : noms.map((n) => String(n).trim().split(/\s+/)[0].toUpperCase()).join("_"));
 function docProforma(p, d, pr, c) {
   const postes = [...new Set(pr.agents.map((a) => a.poste))].join(", ");
-  const noms = pr.agents.map((a) => a.nom).join(", ");
+  const noms = nomsGroupe(pr.agents.map((a) => a.nom));
   const valable = +p.validite_devis_jours === 30 ? "1 mois" : p.validite_devis_jours + " jours";
   const mad = pr.nb_agents > 1 ? "de " + pr.nb_agents + " " + postes : "d'un " + postes;
   return html`<div class="doc pf"><div class="pf-cadre">
@@ -879,6 +949,7 @@ function docProforma(p, d, pr, c) {
         <div class="pf-date">Date de devis : ${dateFr(d.date_proforma)}</div>
         <div class="pf-lieu">${String(d.lieu).toUpperCase()}</div>
         <div class="pf-gi">Service Demandeur :</div><div>${d.service}</div>
+        <div class="pf-b pf-noms">${noms}</div>
         <div class="pf-bi">Nombre d'agents ( ${postes} ) : ${pr.nb_agents}</div>
         ${d.imputation ? html`<div class="pf-b">Imputation : ${d.imputation}</div>` : ""}</div>
       <div class="pf-client">Nom du client : ${c.nom}<br>${c.adresse}<br>${c.ville}${c.telephone ? html`<br>Téléphone : ${c.telephone}` : ""}</div></div>
@@ -901,9 +972,15 @@ function docProforma(p, d, pr, c) {
 function docFacture(p, f) {
   // Désignation sans dates (demande de Luc) : le mois facturé est dans le titre
   let ligne;
-  if (f.type === "MAD") ligne = html`<tr><td>MAD d'un ${f.poste}<br>${f.agent}</td><td>${String(f.jours).padStart(2, "0")}</td><td>Jours</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
-  else if (f.type === "VISITE") ligne = html`<tr><td>Visite médicale<br>${f.agent}</td><td>1</td><td>1</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
-  else ligne = html`<tr><td>Ajustement selon PV<br>${f.agent}</td><td>1</td><td>Forfait</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  if (f.groupe && f.type === "MAD") {
+    const complet = f.jours === f.jours_mois;
+    ligne = html`<tr><td>MAD de ${f.nb_agents} ${f.poste}<br>${f.agent}</td><td>${complet ? "1" : String(f.jours).padStart(2, "0")}</td><td>${f.unite || (complet ? "Mois" : "Jours")}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  } else if (f.groupe && f.type === "VISITE") {
+    const q = f.jours || 1;
+    ligne = html`<tr><td>Visite médicale<br>${f.agent}</td><td>${q}</td><td>${f.unite || "1"}</td><td>${fmtPt(Math.floor(f.montant_ht / q))}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  } else if (f.type === "MAD") ligne = html`<tr><td>MAD d'un ${f.poste}<br>${f.agent}</td><td>${String(f.jours).padStart(2, "0")}</td><td>${f.unite || "Jours"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  else if (f.type === "VISITE") ligne = html`<tr><td>Visite médicale<br>${f.agent}</td><td>1</td><td>${f.unite || "1"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  else ligne = html`<tr><td>Ajustement selon PV<br>${f.agent}</td><td>1</td><td>${f.unite || "Forfait"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
   return html`<div class="doc fa">
     <div class="fa-tete"><div class="fa-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
     <div class="fa-infos"><div class="fa-gauche">
@@ -1045,13 +1122,34 @@ async function pageClients(page) {
 // ---------------------------------------------------------------------------
 // Paramètres
 // ---------------------------------------------------------------------------
+// Image quelconque (PNG, JPEG, WebP, GIF…) -> PNG d'au plus 1200 px de côté et 600 Ko
+function enPng(dataUrl) {
+  return new Promise((ok, ko) => {
+    const img = new Image();
+    img.onload = () => {
+      let cote = 1200;
+      for (;;) {
+        const k = Math.min(1, cote / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        const png = c.toDataURL("image/png");
+        if (png.length < 800000 || cote <= 300) return png.length < 800000 ? ok(png) : ko(new Error("Image trop détaillée : essayez une image plus petite."));
+        cote = Math.round(cote * 0.75);
+      }
+    };
+    img.onerror = () => ko(new Error("Image illisible par le navigateur : essayez PNG ou JPEG."));
+    img.src = dataUrl;
+  });
+}
+
 async function pageParametres(page) {
   const r = await api("GET", "/api/parametres");
   etat.params = r;
   const p = r.parametres;
   const admin = peut("admin");
   const dis = admin ? "" : "disabled";
-  const champ = (cle, lib, aide) => html`<div class="champ"><label for="p-${cle}">${lib}</label><input id="p-${cle}" data-p="${cle}" value="${p[cle] === null ? "" : p[cle]}" ${dis}>${aide ? html`<div class="aide">${aide}</div>` : ""}</div>`;
+  const champ = (cle, lib, aide) => html`<div class="champ"><label for="p-${cle}">${lib}${aide ? html` ${aideIcone(aide)}` : ""}</label><input id="p-${cle}" data-p="${cle}" value="${p[cle] === null ? "" : p[cle]}" ${dis}></div>`;
   rendre(page, html`<div class="entete"><div><h1>Paramètres</h1><p>${admin ? "Les changements de taux ne s'appliquent qu'aux nouvelles DA : les proformas existantes gardent leur barème." : "Lecture seule : seule la direction peut modifier."}</p></div></div>
     <form id="f-par">
     <div class="grille g2">
@@ -1077,7 +1175,7 @@ async function pageParametres(page) {
         <div class="ligne-form lf2">${champ("dernier_num_proforma", "Dernier n° de proforma utilisé", "La prochaine DA prendra ce n° + 1.")}
         ${champ("dernier_num_facture", "Dernier n° de facture utilisé", p.dernier_num_facture === null ? "À renseigner avant la 1re émission (ex. 152)." : "La prochaine facture prendra ce n° + 1.")}</div>
         <div class="ligne-form lf2">${champ("code_entreprise", "Code entreprise (n° de proforma)")}${champ("prefixe_facture", "Préfixe des factures")}</div>
-        <div class="ligne-form lf2">${champ("code_mad", "Code facture mensuelle")}${champ("code_visite", "Code facture visite médicale")}</div>
+        <div class="ligne-form lf2">${champ("code_mad", "Code facture mensuelle", "Vide (comme les factures d'ANO) : FA 159/11/2026. Avec un code : FA 159/11-MAD/2026. 11 = mois d'émission.")}${champ("code_visite", "Code facture visite médicale", "FA 159/Visite médicale/2026 : même n° que la facture du mois émise avec elle, sinon un n° à elle.")}</div>
         <p class="aide" id="p-exemples"></p>
         <div class="ligne-form lf2">${champ("bc_chiffres", "Chiffres d'un n° de BC client", "0 = pas de contrôle.")}<div></div></div>
         <div class="ligne-form lf2">${champ("alerte_fin_jours", "Alerte fin de contrat (jours avant)")}${champ("alerte_visite_jours", "Alerte visite médicale (jours avant)")}</div></div>
@@ -1088,9 +1186,9 @@ async function pageParametres(page) {
     <div class="carte"><h2>Logo et cachet sur les documents</h2>
       <div class="grille g2">
         <div><p class="doux petit">Logo (en-tête de la proforma et des factures)</p><img class="apercu-image" id="p-img-logo" src="/api/logo" alt="Logo">
-          ${admin ? html`<div><label class="bouton secondaire petit" for="p-f-logo">Changer le logo (PNG)</label><input type="file" id="p-f-logo" accept="image/png" hidden></div>` : ""}</div>
+          ${admin ? html`<div><label class="bouton secondaire petit" for="p-f-logo">Changer le logo</label><input type="file" id="p-f-logo" accept="image/*" hidden></div>` : ""}</div>
         <div><p class="doux petit">Cachet et signature (au-dessus de « Le responsable »)</p><img class="apercu-image" id="p-img-signature" src="/api/signature" alt="Aucun cachet enregistré">
-          ${admin ? html`<div><label class="bouton secondaire petit" for="p-f-signature">Changer le cachet (PNG)</label><input type="file" id="p-f-signature" accept="image/png" hidden></div>` : ""}</div>
+          ${admin ? html`<div><label class="bouton secondaire petit" for="p-f-signature">Changer le cachet</label><input type="file" id="p-f-signature" accept="image/*" hidden></div>` : ""}</div>
       </div><p class="aide">Le cachet n'est jamais public : il n'est montré qu'aux comptes connectés.</p></div>
     ${admin ? html`<div class="actions"><button type="submit" class="vert">Enregistrer les paramètres</button><button type="button" class="secondaire" id="p-sauve">Faire une sauvegarde maintenant</button></div>` : ""}
     </form>`);
@@ -1103,8 +1201,8 @@ async function pageParametres(page) {
     const an = new Date().getFullYear(), mm = String(new Date().getMonth() + 1).padStart(2, "0");
     const nf = (Number(v("dernier_num_facture")) || 0) + 1;
     $("#p-exemples").textContent = "Exemples : proforma " + ((Number(v("dernier_num_proforma")) || 0) + 1) + "-" + mm + "-" + v("code_entreprise").toUpperCase() + "-NOM/" + an
-      + " · facture " + (v("prefixe_facture") + " " + nf + "/" + mm + "-" + v("code_mad") + "/" + an).trim()
-      + " · visite " + (v("prefixe_facture") + " " + nf + "/" + mm + "-" + v("code_visite") + "/" + an).trim();
+      + " · facture " + (v("prefixe_facture") + " " + nf + "/" + mm + (v("code_mad") ? "-" + v("code_mad") : "") + "/" + an).trim()
+      + " · visite émise avec elle " + (v("prefixe_facture") + " " + nf + "/" + (v("code_visite") || "Visite médicale") + "/" + an).trim();
   };
   ["code_entreprise", "prefixe_facture", "code_mad", "code_visite", "dernier_num_proforma", "dernier_num_facture"].forEach((k) => { $("#p-" + k).oninput = majEx; });
   majEx();
@@ -1112,12 +1210,14 @@ async function pageParametres(page) {
     $("#p-f-" + quoi).onchange = (e) => {
       const f = e.target.files[0];
       if (!f) return;
-      if (f.type !== "image/png") return toast("Choisissez une image PNG.", true);
-      if (f.size > 600000) return toast("Image trop lourde (600 Ko au plus).", true);
+      if (!/^image\//.test(f.type)) return toast("Choisissez une image (PNG, JPEG, WebP…).", true);
+      if (f.size > 15000000) return toast("Image trop lourde (15 Mo au plus).", true);
       const lecteur = new FileReader();
       lecteur.onload = async () => {
         try {
-          await api("PUT", "/api/images/" + quoi, { png: lecteur.result });
+          // Toute image lisible par le navigateur est convertie en PNG (le serveur ne garde que du PNG)
+          const png = await enPng(lecteur.result);
+          await api("PUT", "/api/images/" + quoi, { png });
           $("#p-img-" + quoi).src = (quoi === "logo" ? "/api/logo" : "/api/signature") + "?v=" + Date.now();
           toast(quoi === "logo" ? "Logo enregistré." : "Cachet enregistré.");
         } catch (x) { toast(x.message, true); }

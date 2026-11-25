@@ -93,6 +93,7 @@ ROUTES = [
     ("POST", r"/api/factures/(\d+)/annuler-paiement", api.annuler_paiement, EQUIPE),
     ("POST", r"/api/factures/(\d+)/bis", api.facture_bis, EQUIPE),
     ("PUT", r"/api/factures/(\d+)/remarque", api.remarque_facture, EQUIPE),
+    ("PUT", r"/api/factures/(\d+)", api.modifier_facture, EQUIPE),
     ("GET", r"/api/tableau-de-bord", api.tableau_de_bord, TOUS),
     ("GET", r"/api/signature", api.signature, TOUS),
     ("GET", r"/api/logo", api.logo, TOUS),

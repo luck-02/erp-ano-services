@@ -311,3 +311,53 @@ label.case input { width: auto; }
   .doc { box-shadow: none; border: none; margin: 0; width: 210mm; min-height: 292mm; page-break-after: always; break-after: page; }
   .doc:last-child { page-break-after: auto; break-after: auto; }
 }
+
+/* --- v3.5.0 : tous les écrans, aides au survol, champs obligatoires --- */
+/* les lignes de formulaire passent à la ligne d'elles-mêmes quand la place manque
+   (plus de date ou de bouton qui déborde de sa carte sur ordinateur) */
+.lf2 { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+.lf3 { grid-template-columns: repeat(auto-fit, minmax(min(175px, 100%), 1fr)); }
+.lf4 { grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); }
+.ligne-form > * { min-width: 0; }
+input, select, textarea { min-width: 0; max-width: 100%; }
+.radios { flex-wrap: wrap; }
+.agents-saisie input { min-width: 0; }
+.agents-saisie td:nth-child(3) { min-width: 7.5rem; }
+.agents-saisie td:nth-child(4) { min-width: 9.5rem; }
+@media (max-width: 1250px) and (min-width: 1001px) {
+  .contenu { padding: 1.25rem 1.25rem 4rem; }
+  .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1700px) { .contenu { max-width: 1600px; } }
+@media (max-width: 1000px) {
+  .lf3, .lf4 { grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); }
+}
+@media (max-width: 560px) {
+  h1 { font-size: 1.25rem; }
+  .kpi .val { font-size: 1.3rem; }
+  .carte { padding: .9rem; }
+  .entete .actions { width: 100%; }
+  .modale { padding: 2vh .5rem; }
+  .modale .boite { padding: 1rem; }
+}
+
+.requis { color: var(--rouge); font-weight: 700; }
+.legende-requis { display: block; font-size: .8rem; margin-top: .25rem; }
+.info, .info-ex {
+  display: inline-flex; align-items: center; justify-content: center; width: 1.05rem; height: 1.05rem; border-radius: 50%;
+  background: var(--marine-clair); color: var(--marine); font: italic 700 .72rem/1 Georgia, serif; vertical-align: 1px;
+  margin-left: .2rem; text-transform: none; letter-spacing: 0;
+}
+.info { position: relative; cursor: help; }
+.info:focus { outline: 2px solid #8bb5de; }
+.info .bulle {
+  display: none; position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translateX(-50%); z-index: 40;
+  width: max-content; max-width: min(280px, 80vw); background: #101828; color: #fff; padding: .45rem .6rem; border-radius: 6px;
+  font: 400 .8rem/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; text-align: left; white-space: normal;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .2);
+}
+.info:hover .bulle, .info:focus .bulle, .info:focus-within .bulle { display: block; }
+th .info .bulle { top: calc(100% + 6px); bottom: auto; }
+.pf-noms { word-break: break-word; }
+/* ordinateur portable étroit : l'aperçu de la proforma passe sous le formulaire */
+@media (max-width: 1250px) { .da { grid-template-columns: minmax(0, 1fr); } .apercu { position: static; } }

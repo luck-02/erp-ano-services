@@ -7,6 +7,28 @@ Numérotation : `vMAJEUR.MINEUR.CORRECTIF`.
 
 Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git checkout v3.1.0`.
 
+## v3.5.0 – 25/11/2026 : retours de test de Luc et Lola, cas réels
+- N° des factures calqués sur les vraies : facture du mois FA 159/11/2026 (11 = mois d'émission),
+  visite médicale FA 159/Visite médicale/2026 avec le même n° quand elle part avec la facture du mois,
+  un n° à elle quand elle est seule. Codes toujours réglables dans Paramètres.
+- Facture groupée (ex. 9 infirmiers sur un même BC) : une seule facture « MAD de 9 … » par mois, quantité 1 mois.
+- Coût d'un groupe arrondi une seule fois, comme la proforma Excel (9 × 674 220 → 11 589 842 par mois).
+- Proforma : ligne des noms sous le service demandeur (DUPONT_MBINA_… pour plusieurs agents) ;
+  « (9) Infirmiers_IDEP » accepté dans le n°.
+- Proforma modifiable même après émission : les factures émises gardent leurs montants, les autres sont recalculées.
+- Facture modifiable (émise ou non) : quantité, unité, montant HT, date, remarque. Le n° ne change pas,
+  TVA et TTC recalculés, nouvelle copie gardée, avant/après dans le journal. Une facture payée ne se modifie pas.
+- Unité de la facture au choix (Jours, Mois, Heures, Forfait…).
+- Tableau de bord : le facturé est comparé au payé en TTC ; un paiement plus grand que la facture est refusé ;
+  le reste à encaisser n'est plus jamais négatif ; alerte si un ancien paiement dépasse sa facture.
+- Salaire de base dans la liste des dossiers.
+- Bouton « Tout désélectionner » dans les factures.
+- Compte Lecture : une page qui ne lui est pas ouverte renvoie au tableau de bord au lieu d'une erreur.
+- Écrans : formulaires qui passent à la ligne d'eux-mêmes (la période ne déborde plus sur ordinateur),
+  aperçu de la proforma sous le formulaire sur les écrans étroits.
+- Champs obligatoires marqués d'un astérisque rouge ; textes d'aide dans une icône « i » affichée au survol.
+- Logo et cachet : toute image (JPEG, PNG, WebP…), convertie en PNG dans le navigateur.
+
 ## v3.4.0 – 25/11/2026 : mise en ligne automatique (cycle en V)
 - Une étiquette de version envoyée sur GitHub enchaîne : tests unitaires et d'intégration, tests système dans Chromium, publication du zip, mise en ligne, recette depuis Internet. Chaque étape attend que la précédente soit verte.
 - Le serveur n'accepte de GitHub qu'une seule commande (« deployer vX.Y.Z ») avec une clé dédiée : pas de terminal, pas d'autre commande, pas de mot de passe.

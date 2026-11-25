@@ -111,6 +111,18 @@ async function scenarioANO(navigateur) {
     await page.goto(U + '/#/nouvelle-da');
     await page.waitForSelector('#f-da');
     await controleAccessibilite(page, 'nouvelle DA');
+    // v3.5.0 : champs obligatoires marqués, aides au survol, rien ne déborde des cartes sur ordinateur
+    verifier(await page.$('label[for=da-d1] .requis') && await page.$('label[for=da-service] .requis') && !(await page.$('label[for=da-imp] .requis')),
+      'champs obligatoires marqués d\'un astérisque (et seulement eux)');
+    await page.hover('label[for=da-imp] .info');
+    verifier(await page.isVisible('label[for=da-imp] .bulle'), 'aide affichée au survol de l\'icône');
+    verifier(!(await page.$('#f-da .aide')), 'plus de texte d\'aide sous les champs du formulaire DA');
+    for (const largeur of [1360, 1100, 1024]) {
+      await page.setViewportSize({ width: largeur, height: 900 });
+      const debord = await page.$$eval('#f-da .carte', (cs) => cs.filter((c) => c.scrollWidth > c.clientWidth + 1).map((c) => c.querySelector('h2').textContent));
+      verifier(debord.length === 0, 'ordinateur ' + largeur + ' px : rien ne déborde (période comprise)', debord);
+    }
+    await page.setViewportSize({ width: 1360, height: 900 });
     await page.fill('#da-service', 'DAF'); await page.fill('#da-lieu', 'Moanda');
     await page.fill('#da-d1', '2026-11-02'); await page.fill('#da-d2', '2027-05-01'); await page.fill('#da-dp', '2026-10-30');
     await page.fill('input[data-c=nom]', 'AGENT FICTIF Elise');
@@ -130,6 +142,20 @@ async function scenarioANO(navigateur) {
     await page.waitForSelector('#t-fact');
     const nb = await page.$$eval('#t-fact tbody tr', (r) => r.length);
     verifier(nb === 8, '8 factures prévues (7 mois + 1 visite médicale)', nb);
+    // tout sélectionner puis tout désélectionner
+    await page.check('#f-tout');
+    verifier((await page.textContent('#f-nb')).startsWith('8'), 'tout sélectionner : 8 factures');
+    await page.click('#f-aucune');
+    verifier((await page.textContent('#f-nb')).startsWith('0') && (await page.$$('.f-sel:checked')).length === 0, 'bouton « Tout désélectionner »');
+    // modifier une facture prévue : unité changée
+    await page.click('#t-fact tbody tr:nth-child(2) [data-modif]');
+    await page.waitForSelector('#f-mf');
+    await controleAccessibilite(page, 'modifier une facture');
+    await page.fill('#mf-u', 'Jours ouvrés');
+    await page.click('#f-mf button[type=submit]');
+    await page.waitForSelector('#f-mf', { state: 'detached' });
+    await page.waitForTimeout(800);   // la liste se recharge
+    verifier(true, 'facture modifiable depuis le tableau');
 
     // proforma : cumul HT seul, sans TVA/TTC, sans n° de DA
     await page.goto(U + '/#/imprimer/proforma/1');
@@ -173,6 +199,9 @@ async function scenarioANO(navigateur) {
     verifier(!csv.includes('576300'), 'CSV sans salaire');
 
     // Documents du dossier : copies des factures émises + pièce du client
+    await page.goto(U + '/#/dossiers');
+    await page.waitForSelector('table');
+    verifier(/576.300/.test(await page.textContent('table')), 'salaire de base visible dans la liste des dossiers');
     await page.goto(U + '/#/dossier/1');
     await page.waitForSelector('#ds-docs table');
     const lignes = await page.$$eval('#ds-docs tbody tr', (t) => t.map((x) => x.textContent));
@@ -278,6 +307,15 @@ r.creer('beta', 'Beta Services (fictif)', 'direction', 'Provisoire-Beta-22')`], 
     verifier(!/SECRET/.test(await b.textContent('#app')), 'Beta ne peut pas ouvrir le dossier n° 1 d\'Alpha');
     const brut = await b.evaluate(async () => (await fetch('/api/dossiers/1')).status);
     verifier(brut === 404, 'API : dossier d\'Alpha introuvable pour Beta', brut);
+    // compte « Lecture » : une page qui ne lui est pas ouverte renvoie au tableau de bord
+    const cree = await b.evaluate(() => api('POST', '/api/utilisateurs', { identifiant: 'lecteur', nom: 'Lecteur fictif', role: 'lecture', mot_de_passe: 'Lecture-Provisoire-9' }).then(() => true, (e) => e.message));
+    verifier(cree === true, 'compte Lecture créé', cree);
+    const ctxL = await navigateur.newContext({ viewport: { width: 1360, height: 900 } });
+    const l = await ctxL.newPage(); suivreErreurs(l, erreurs);
+    await connexionPremiereFois(l, U, 'beta', 'lecteur', 'Lecture-Provisoire-9', 'Lecture-Beta-2027!x');
+    await l.goto(U + '/#/dossiers'); await l.waitForSelector('.kpi');
+    verifier(/#\/tableau$/.test(l.url()) && !(await l.$('.bandeau.danger')), 'Lecture sur #/dossiers : renvoyé au tableau de bord', l.url());
+    await ctxL.close();
     const params = await b.evaluate(async () => (await (await fetch('/api/parametres')).json()).parametres);
     verifier(params.nif === '' && params.code_entreprise === 'BETA', 'Beta démarre vierge (sans les données d\'ANO)');
     await b.screenshot({ path: path.join(OUT, 'beta-tableau.png'), fullPage: true });

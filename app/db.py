@@ -168,9 +168,9 @@ PARAMETRES_INITIAUX = {
     "alerte_visite_jours": 30,
     # V1 B2B : ce qui était écrit en dur pour ANO devient réglable
     "code_entreprise": "ANO",          # 348-11-ANO-NOM/2026
-    "prefixe_facture": "FA",           # FA 161/11-MAD/2026
-    "code_mad": "MAD",
-    "code_visite": "Visite Médicale",
+    "prefixe_facture": "FA",           # FA 161/11/2026 et FA 161/Visite médicale/2026
+    "code_mad": "",
+    "code_visite": "Visite médicale",
     "tva_visite": False,               # visite médicale sans TVA (règle ANO)
     "bc_chiffres": 6,                  # longueur habituelle d'un n° de BC (0 = pas de contrôle)
     "lieux": ["Moanda", "Libreville", "Port-Gentil"],
@@ -235,6 +235,7 @@ def initialiser(chemin, vierge=False, nom="", code=""):
         for k, v in PARAMETRES_INITIAUX.items():
             con.execute("INSERT OR IGNORE INTO parametres(cle, valeur) VALUES (?, ?)", (k, json.dumps(v)))
     migrer_interimaires(con)
+    migrer_factures(con)
     con.close()
     try:
         os.chmod(chemin, 0o600)
@@ -302,4 +303,29 @@ def migrer_interimaires(con):
         con.execute("INSERT INTO parametres(cle, valeur) VALUES ('maj_compteurs_20261124', 'true')")
     for aid, nom in con.execute("SELECT id, nom FROM agents WHERE interimaire_id IS NULL ORDER BY id").fetchall():
         con.execute("UPDATE agents SET interimaire_id = ? WHERE id = ?", (interimaire_id(con, nom), aid))
+    con.execute("COMMIT")
+
+
+def migrer_factures(con):
+    """v3.5.0 : unité modifiable et factures corrigées à la main (jamais
+    écrasées par un nouveau calcul)."""
+    cols = [r[1] for r in con.execute("PRAGMA table_info(factures)")]
+    con.execute("BEGIN")
+    if "unite" not in cols:
+        con.execute("ALTER TABLE factures ADD COLUMN unite TEXT NOT NULL DEFAULT ''")
+    if "modifiee_le" not in cols:
+        con.execute("ALTER TABLE factures ADD COLUMN modifiee_le TEXT")
+    if "groupe" not in cols:
+        con.execute("ALTER TABLE factures ADD COLUMN groupe INTEGER NOT NULL DEFAULT 0")
+    cols_d = [r[1] for r in con.execute("PRAGMA table_info(dossiers)")]
+    if "facture_groupee" not in cols_d:
+        con.execute("ALTER TABLE dossiers ADD COLUMN facture_groupee INTEGER NOT NULL DEFAULT 0")
+    # n° des factures calqués sur les vraies (FA 159/11/2026, FA 159/Visite médicale/2026),
+    # une seule fois, seulement si l'entreprise avait gardé les anciens codes par défaut
+    if not con.execute("SELECT 1 FROM parametres WHERE cle = 'maj_numeros_20261125'").fetchone():
+        for cle, ancien, neuf in (("code_mad", "MAD", ""), ("code_visite", "Visite Médicale", "Visite médicale")):
+            r = con.execute("SELECT valeur FROM parametres WHERE cle = ?", (cle,)).fetchone()
+            if r and json.loads(r[0]) == ancien:
+                con.execute("UPDATE parametres SET valeur = ? WHERE cle = ?", (json.dumps(neuf), cle))
+        con.execute("INSERT INTO parametres(cle, valeur) VALUES ('maj_numeros_20261125', 'true')")
     con.execute("COMMIT")

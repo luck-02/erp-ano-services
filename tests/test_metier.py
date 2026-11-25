@@ -26,12 +26,29 @@ class TestsMetier(unittest.TestCase):
         self.assertEqual(len(M.lignes_factures_agent(d, a, CH, P)), 8)
 
     def test_proforma_reelle_2(self):
-        # Proforma réelle 335 : 3 890 280 (Lola arrondit chaque mois) ; l'outil
-        # arrondit une seule fois, comme pour le cas de référence -> 1 XAF d'écart, connu.
+        # Proforma réelle 335 : 3 890 280. Depuis v3.5.0 le coût n'est arrondi qu'une
+        # fois (comme Excel) : l'outil trouve le même total que la proforma réelle.
         d = {"date_debut": D(2026, 9, 14), "date_fin": D(2026, 12, 13)}
         p = M.calcul_proforma(d, [{"nom": "Y", "poste": "p", "salaire_base": 674220}], CH, P)
         self.assertEqual(p["cout_mensuel_total"], 1287760)
-        self.assertEqual(p["cumul_ht"], 3890279)
+        self.assertEqual(p["cumul_ht"], 3890280)
+
+    def test_groupe_de_9(self):
+        # 9 agents au même salaire, 3 mois pleins (cas réel « 9 infirmiers », noms fictifs)
+        d = {"date_debut": D(2026, 8, 1), "date_fin": D(2026, 10, 31), "visite_mode": "Non"}
+        ags = [{"nom": "AGENT%d Fictif" % i, "poste": "IDE", "salaire_base": 674220, "derniere_visite": None} for i in range(9)]
+        p = M.calcul_proforma(d, ags, CH, P)
+        self.assertEqual(p["cout_mensuel_total"], 11589842)     # 11 589 841,8 arrondi une fois
+        self.assertEqual(p["cumul_ht"], 34769525)
+        self.assertEqual(p["detail_charges"][1]["total"], 1122576)
+        lg = M.lignes_factures_groupe(d, ags, CH, P)
+        self.assertEqual([(l["type"], l["montant_ht"]) for l in lg], [("MAD", 11589842)] * 3)
+        d["visite_mode"] = "Auto"
+        lg = M.lignes_factures_groupe(d, ags, CH, P)
+        self.assertEqual((lg[0]["type"], lg[0]["jours"], lg[0]["montant_ht"]), ("VISITE", 9, 405000))
+        self.assertEqual(M.noms_groupe(["DUPONT Jean", "MBINA Paul"]), "DUPONT_MBINA")
+        self.assertEqual(M.noms_groupe(["DUPONT Jean Marc"]), "DUPONT Jean Marc")
+        self.assertEqual(M.nom_pour_numero("(9) Infirmiers_IDEP"), "(9) INFIRMIERS_IDEP")
 
     def test_prorata(self):
         self.assertEqual(M.mois_couverts(D(2027, 2, 10), D(2027, 3, 5)), [(D(2027, 2, 1), 19, 28), (D(2027, 3, 1), 5, 31)])
@@ -45,12 +62,14 @@ class TestsMetier(unittest.TestCase):
 
     def test_numeros_et_echeance(self):
         self.assertEqual(M.numero_proforma(348, D(2026, 10, 30), "Dupont Mbïna"), "348-10-ANO-DUPONT MBINA/2026")
-        self.assertEqual(M.numero_facture(153, "VISITE", D(2026, 11, 1)), "FA 153/11-Visite Médicale/2026")
-        self.assertEqual(M.numero_bis("FA 152/08-MAD/2026"), "FA 152 bis/08-MAD/2026")
+        # format des factures réelles : FA 159/11/2026 et FA 159/Visite médicale/2026
+        self.assertEqual(M.numero_facture(159, "MAD", D(2026, 11, 19)), "FA 159/11/2026")
+        self.assertEqual(M.numero_facture(159, "VISITE", D(2026, 11, 19)), "FA 159/Visite médicale/2026")
+        self.assertEqual(M.numero_bis("FA 152/08/2026"), "FA 152 bis/08/2026")
         # V1 B2B : codes réglables par entreprise
         self.assertEqual(M.numero_proforma(12, D(2027, 2, 3), "Fictif", "xyz"), "12-02-XYZ-FICTIF/2027")
         self.assertEqual(M.numero_facture(7, "MAD", D(2027, 2, 1), "FAC", "PREST", "VM"), "FAC 7/02-PREST/2027")
-        self.assertEqual(M.numero_facture(8, "VISITE", D(2027, 2, 1), "", "PREST", "VM"), "8/02-VM/2027")
+        self.assertEqual(M.numero_facture(8, "VISITE", D(2027, 2, 1), "", "PREST", "VM"), "8/VM/2027")
         self.assertEqual(M.echeance(D(2026, 12, 5), 30), D(2027, 1, 31))
 
     def test_arrondi(self):

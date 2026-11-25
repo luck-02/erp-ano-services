@@ -156,13 +156,25 @@ def image(rid, num, nom, larg_mm=None, haut_mm=None, chemin=None):
 # Corps de la facture
 # ---------------------------------------------------------------------------
 def _designation(f):
+    """(désignation, quantité, unité, prix unitaire HT)"""
+    ht = f["montant_ht"]
+    if f.get("groupe"):
+        # facture groupée (ex. 9 infirmiers) : une ligne pour tout le groupe
+        nb = f.get("nb_agents") or 1
+        if f["type"] == M.TYPE_MAD:
+            complet = f["jours"] == f["jours_mois"]
+            return ("MAD de %d %s\n%s" % (nb, f["poste"], f["agent"]), "1" if complet else "%02d" % (f["jours"] or 0),
+                    f.get("unite") or ("Mois" if complet else "Jours"), ht)
+        if f["type"] == M.TYPE_VISITE:
+            q = f["jours"] or 1
+            return "Visite médicale\n%s" % f["agent"], str(q), f.get("unite") or "1", ht // q if q else ht
     if f["type"] == M.TYPE_MAD:
         # désignation sans dates : le mois facturé est dans le titre
         txt = "MAD d'un %s\n%s" % (f["poste"], f["agent"])
-        return txt, "%02d" % (f["jours"] or 0), "Jours"
+        return txt, "%02d" % (f["jours"] or 0), f.get("unite") or "Jours", ht
     if f["type"] == M.TYPE_VISITE:
-        return "Visite médicale\n%s" % f["agent"], "1", "1"
-    return "Ajustement selon PV\n%s" % f["agent"], "1", "Forfait"
+        return "Visite médicale\n%s" % f["agent"], "1", f.get("unite") or "1", ht
+    return "Ajustement selon PV\n%s" % f["agent"], "1", f.get("unite") or "Forfait", ht
 
 
 def corps_document(p, f, avec_signature, logo=None, signature=None):
@@ -196,13 +208,13 @@ def corps_document(p, f, avec_signature, logo=None, signature=None):
     x.append(para(run("Facture %s" % mois_fr(f["mois"]), gras=True, taille=17), align="right", avant=1000))
     x.append(para(run("N° %s" % f["numero"], gras=True, taille=13), align="right", apres=900))
     # Tableau des prestations
-    des, qte, unite = _designation(f)
+    des, qte, unite, pu = _designation(f)
     larg = [3060, 1640, 1640, 1932, 1932]
     entetes = ["Désignation des produits ou des prestations", "Quantité", "Unité", "Prix unitaire HT", "TOTAL HT"]
     bt = bordures(1 * 8, 1 * 8, 1 * 8, 1 * 8)
     ligne_titres = [cellule(para(run(t, gras=True, taille=10), align="center"), l, fond=GRIS, bords=bt)
                     for t, l in zip(entetes, larg)]
-    vals = [des, qte, unite, fmt_pt(f["montant_ht"]), fmt_pt(f["montant_ht"])]
+    vals = [des, qte, unite, fmt_pt(pu), fmt_pt(f["montant_ht"])]
     ligne_vals = [cellule(para(run(v, taille=9), align="center", avant=60), l, bords=bt) for v, l in zip(vals, larg)]
     x.append(tableau([ligne_titres, ligne_vals], larg, align="center", hauteurs=[None, 500]))
     # Totaux

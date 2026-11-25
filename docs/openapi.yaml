@@ -128,6 +128,7 @@ components:
         date_debut: {type: string, format: date}
         date_fin: {type: string, format: date}
         visite_mode: {type: string, enum: [Auto, Non], default: Auto}
+        facture_groupee: {type: boolean, default: false, description: "Une seule facture par mois pour tout le groupe (ex. 9 infirmiers)"}
         notes: {type: string}
         agents: {type: array, minItems: 1, items: {$ref: '#/components/schemas/AgentSaisie'}}
     LigneMois:
@@ -210,6 +211,9 @@ components:
         montant_paye: {type: integer, nullable: true}
         ref_paiement: {type: string}
         remplacee_par_id: {type: integer, nullable: true}
+        unite: {type: string, description: "Vide = unité par défaut (Jours, 1, Forfait ; Mois pour une facture groupée)"}
+        groupe: {type: integer, enum: [0, 1], description: "1 = facture groupée : agent = noms du groupe, nb_agents"}
+        modifiee_le: {type: string, nullable: true, description: Corrigée à la main le}
         statut: {type: string, enum: [À émettre, À envoyer, Envoyée, En retard, Payée, Remplacée]}
         retard_jours: {type: integer}
         remarque: {type: string}
@@ -503,6 +507,28 @@ paths:
       parameters: [{$ref: '#/components/parameters/id'}]
       requestBody: {content: {application/json: {schema: {type: object, properties: {remarque: {type: string, maxLength: 500}}}}}}
       responses: {"200": {$ref: '#/components/responses/Ok'}}
+  /api/factures/{id}:
+    put:
+      tags: [Factures]
+      summary: "Corriger une facture, émise ou non (n° inchangé, TVA et TTC recalculés, copie gardée)"
+      description: "Refusé (409) si la facture est payée ou remplacée. Une facture prévue corrigée n'est plus recalculée."
+      security: [{session: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [montant_ht]
+              properties:
+                montant_ht: {type: integer, example: 1064042}
+                jours: {type: integer, description: Quantité (facture du mois)}
+                unite: {type: string, maxLength: 20, example: Jours}
+                date_facture: {type: string, format: date}
+                remarque: {type: string, maxLength: 300}
+      responses:
+        "200": {description: Facture corrigée, content: {application/json: {schema: {type: object, properties: {ok: {type: boolean}, ttc: {type: integer}, archivee: {type: integer}}}}}}
+        "409": {$ref: '#/components/responses/Erreur409'}
   /api/factures/word:
     get:
       tags: [Factures]

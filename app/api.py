@@ -603,6 +603,7 @@ def _valider_dossier(con, body):
         "visite_mode": body.get("visite_mode", "Auto"),
         "date_proforma": date_(body, "date_proforma", requis=False) or aujourdhui(),
         "notes": texte(body, "notes", 2000, multiligne=True),
+        "facture_groupee": 1 if booleen(body, "facture_groupee") else 0,
     }
     if d["visite_mode"] not in ("Auto", "Non"):
         raise ErreurAPI(400, "Visite médicale : « Auto » ou « Non ».")
@@ -618,6 +619,8 @@ def _valider_dossier(con, body):
         raise ErreurAPI(400, "Ajoutez au moins un agent.")
     if len(ags) > 20:
         raise ErreurAPI(400, "20 agents maximum par DA.")
+    if d["facture_groupee"] and len(ags) < 2:
+        d["facture_groupee"] = 0          # un seul agent : rien à regrouper
     agents, noms = [], set()
     for i, a in enumerate(ags):
         if not isinstance(a, dict):
@@ -656,8 +659,8 @@ def _tva_ligne(type_, ht, bareme):
 
 
 def _codes_facture(p):
-    return {"prefixe": p.get("prefixe_facture", "FA"), "code_mad": p.get("code_mad", "MAD"),
-            "code_visite": p.get("code_visite", "Visite Médicale")}
+    return {"prefixe": p.get("prefixe_facture", "FA"), "code_mad": p.get("code_mad", ""),
+            "code_visite": p.get("code_visite", "Visite médicale")}
 
 
 def prochain_num_da(con, annee):
@@ -719,11 +722,11 @@ def creer_dossier(ctx, g, body):
         now = db.maintenant()
         cur = con.execute(
             "INSERT INTO dossiers(num_seq, numero_proforma, nom_numero, date_proforma, client_id, num_da, service, "
-            "imputation, lieu, date_debut, date_fin, visite_mode, statut, notes, bareme_json, cree_par, cree_le, maj_le) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "imputation, lieu, date_debut, date_fin, visite_mode, statut, notes, bareme_json, cree_par, cree_le, maj_le, "
+            "facture_groupee) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (seq, numero, d["nom_numero"], d["date_proforma"].isoformat(), d["client_id"], d["num_da"], d["service"],
              d["imputation"], d["lieu"], d["date_debut"].isoformat(), d["date_fin"].isoformat(), d["visite_mode"],
-             "Brouillon", d["notes"], json.dumps(_bareme_actuel(con)), ctx["user"]["id"], now, now))
+             "Brouillon", d["notes"], json.dumps(_bareme_actuel(con)), ctx["user"]["id"], now, now, d["facture_groupee"]))
         did = cur.lastrowid
         for i, a in enumerate(agents):
             dv = a["derniere_visite"] or _derniere_visite_connue(con, a["nom"], did)
@@ -746,7 +749,7 @@ def _vue_dossier_resume(con, r):
         "client": cl["nom"] if cl else "", "service": r["service"], "lieu": r["lieu"], "num_da": r["num_da"],
         "date_debut": r["date_debut"], "date_fin": r["date_fin"], "statut": r["statut"],
         "agents": [a["nom"] for a in agents], "postes": [a["poste"] for a in agents],
-        "matricules": [a["matricule"] for a in agents],
+        "matricules": [a["matricule"] for a in agents], "salaires": [a["salaire_base"] for a in agents],
         "cumul_ht": pro["cumul_ht"], "bc_numero": r["bc_numero"], "bc_montant": r["bc_montant"],
         "ecart_bc": (r["bc_montant"] - pro["cumul_ht"]) if r["bc_montant"] is not None else None,
         "nb_factures": st["n"] or 0, "nb_emises": st["emises"] or 0,
@@ -784,9 +787,14 @@ def _factures_de(con, did):
         (did,)).fetchall()
     auj = aujourdhui()
     res = []
+    ags = None
     for r in rows:
         x = dict(r)
         x["statut"] = M.statut_facture(x, auj)
+        if x.get("groupe"):
+            if ags is None:
+                ags = [g["nom"] for g in con.execute("SELECT nom FROM agents WHERE dossier_id = ? ORDER BY rang", (did,))]
+            x["agent"], x["nb_agents"] = M.noms_groupe(ags), len(ags)
         res.append(x)
     return res
 
@@ -820,42 +828,43 @@ def modifier_dossier(ctx, g, body):
         emises = con.execute("SELECT COUNT(*) FROM factures f JOIN agents a ON a.id = f.agent_id "
                              "WHERE a.dossier_id = ? AND f.numero IS NOT NULL", (did,)).fetchone()[0]
         anciens = _agents(con, did)
-        if emises:
-            # Des factures sont émises : seuls les champs administratifs changent.
-            meme = (len(anciens) == len(agents) and d["date_debut"].isoformat() == r["date_debut"]
-                    and d["date_fin"].isoformat() == r["date_fin"] and d["visite_mode"] == r["visite_mode"]
-                    and all(a["nom"] == b["nom"] and a["poste"] == b["poste"] and a["salaire_base"] == b["salaire_base"]
-                            for a, b in zip(anciens, agents)))
-            if not meme:
-                raise ErreurAPI(409, "Des factures sont déjà émises : agents, salaires et dates ne peuvent plus "
-                                     "changer. Pour un avenant, créez une nouvelle DA.")
-            con.execute("UPDATE dossiers SET num_da=?, service=?, imputation=?, lieu=?, notes=?, client_id=?, maj_le=? "
-                        "WHERE id=?", (d["num_da"], d["service"], d["imputation"], d["lieu"], d["notes"],
-                                       d["client_id"], db.maintenant(), did))
-        else:
-            # le code entreprise d'origine est gardé (repris du n° existant)
-            code = r["numero_proforma"].split("-")[2] if r["numero_proforma"].count("-") >= 3 else "ANO"
-            numero = M.numero_proforma(r["num_seq"], d["date_proforma"], d["nom_numero"], code)
-            if con.execute("SELECT 1 FROM dossiers WHERE numero_proforma = ? AND id <> ?", (numero, did)).fetchone():
-                raise ErreurAPI(409, "Le n° de proforma %s existe déjà." % numero)
-            avait_factures = con.execute("SELECT COUNT(*) FROM factures f JOIN agents a ON a.id = f.agent_id "
-                                         "WHERE a.dossier_id = ?", (did,)).fetchone()[0] > 0
-            con.execute(
-                "UPDATE dossiers SET numero_proforma=?, nom_numero=?, date_proforma=?, client_id=?, num_da=?, service=?, "
-                "imputation=?, lieu=?, date_debut=?, date_fin=?, visite_mode=?, notes=?, maj_le=? WHERE id=?",
-                (numero, d["nom_numero"], d["date_proforma"].isoformat(), d["client_id"], d["num_da"], d["service"],
-                 d["imputation"], d["lieu"], d["date_debut"].isoformat(), d["date_fin"].isoformat(), d["visite_mode"],
-                 d["notes"], db.maintenant(), did))
-            con.execute("DELETE FROM agents WHERE dossier_id = ?", (did,))
-            for i, a in enumerate(agents):
-                dv = a["derniere_visite"] or _derniere_visite_connue(con, a["nom"], did)
-                con.execute("INSERT INTO agents(dossier_id, rang, nom, poste, salaire_base, derniere_visite, interimaire_id) "
-                            "VALUES (?,?,?,?,?,?,?)", (did, i + 1, a["nom"], a["poste"], a["salaire_base"],
-                                                      dv.isoformat() if dv else None, db.interimaire_id(con, a["nom"])))
-            if avait_factures:
-                _generer(con, did)
-        journaliser(ctx, "dossier_modifie", r["numero_proforma"])
-    return {"ok": True}
+        # La proforma reste modifiable même après émission (demande de Luc, 25/11/2026) :
+        # les factures déjà émises ne changent pas (montants figés) ; les factures
+        # prévues sont recalculées. Un agent qui a des factures émises ne peut pas être retiré.
+        for a in anciens[len(agents):]:
+            if con.execute("SELECT 1 FROM factures WHERE agent_id = ? AND numero IS NOT NULL", (a["id"],)).fetchone():
+                raise ErreurAPI(409, "L'agent « %s » a des factures émises : il ne peut pas être retiré "
+                                     "(laissez-le dans la liste)." % a["nom"])
+        # le code entreprise d'origine est gardé (repris du n° existant)
+        code = r["numero_proforma"].split("-")[2] if r["numero_proforma"].count("-") >= 3 else "ANO"
+        numero = M.numero_proforma(r["num_seq"], d["date_proforma"], d["nom_numero"], code)
+        if con.execute("SELECT 1 FROM dossiers WHERE numero_proforma = ? AND id <> ?", (numero, did)).fetchone():
+            raise ErreurAPI(409, "Le n° de proforma %s existe déjà." % numero)
+        avait_factures = con.execute("SELECT COUNT(*) FROM factures f JOIN agents a ON a.id = f.agent_id "
+                                     "WHERE a.dossier_id = ?", (did,)).fetchone()[0] > 0
+        con.execute(
+            "UPDATE dossiers SET numero_proforma=?, nom_numero=?, date_proforma=?, client_id=?, num_da=?, service=?, "
+            "imputation=?, lieu=?, date_debut=?, date_fin=?, visite_mode=?, notes=?, maj_le=?, facture_groupee=? WHERE id=?",
+            (numero, d["nom_numero"], d["date_proforma"].isoformat(), d["client_id"], d["num_da"], d["service"],
+             d["imputation"], d["lieu"], d["date_debut"].isoformat(), d["date_fin"].isoformat(), d["visite_mode"],
+             d["notes"], db.maintenant(), d["facture_groupee"], did))
+        # agents mis à jour sur place (rang = ligne) : leurs factures émises restent rattachées
+        for a in anciens[len(agents):]:
+            con.execute("DELETE FROM agents WHERE id = ?", (a["id"],))
+        for i, a in enumerate(agents):
+            dv = a["derniere_visite"] or _derniere_visite_connue(con, a["nom"], did)
+            vals = (a["nom"], a["poste"], a["salaire_base"], dv.isoformat() if dv else None, db.interimaire_id(con, a["nom"]))
+            if i < len(anciens):
+                con.execute("UPDATE agents SET nom=?, poste=?, salaire_base=?, derniere_visite=?, interimaire_id=? "
+                            "WHERE id=?", vals + (anciens[i]["id"],))
+            else:
+                con.execute("INSERT INTO agents(nom, poste, salaire_base, derniere_visite, interimaire_id, dossier_id, rang) "
+                            "VALUES (?,?,?,?,?,?,?)", vals + (did, i + 1))
+        if avait_factures:
+            _generer(con, did)
+        journaliser(ctx, "dossier_modifie", numero,
+                    ("%d facture(s) émise(s) gardée(s) telles quelles" % emises) if emises else "")
+    return {"ok": True, "emises_gardees": emises}
 
 
 def statut_dossier(ctx, g, body):
@@ -915,26 +924,36 @@ def _generer(con, did):
     d, _ = _pour_calcul(r, [])
     ajout = 0
     now = db.maintenant()
-    for a in _agents(con, did):
-        _, ags = _pour_calcul(r, [a])
-        prevues = M.lignes_factures_agent(d, ags[0], b["charges"], b)
+    agents = _agents(con, did)
+    groupee = bool(r["facture_groupee"])
+    if groupee:
+        _, tous = _pour_calcul(r, agents)
+        lignes_groupe = M.lignes_factures_groupe(d, tous, b["charges"], b)
+    for a in agents:
+        if groupee:
+            # facture groupée : rattachée au 1er agent, les autres n'ont pas de facture à eux
+            prevues = lignes_groupe if a["rang"] == 1 else []
+        else:
+            _, ags = _pour_calcul(r, [a])
+            prevues = M.lignes_factures_agent(d, ags[0], b["charges"], b)
         cles = set()
         for l in prevues:
             mois = l["mois"].isoformat()
             cles.add((l["type"], mois))
             # visite médicale : pas de TVA par défaut (règle de Luc, 24/11/2026), réglable
             t = _tva_ligne(l["type"], l["montant_ht"], b)
-            ex = con.execute("SELECT id, numero FROM factures WHERE agent_id = ? AND type = ? AND mois = ?",
+            ex = con.execute("SELECT id, numero, modifiee_le FROM factures WHERE agent_id = ? AND type = ? AND mois = ?",
                              (a["id"], l["type"], mois)).fetchone()
             if ex is None:
-                con.execute("INSERT INTO factures(agent_id, type, mois, jours, jours_mois, montant_ht, tva, ttc, cree_le) "
-                            "VALUES (?,?,?,?,?,?,?,?,?)", (a["id"], l["type"], mois, l["jours"], l["jours_mois"],
-                                                           l["montant_ht"], t, l["montant_ht"] + t, now))
+                con.execute("INSERT INTO factures(agent_id, type, mois, jours, jours_mois, montant_ht, tva, ttc, groupe, cree_le) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?)", (a["id"], l["type"], mois, l["jours"], l["jours_mois"],
+                                                             l["montant_ht"], t, l["montant_ht"] + t, int(groupee), now))
                 ajout += 1
-            elif ex["numero"] is None:
-                con.execute("UPDATE factures SET jours=?, jours_mois=?, montant_ht=?, tva=?, ttc=? WHERE id=?",
-                            (l["jours"], l["jours_mois"], l["montant_ht"], t, l["montant_ht"] + t, ex["id"]))
-        for f in con.execute("SELECT id, type, mois FROM factures WHERE agent_id = ? AND numero IS NULL AND type <> 'BIS'",
+            elif ex["numero"] is None and ex["modifiee_le"] is None:   # corrigée à la main : on n'y touche pas
+                con.execute("UPDATE factures SET jours=?, jours_mois=?, montant_ht=?, tva=?, ttc=?, groupe=? WHERE id=?",
+                            (l["jours"], l["jours_mois"], l["montant_ht"], t, l["montant_ht"] + t, int(groupee), ex["id"]))
+        for f in con.execute("SELECT id, type, mois FROM factures WHERE agent_id = ? AND numero IS NULL AND type <> 'BIS' "
+                             "AND modifiee_le IS NULL",
                              (a["id"],)).fetchall():
             if (f["type"], f["mois"]) not in cles:
                 con.execute("DELETE FROM factures WHERE id = ?", (f["id"],))
@@ -973,17 +992,28 @@ SQL_FACTURES = (
     "SELECT f.*, a.nom AS agent, i.matricule, a.poste, a.dossier_id, d.numero_proforma, d.bc_numero, d.imputation, d.service, "
     "d.lieu, d.date_debut, d.date_fin, d.statut AS statut_dossier, d.num_seq, a.rang, "
     "c.code AS client_code, c.nom AS client_nom, c.adresse AS client_adresse, c.ville AS client_ville, "
-    "c.telephone AS client_telephone, c.email AS client_email "
+    "c.telephone AS client_telephone, c.email AS client_email, "
+    "(SELECT COUNT(*) FROM agents x WHERE x.dossier_id = a.dossier_id) AS nb_agents_dossier "
     "FROM factures f JOIN agents a ON a.id = f.agent_id JOIN dossiers d ON d.id = a.dossier_id "
     "JOIN clients c ON c.id = d.client_id LEFT JOIN interimaires i ON i.id = a.interimaire_id ")
 ORDRE_FACTURES = " ORDER BY f.mois, d.num_seq, a.rang, CASE f.type WHEN 'VISITE' THEN 0 WHEN 'MAD' THEN 1 ELSE 2 END, f.id"
 
 
-def _vue_factures(rows):
+def _vue_factures(rows, con=None):
     auj = aujourdhui()
     res = []
+    noms = {}
     for r in rows:
         x = dict(r)
+        if x.get("groupe") and con is not None:
+            if x["dossier_id"] not in noms:
+                ags = con.execute("SELECT nom, poste FROM agents WHERE dossier_id = ? ORDER BY rang",
+                                  (x["dossier_id"],)).fetchall()
+                noms[x["dossier_id"]] = ags
+            ags = noms[x["dossier_id"]]
+            x["agents_groupe"] = [g["nom"] for g in ags]
+            x["agent"] = M.noms_groupe([g["nom"] for g in ags])
+            x["nb_agents"] = len(ags)
         x["statut"] = M.statut_facture(x, auj)
         x["retard_jours"] = None
         if x["echeance"] and x["numero"] and not x["remplacee_par_id"]:
@@ -1011,7 +1041,7 @@ def liste_factures(ctx, g, body):
         cond.append("f.id IN (%s)" % ",".join("?" * len(ids)))
         args += ids
     sql = SQL_FACTURES + (" WHERE " + " AND ".join(cond) if cond else "") + ORDRE_FACTURES
-    res = _vue_factures(con.execute(sql, args).fetchall())
+    res = _vue_factures(con.execute(sql, args).fetchall(), con)
     st = q.get("statut", "")
     if st:
         res = [x for x in res if x["statut"] == st]
@@ -1046,14 +1076,23 @@ def emettre(ctx, g, body):
                 rows = con.execute(base + " AND f.mois = ?" + ORDRE_FACTURES, (m.isoformat(),)).fetchall()
         p = parametres(con)
         ids_emis = []
+        # visite médicale et facture du mois émises ensemble pour le même agent (ou le
+        # même groupe) et le même mois : un seul n° (FA 159/11/2026 + FA 159/Visite médicale/2026)
+        paire = {}
         for r in rows:
-            n += 1
-            numero = M.numero_facture(n, r["type"], dt.date.fromisoformat(r["mois"]), **_codes_facture(p))
+            cle = (r["agent_id"], r["mois"])
+            if cle in paire and paire[cle][1] != r["type"] and r["type"] in ("MAD", "VISITE"):
+                num_seq = paire.pop(cle)[0]
+            else:
+                n += 1
+                num_seq = n
+                paire[cle] = (n, r["type"])
+            numero = M.numero_facture(num_seq, r["type"], dfac, **_codes_facture(p))
             if con.execute("SELECT 1 FROM factures WHERE numero = ?", (numero,)).fetchone():
                 raise ErreurAPI(409, "Le n° %s existe déjà : vérifiez le dernier n° de facture." % numero)
             ech = M.echeance(dfac, p.get("delai_paiement_jours", 30))
             con.execute("UPDATE factures SET numero=?, num_seq=?, date_facture=?, echeance=? WHERE id=?",
-                        (numero, n, dfac.isoformat(), ech.isoformat(), r["id"]))
+                        (numero, num_seq, dfac.isoformat(), ech.isoformat(), r["id"]))
             ids_emis.append(r["id"])
         if ids_emis:
             con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('dernier_num_facture', ?)", (json.dumps(n),))
@@ -1073,6 +1112,10 @@ def marquer_envoyees(ctx, g, body):
     return {"modifiees": cur.rowcount}
 
 
+def _milliers(n):
+    return format(int(n), ",").replace(",", " ")
+
+
 def paiement(ctx, g, body):
     con = ctx["con"]
     ids = liste_ids(body)
@@ -1087,6 +1130,11 @@ def paiement(ctx, g, body):
             f = con.execute("SELECT * FROM factures WHERE id = ?", (fid,)).fetchone()
             if not f or not f["numero"] or f["remplacee_par_id"]:
                 continue
+            if montant is not None and montant > f["ttc"]:
+                raise ErreurAPI(400, "Le montant reçu (%s XAF) dépasse le TTC de la facture %s (%s XAF). "
+                                     "Vérifiez la saisie." % (_milliers(montant), f["numero"], _milliers(f["ttc"])))
+            if montant == 0:
+                raise ErreurAPI(400, "Montant reçu à 0 : laissez vide pour le TTC complet.")
             con.execute("UPDATE factures SET paye_le=?, montant_paye=?, ref_paiement=? WHERE id=?",
                         (d.isoformat(), montant if montant is not None else f["ttc"], ref, fid))
             n += 1
@@ -1144,6 +1192,45 @@ def facture_bis(ctx, g, body):
         journaliser(ctx, "facture_bis", num, "PV %d XAF HT (avant %d)" % (montant, f["montant_ht"]))
     _archiver_factures(ctx, [cur.lastrowid])
     return {"id": cur.lastrowid, "numero": num}
+
+
+def modifier_facture(ctx, g, body):
+    """Corriger une facture, émise ou non (demande de Luc et Lola, 25/11/2026) :
+    quantité, unité, montant HT, date, remarque. Le n° ne change jamais ; la TVA
+    et le TTC sont recalculés ; une nouvelle copie figée est gardée ; le journal
+    note l'avant / après. Une facture payée ou remplacée ne se modifie pas."""
+    con = ctx["con"]
+    fid = int(g[0])
+    with Transaction(con):
+        f = con.execute(SQL_FACTURES + " WHERE f.id = ?", (fid,)).fetchone()
+        if not f:
+            raise ErreurAPI(404, "Facture introuvable.")
+        if f["remplacee_par_id"]:
+            raise ErreurAPI(409, "Cette facture est remplacée par une facture bis : modifiez la bis.")
+        if f["paye_le"]:
+            raise ErreurAPI(409, "Cette facture est payée : annulez d'abord le paiement pour la modifier.")
+        if f["statut_dossier"] == "Annulé":
+            raise ErreurAPI(409, "Ce dossier est annulé.")
+        ht = entier(body, "montant_ht", 0, 10_000_000_000)
+        jours = entier(body, "jours", 0, 1000, requis=False, defaut=f["jours"])
+        unite = texte(body, "unite", 20, defaut=f["unite"])
+        rq = texte(body, "remarque", 300, defaut=f["remarque"]) if "remarque" in body else f["remarque"]
+        dfac = date_(body, "date_facture", requis=False) if f["numero"] else None
+        r = con.execute("SELECT d.bareme_json FROM dossiers d JOIN agents a ON a.dossier_id = d.id WHERE a.id = ?",
+                        (f["agent_id"],)).fetchone()
+        t = _tva_ligne(f["type"], ht, json.loads(r[0]))
+        dfac_iso = dfac.isoformat() if dfac else f["date_facture"]
+        ech = f["echeance"]
+        if dfac and dfac_iso != f["date_facture"]:
+            ech = M.echeance(dfac, parametres(con).get("delai_paiement_jours", 30)).isoformat()
+        con.execute("UPDATE factures SET montant_ht=?, tva=?, ttc=?, jours=?, unite=?, remarque=?, date_facture=?, "
+                    "echeance=?, modifiee_le=? WHERE id=?",
+                    (ht, t, ht + t, jours, unite, rq, dfac_iso, ech, db.maintenant(), fid))
+        avant = "HT %d, qté %s, unité %s, date %s" % (f["montant_ht"], f["jours"], f["unite"] or "-", f["date_facture"] or "-")
+        apres = "HT %d, qté %s, unité %s, date %s" % (ht, jours, unite or "-", dfac_iso or "-")
+        journaliser(ctx, "facture_modifiee", f["numero"] or ("prévue %s" % f["mois"][:7]), "%s → %s" % (avant, apres))
+    archivee = _archiver_factures(ctx, [fid]) if f["numero"] else 0
+    return {"ok": True, "ttc": ht + t, "archivee": archivee}
 
 
 def remarque_facture(ctx, g, body):
@@ -1216,7 +1303,7 @@ def tableau_de_bord(ctx, g, body):
                 alertes_visite.append({"dossier_id": r["id"], "agent": a["nom"], "date": suivantes[0].isoformat(),
                                        "fin": r["date_fin"]})
     alertes_fin.sort(key=lambda x: x["fin"])
-    fact = _vue_factures(con.execute(SQL_FACTURES + ORDRE_FACTURES).fetchall())
+    fact = _vue_factures(con.execute(SQL_FACTURES + ORDRE_FACTURES).fetchall(), con)
     valides = [f for f in fact if f["numero"] and not f["remplacee_par_id"]]
     du_mois = [f for f in valides if f["mois"] == m.isoformat()]
     a_emettre_passe = [f for f in fact if not f["numero"] and f["mois"] < m.isoformat() and f["type"] != "BIS"]
@@ -1234,10 +1321,16 @@ def tableau_de_bord(ctx, g, body):
         serie.append({
             "mois": mm.isoformat(), "libelle": M.libelle_mois(mm), "a_facturer_ht": t + v,
             "facture_ht": sum(f["montant_ht"] for f in valides if f["mois"] == mm.isoformat()),
+            # payé = TTC : on le compare au facturé TTC (avant : HT, d'où « payé > facturé »)
+            "facture_ttc": sum(f["ttc"] for f in valides if f["mois"] == mm.isoformat()),
             "paye": sum(f["montant_paye"] or 0 for f in valides if f["mois"] == mm.isoformat()),
         })
     tot_fact = sum(f["ttc"] for f in valides)
     tot_paye = sum(f["montant_paye"] or 0 for f in valides)
+    # reste dû facture par facture : un paiement saisi en trop ne rend pas le reste négatif
+    reste = sum(max(0, f["ttc"] - (f["montant_paye"] or 0)) for f in valides)
+    trop_percus = [{"id": f["id"], "numero": f["numero"], "ttc": f["ttc"], "paye": f["montant_paye"]}
+                   for f in valides if (f["montant_paye"] or 0) > f["ttc"]]
     return {
         "mois": m.isoformat(), "libelle": M.libelle_mois(m),
         "personnes_en_contrat": personnes, "personnes_en_attente": attente,
@@ -1248,9 +1341,10 @@ def tableau_de_bord(ctx, g, body):
         "factures_payees": sum(1 for f in du_mois if f["paye_le"]),
         "facture_ht": sum(f["montant_ht"] for f in du_mois), "facture_ttc": sum(f["ttc"] for f in du_mois),
         "paye": sum(f["montant_paye"] or 0 for f in du_mois),
-        "impaye_mois": sum(f["ttc"] for f in du_mois) - sum(f["montant_paye"] or 0 for f in du_mois),
+        "impaye_mois": sum(max(0, f["ttc"] - (f["montant_paye"] or 0)) for f in du_mois),
         "a_emettre_mois": len(a_emettre_mois), "a_emettre_rattrapage": len(a_emettre_passe),
-        "total_facture_ttc": tot_fact, "total_paye": tot_paye, "reste_a_encaisser": tot_fact - tot_paye,
+        "total_facture_ttc": tot_fact, "total_paye": tot_paye, "reste_a_encaisser": reste,
+        "trop_percus": trop_percus,
         "factures_en_retard": sum(1 for f in valides if f["statut"] == "En retard"),
         "montant_en_retard": sum(f["ttc"] for f in valides if f["statut"] == "En retard"),
         "alertes_fin": alertes_fin[:20], "alertes_visite": alertes_visite[:20], "ecarts_bc": ecarts_bc,
@@ -1303,7 +1397,7 @@ def factures_word(ctx, g, body):
     if not ids:
         raise ErreurAPI(400, "Aucune facture sélectionnée.")
     rows = con.execute(SQL_FACTURES + " WHERE f.id IN (%s)" % ",".join("?" * len(ids)) + ORDRE_FACTURES, ids).fetchall()
-    fs = [dict(r) for r in rows if r["numero"]]
+    fs = [f for f in _vue_factures(rows, con) if f["numero"]]
     if not fs:
         raise ErreurAPI(409, "Ces factures n'ont pas encore de n° : émettez-les d'abord.")
     p = parametres(con)
@@ -1339,8 +1433,7 @@ def _archiver_factures(ctx, ids):
                            list(ids)).fetchall()
         p = parametres(con)
         with Transaction(con):
-            for r in rows:
-                f = dict(r)
+            for f in _vue_factures(rows, con):
                 contenu = docx_facture.facture_docx(p, f, prive=ctx["prive"], origine=ctx["origine"])
                 nom = docx_facture.nom_fichier(f)
                 DOC.enregistrer(con, ctx["chemin_db"], f["dossier_id"], f["id"], "Facture", nom, contenu,
