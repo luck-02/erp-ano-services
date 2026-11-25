@@ -17,7 +17,7 @@ Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git
 - Branche `dev` : tests GitHub à chaque envoi ; `main` reste la production.
 - Site de test https://dev.<ip>.sslip.io à côté de la production (compte `erp-dev`, port 8766, données
   `/var/lib/erp-dev`, production illisible pour lui), mis à jour automatiquement à chaque envoi sur `dev`
-  après les tests ; bandeau « SITE DE TEST ». Installation : `deploiement/installer-dev.sh`.
+  après les tests ; repère discret : badge « TEST » près du nom, onglet « [TEST] ». Installation : `deploiement/installer-dev.sh`.
 - `erp-deployer` accepte aussi « deployer-dev dev-<commit> » (site de test seulement, code copié sans
   être exécuté en root).
 

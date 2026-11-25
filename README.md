@@ -146,7 +146,7 @@ Au quotidien (Mac) :
 2. Modifier, puis `git commit -am "…"` et `git push` : les tests tournent sur GitHub (onglet « Actions »).
 3. Essayer : sur le site de test (ci-dessous), ou en local avec « Lancer ANO.command ».
 
-**Site de test** : https://dev.2-29-210-17.sslip.io (bandeau orange « SITE DE TEST », données fictives,
+**Site de test** : https://dev.2-29-210-17.sslip.io (badge « TEST » à côté du nom et onglet « [TEST] », données fictives,
 compte et données séparés de la production). Après chaque envoi sur `dev`, une fois les tests verts,
 GitHub le met à jour tout seul (onglet « Actions », étape « Mise à jour du site de test »).
 Installation, une seule fois, depuis le Mac (dossier erp-mvp) :

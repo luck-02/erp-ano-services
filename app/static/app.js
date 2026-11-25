@@ -1294,7 +1294,13 @@ async function pageJournal(page) {
 // ---------------------------------------------------------------------------
 async function demarrage() {
   // site de test (dev.…) : bandeau permanent pour ne jamais le confondre avec la production
-  if (/^dev\./.test(location.hostname)) document.body.classList.add("site-test");
+  if (/^dev\./.test(location.hostname)) {
+    document.body.classList.add("site-test");
+    // onglet du navigateur : « [TEST] … », quel que soit le titre de la page
+    const prefixer = () => { if (!document.title.startsWith("[TEST] ")) document.title = "[TEST] " + document.title; };
+    prefixer();
+    new MutationObserver(prefixer).observe(document.querySelector("title"), { childList: true });
+  }
   try {
     const e = await api("GET", "/api/etat");
     etat.multi = !!e.multi;
