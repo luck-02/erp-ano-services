@@ -307,6 +307,11 @@ def migrer_interimaires(con):
     con.execute("COMMIT")
 
 
+def _sans_accents(t):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", str(t)) if unicodedata.category(c) != "Mn")
+
+
 def migrer_factures(con):
     """v3.5.0 : unité modifiable et factures corrigées à la main (jamais
     écrasées par un nouveau calcul)."""
@@ -329,4 +334,14 @@ def migrer_factures(con):
             if r and json.loads(r[0]) == ancien:
                 con.execute("UPDATE parametres SET valeur = ? WHERE cle = ?", (json.dumps(neuf), cle))
         con.execute("INSERT INTO parametres(cle, valeur) VALUES ('maj_numeros_20261125', 'true')")
+    # « ANO SERVICE » sous la désignation des factures (comme les originaux), une seule fois,
+    # seulement pour ANO Services et si personne n'a encore rempli le champ. Aucun n° émis touché.
+    if not con.execute("SELECT 1 FROM parametres WHERE cle = 'maj_mention_20261125'").fetchone():
+        r = con.execute("SELECT valeur FROM parametres WHERE cle = 'raison_sociale'").fetchone()
+        rs = _sans_accents(json.loads(r[0]) if r else "").upper().strip()
+        m = con.execute("SELECT valeur FROM parametres WHERE cle = 'mention_designation'").fetchone()
+        if rs.startswith("ANO SERVICE") and not (m and json.loads(m[0]).strip()):
+            con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('mention_designation', ?)",
+                        (json.dumps("ANO SERVICE"),))
+        con.execute("INSERT INTO parametres(cle, valeur) VALUES ('maj_mention_20261125', 'true')")
     con.execute("COMMIT")

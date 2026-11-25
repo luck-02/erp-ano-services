@@ -9,6 +9,8 @@ Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git
 
 ## En cours (branche dev)
 
+- Mise en conformité des données existantes, automatique au démarrage (une seule fois) : « ANO SERVICE » renseigné sous la désignation pour l'entreprise ANO Services si le champ est vide ; aucun n° émis, montant ou copie archivée n'est modifié. Les factures pas encore émises suivent d'elles-mêmes les nouvelles règles (n° partagé visite / mois). Site de test : « ANO SERVICE » aussi dans « essai » et « verif ».
+
 - Factures : nom de l'entreprise sous la 1re ligne de la désignation, avant l'agent, comme sur les factures d'ANO (« ANO SERVICE ») ; réglable dans Paramètres > Numérotation (vide = raison sociale en majuscules), à l'écran, en PDF et en Word.
 
 - Un n° de facture émis reste lié à son agent : la facture du mois émise après sa visite médicale reprend le n° de la visite (FA 87/Visite médicale/2026 puis FA 87/12/2026), et inversement ; modifier la DA (ordre des agents, dates, montants) ne change jamais le n° ni l'agent d'une facture émise ; un agent qui a des factures émises ne peut être ni retiré ni remplacé.

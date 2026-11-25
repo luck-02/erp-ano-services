@@ -10,6 +10,7 @@ sous le compte erp-dev, avec les mêmes protections que le site de test (aucun a
 
   python3 dev-apres-installation.py <dossier des données> <domaine> < mot de passe
 """
+import json
 import os
 import secrets
 import shutil
@@ -35,6 +36,20 @@ def client(domaine):
     return c
 
 
+def mention_une_fois(con):
+    """« ANO SERVICE » sous la désignation, comme en production ; une seule fois (un champ vidé exprès reste vide)."""
+    if con.execute("SELECT 1 FROM parametres WHERE cle = 'maj_mention_essai'").fetchone():
+        return "rien changé"
+    m = con.execute("SELECT valeur FROM parametres WHERE cle = 'mention_designation'").fetchone()
+    fait = not (m and json.loads(m[0]).strip())
+    if fait:
+        con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('mention_designation', ?)",
+                    (json.dumps("ANO SERVICE"),))
+    con.execute("INSERT INTO parametres(cle, valeur) VALUES ('maj_mention_essai', 'true')")
+    con.commit()
+    return "« ANO SERVICE » ajouté sous les désignations" if fait else "rien changé"
+
+
 def remplir_essai(reg, domaine):
     e = reg.trouver("essai")
     if not e:
@@ -42,7 +57,7 @@ def remplir_essai(reg, domaine):
     con = sqlite3.connect(e["chemin_db_abs"])
     try:
         if con.execute("SELECT COUNT(*) FROM dossiers").fetchone()[0]:
-            return "essai : déjà des dossiers, rien changé"
+            return "essai : déjà des dossiers, " + mention_une_fois(con)
         mdp = "Tmp-" + secrets.token_urlsafe(18)
         ident = "remplissage-auto"
         if con.execute("SELECT 1 FROM utilisateurs WHERE identifiant = ?", (ident,)).fetchone():

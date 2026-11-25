@@ -869,15 +869,47 @@ class TestsAPI(unittest.TestCase):
             if nom:
                 z = zipfile.ZipFile(io.BytesIO(z.read(nom[0])))
             return re.sub(r"<[^>]+>", "|", z.read("word/document.xml").decode())
-        rs = a.req("GET", "/api/parametres")[1]["parametres"]["raison_sociale"]
-        self.assertIn("|" + rs.upper() + "|", texte_word())            # vide : raison sociale en majuscules
+        p = a.req("GET", "/api/parametres")[1]["parametres"]
+        self.assertEqual(p["mention_designation"], "ANO SERVICE")     # rempli d'office pour ANO Services
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"mention_designation": ""}})
+        self.assertEqual(st, 200, j)
+        self.assertIn("|" + p["raison_sociale"].upper() + "|", texte_word())   # vide : raison sociale en majuscules
         st, j = a.req("PUT", "/api/parametres", {"parametres": {"mention_designation": "ANO SERVICE"}})
         self.assertEqual(st, 200, j)
         t = texte_word()
         self.assertIn("|ANO SERVICE|", t)
         self.assertLess(t.index("MAD d"), t.index("ANO SERVICE|"))
         self.assertLess(t.index("ANO SERVICE|"), t.index(fa["agent"]))
-        a.req("PUT", "/api/parametres", {"parametres": {"mention_designation": ""}})
+
+    def test_24_mise_en_conformite_donnees_existantes(self):
+        """Base d'avant : « ANO SERVICE » ajouté une fois, aucun n° émis ni montant modifié, relançable."""
+        import glob
+        import sqlite3
+        chemins = [c for c in glob.glob(os.path.join(TMP, "**", "*.db"), recursive=True)
+                   if os.path.basename(c) != "plateforme.db" and "ancienne" not in c]
+        chemin = max(chemins, key=os.path.getsize)
+        def etat():
+            con = sqlite3.connect(chemin)
+            try:
+                return con.execute("SELECT * "
+                                   "FROM factures ORDER BY id").fetchall()
+            finally:
+                con.close()
+        avant = etat()
+        self.assertTrue([f for f in avant if f[1]])                   # il y a bien des n° émis
+        con = sqlite3.connect(chemin)
+        con.execute("DELETE FROM parametres WHERE cle IN ('maj_mention_20261125', 'mention_designation')")
+        con.commit()
+        con.close()
+        serveur.db.initialiser(chemin)
+        serveur.db.initialiser(chemin)
+        self.assertEqual(etat(), avant)
+        self.assertEqual(self.admin.req("GET", "/api/parametres")[1]["parametres"]["mention_designation"], "ANO SERVICE")
+        # une entreprise qui a vidé ou changé le champ ensuite n'est plus touchée
+        self.admin.req("PUT", "/api/parametres", {"parametres": {"mention_designation": ""}})
+        serveur.db.initialiser(chemin)
+        self.assertEqual(self.admin.req("GET", "/api/parametres")[1]["parametres"]["mention_designation"], "")
+        self.admin.req("PUT", "/api/parametres", {"parametres": {"mention_designation": "ANO SERVICE"}})
 
     def test_99_parametres_entreprise(self):
         """V1 B2B : codes de n°, TVA visite et images réglables ; ANO inchangé par défaut."""

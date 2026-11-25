@@ -104,7 +104,7 @@ def remplir(c):
         "raison_sociale": "ESSAI INTÉRIM (fictif)", "adresse": "BP 0000", "ville": "Moanda", "telephone": "+241 00 00 00 00",
         "email": "contact@exemple.invalid", "rccm": "RCCM-FICTIF-0001", "nif": "000000 X", "cnss": "CNSS-FICTIF",
         "banque": "Banque Fictive du Gabon", "compte": "00000 00000 00000000000 00",
-        "dernier_num_proforma": 100, "dernier_num_facture": 50}})
+        "mention_designation": "ANO SERVICE", "dernier_num_proforma": 100, "dernier_num_facture": 50}})
     c.ok("POST", "/api/clients", {"nom": "MINES DU SUD SA (fictif)", "adresse": "BP 1", "ville": "Moanda", "contact": "Service Achats"})
     c.ok("POST", "/api/clients", {"nom": "PORT OCÉAN SA (fictif)", "adresse": "BP 2", "ville": "Libreville", "contact": "DRH"})
     cl = {x["nom"]: x["id"] for x in c.ok("GET", "/api/clients")["clients"]}
