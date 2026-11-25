@@ -672,7 +672,7 @@ class TestsAPI(unittest.TestCase):
 
     def test_20_retours_v350(self):
         """v3.5.0 : facture modifiable après émission, paiement plafonné au TTC,
-        facture groupée (ex. 9 infirmiers), visite émise seule = n° à elle."""
+        facture groupée (ex. 9 infirmiers), visite émise seule puis son mois = même n°."""
         import io
         import zipfile
         a = self.admin
@@ -761,7 +761,8 @@ class TestsAPI(unittest.TestCase):
         st, j = a.req("POST", "/api/factures/emettre", {"ids": [mad["id"]], "date_facture": "2027-06-06"})
         st, f = a.req("GET", "/api/factures?ids=%d,%d" % (vis["id"], mad["id"]))
         nums = sorted(x["numero"] for x in f["factures"])
-        self.assertEqual(nums, sorted(["FA %d/Visite médicale/2027" % (n0 + 2), "FA %d/06/2027" % (n0 + 3)]))
+        # émise après sa visite, la facture du même mois reprend le n° de la visite (lié à l'agent)
+        self.assertEqual(nums, sorted(["FA %d/Visite médicale/2027" % (n0 + 2), "FA %d/06/2027" % (n0 + 2)]))
 
     def test_21_recherche(self):
         """Recherche globale : plusieurs mots, accents, n° avec espaces, filtres, rôles."""
@@ -799,6 +800,59 @@ class TestsAPI(unittest.TestCase):
         self.assertTrue(j["resultats"] and {r["type"] for r in j["resultats"]} == {"facture"})
         st, j = l.req("GET", "/api/recherche?q=testeur&type=document")
         self.assertEqual(j["total"], 0)
+
+    def test_22_numero_lie_a_l_agent(self):
+        """Un n° de facture émis reste lié à son agent (Luc, 25/11/2026) : visite émise seule,
+        puis le mois suivant, puis le mois de la visite -> il reprend le n° de la visite.
+        Modifier la DA (ordre des agents, dates) ne change ni le n° ni l'agent d'une facture émise."""
+        a = self.admin
+        corps = {"client_id": 1, "service": "DAF", "lieu": "Moanda", "date_debut": "2028-11-01", "date_fin": "2029-01-31",
+                 "visite_mode": "Auto", "agents": [
+                     {"nom": "PREMIER Agent Fictif", "poste": "p", "salaire_base": 600000},
+                     {"nom": "SECOND Agent Fictif", "poste": "p", "salaire_base": 600000}]}
+        st, j = a.req("POST", "/api/dossiers", corps)
+        self.assertEqual(st, 200, j)
+        did = j["id"]
+        a.req("POST", "/api/dossiers/%d/generer-factures" % did, {"forcer": True})
+        fs = a.req("GET", "/api/factures?dossier=%d" % did)[1]["factures"]
+        def f_(agent, type_, mois):
+            return [x for x in fs if x["agent"].startswith(agent) and x["type"] == type_ and x["mois"].startswith(mois)][0]
+        vis, nov, dec = f_("PREMIER", "VISITE", "2028-11"), f_("PREMIER", "MAD", "2028-11"), f_("PREMIER", "MAD", "2028-12")
+        n0 = a.req("GET", "/api/parametres")[1]["parametres"]["dernier_num_facture"]
+        a.req("POST", "/api/factures/emettre", {"ids": [vis["id"]], "date_facture": "2028-11-25"})
+        a.req("POST", "/api/factures/emettre", {"ids": [dec["id"]], "date_facture": "2028-11-26"})
+        a.req("POST", "/api/factures/emettre", {"ids": [nov["id"]], "date_facture": "2028-12-01"})
+        par = {x["id"]: x for x in a.req("GET", "/api/factures?dossier=%d" % did)[1]["factures"]}
+        self.assertEqual(par[vis["id"]]["numero"], "FA %d/Visite médicale/2028" % (n0 + 1))
+        self.assertEqual(par[dec["id"]]["numero"], "FA %d/11/2028" % (n0 + 2))
+        self.assertEqual(par[nov["id"]]["numero"], "FA %d/12/2028" % (n0 + 1))     # reprend le n° de la visite
+        self.assertEqual(a.req("GET", "/api/parametres")[1]["parametres"]["dernier_num_facture"], n0 + 2)
+        # DA modifiée : agents inversés, dates prolongées -> les factures émises gardent n° et agent
+        corps2 = dict(corps, date_fin="2029-03-31", agents=list(reversed(corps["agents"])))
+        st, j = a.req("PUT", "/api/dossiers/%d" % did, corps2)
+        self.assertEqual(st, 200, j)
+        a.req("POST", "/api/dossiers/%d/generer-factures" % did, {"forcer": True})
+        apres = {x["id"]: x for x in a.req("GET", "/api/factures?dossier=%d" % did)[1]["factures"]}
+        for fid in (vis["id"], nov["id"], dec["id"]):
+            self.assertEqual((apres[fid]["numero"], apres[fid]["agent"], apres[fid]["montant_ht"]),
+                             (par[fid]["numero"], par[fid]["agent"], par[fid]["montant_ht"]))
+        self.assertTrue(apres[vis["id"]]["agent"].startswith("PREMIER"))
+        # accents / majuscules corrigés : même agent, permis
+        corps3 = dict(corps2, agents=[dict(corps["agents"][1]), dict(corps["agents"][0], nom="Premier Agent FICTIF")])
+        st, j = a.req("PUT", "/api/dossiers/%d" % did, corps3)
+        self.assertEqual(st, 200, j)
+        # remplacer l'agent qui a des factures émises par une autre personne : refusé
+        corps4 = dict(corps2, agents=[dict(corps["agents"][1]), dict(corps["agents"][0], nom="AUTRE Personne Fictive")])
+        st, j = a.req("PUT", "/api/dossiers/%d" % did, corps4)
+        self.assertEqual(st, 409, j)
+        self.assertIn("FA %d/" % (n0 + 1), j["erreur"])
+        # le second agent (sans facture émise) peut être retiré
+        corps5 = dict(corps2, agents=[dict(corps["agents"][0])])
+        st, j = a.req("PUT", "/api/dossiers/%d" % did, corps5)
+        self.assertEqual(st, 200, j)
+        fin = {x["id"]: x for x in a.req("GET", "/api/factures?dossier=%d" % did)[1]["factures"]}
+        self.assertTrue(all(x["agent"].startswith("PREMIER") or x["agent"].startswith("Premier") for x in fin.values()))
+        self.assertEqual(fin[nov["id"]]["numero"], par[nov["id"]]["numero"])
 
     def test_99_parametres_entreprise(self):
         """V1 B2B : codes de n°, TVA visite et images réglables ; ANO inchangé par défaut."""

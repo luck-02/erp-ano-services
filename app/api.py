@@ -1010,10 +1010,26 @@ def modifier_dossier(ctx, g, body):
         # La proforma reste modifiable même après émission (demande de Luc, 25/11/2026) :
         # les factures déjà émises ne changent pas (montants figés) ; les factures
         # prévues sont recalculées. Un agent qui a des factures émises ne peut pas être retiré.
-        for a in anciens[len(agents):]:
-            if con.execute("SELECT 1 FROM factures WHERE agent_id = ? AND numero IS NOT NULL", (a["id"],)).fetchone():
-                raise ErreurAPI(409, "L'agent « %s » a des factures émises : il ne peut pas être retiré "
-                                     "(laissez-le dans la liste)." % a["nom"])
+        # Un n° de facture émis reste lié à SON agent (règle de Luc, 25/11/2026) : les agents
+        # sont retrouvés par leur nom (sans tenir compte des accents ni des majuscules), pas
+        # par leur place dans la liste. Un agent qui a des factures émises ne peut être ni
+        # retiré ni remplacé par une autre personne.
+        libres = list(anciens)
+        correspond = []
+        for a in agents:
+            k = M.cle_nom(a["nom"])
+            ancien = next((x for x in libres if M.cle_nom(x["nom"]) == k), None)
+            if ancien is not None:
+                libres.remove(ancien)
+            correspond.append(ancien)
+        for a in libres:
+            nums = [x[0] for x in con.execute("SELECT numero FROM factures WHERE agent_id = ? AND numero IS NOT NULL "
+                                              "ORDER BY num_seq", (a["id"],)).fetchall()]
+            if nums:
+                raise ErreurAPI(409, "L'agent « %s » a des factures émises (%s) : il ne peut être ni retiré ni remplacé, "
+                                     "car un n° de facture reste lié à son agent. Gardez-le dans la liste (les accents et "
+                                     "majuscules de son nom peuvent être corrigés)." % (a["nom"], ", ".join(nums[:3])
+                                                                                      + (" …" if len(nums) > 3 else "")))
         # le code entreprise d'origine est gardé (repris du n° existant)
         code = r["numero_proforma"].split("-")[2] if r["numero_proforma"].count("-") >= 3 else "ANO"
         numero = M.numero_proforma(r["num_seq"], d["date_proforma"], d["nom_numero"], code)
@@ -1027,15 +1043,16 @@ def modifier_dossier(ctx, g, body):
             (numero, d["nom_numero"], d["date_proforma"].isoformat(), d["client_id"], d["num_da"], d["service"],
              d["imputation"], d["lieu"], d["date_debut"].isoformat(), d["date_fin"].isoformat(), d["visite_mode"],
              d["notes"], db.maintenant(), d["facture_groupee"], did))
-        # agents mis à jour sur place (rang = ligne) : leurs factures émises restent rattachées
-        for a in anciens[len(agents):]:
+        # même personne = même ligne d'agent : ses factures (et leurs n°) la suivent, quel que soit l'ordre
+        for a in libres:
+            con.execute("DELETE FROM factures WHERE agent_id = ? AND numero IS NULL", (a["id"],))
             con.execute("DELETE FROM agents WHERE id = ?", (a["id"],))
         for i, a in enumerate(agents):
             dv = a["derniere_visite"] or _derniere_visite_connue(con, a["nom"], did)
             vals = (a["nom"], a["poste"], a["salaire_base"], dv.isoformat() if dv else None, db.interimaire_id(con, a["nom"]))
-            if i < len(anciens):
-                con.execute("UPDATE agents SET nom=?, poste=?, salaire_base=?, derniere_visite=?, interimaire_id=? "
-                            "WHERE id=?", vals + (anciens[i]["id"],))
+            if correspond[i] is not None:
+                con.execute("UPDATE agents SET nom=?, poste=?, salaire_base=?, derniere_visite=?, interimaire_id=?, rang=? "
+                            "WHERE id=?", vals + (i + 1, correspond[i]["id"]))
             else:
                 con.execute("INSERT INTO agents(nom, poste, salaire_base, derniere_visite, interimaire_id, dossier_id, rang) "
                             "VALUES (?,?,?,?,?,?,?)", vals + (did, i + 1))
@@ -1260,7 +1277,18 @@ def emettre(ctx, g, body):
         paire = {}
         for r in rows:
             cle = (r["agent_id"], r["mois"])
-            if cle in paire and paire[cle][1] != r["type"] and r["type"] in ("MAD", "VISITE"):
+            # la visite (ou la facture du mois) de ce même agent et de ce même mois a déjà son n° :
+            # l'autre reprend ce n°, qui reste lié à l'agent (ex. FA 87/Visite médicale/2026 puis FA 87/12/2026)
+            deja = None
+            if r["type"] in ("MAD", "VISITE") and cle not in paire:
+                autre = "VISITE" if r["type"] == "MAD" else "MAD"
+                deja = con.execute(
+                    "SELECT f.num_seq FROM factures f WHERE f.agent_id = ? AND f.mois = ? AND f.type = ? AND f.num_seq IS NOT NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM factures g WHERE g.num_seq = f.num_seq AND g.id <> f.id AND g.type <> 'BIS')",
+                    (r["agent_id"], r["mois"], autre)).fetchone()
+            if deja is not None:
+                num_seq = deja[0]
+            elif cle in paire and paire[cle][1] != r["type"] and r["type"] in ("MAD", "VISITE"):
                 num_seq = paire.pop(cle)[0]
             else:
                 n += 1

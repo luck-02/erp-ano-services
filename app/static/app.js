@@ -1204,7 +1204,7 @@ async function pageParametres(page) {
         <div class="ligne-form lf2">${champ("dernier_num_proforma", "Dernier n° de proforma utilisé", "La prochaine DA prendra ce n° + 1.")}
         ${champ("dernier_num_facture", "Dernier n° de facture utilisé", p.dernier_num_facture === null ? "À renseigner avant la 1re émission (ex. 152)." : "La prochaine facture prendra ce n° + 1.")}</div>
         <div class="ligne-form lf2">${champ("code_entreprise", "Code entreprise (n° de proforma)")}${champ("prefixe_facture", "Préfixe des factures")}</div>
-        <div class="ligne-form lf2">${champ("code_mad", "Code facture mensuelle", "Vide (comme les factures d'ANO) : FA 159/11/2026. Avec un code : FA 159/11-MAD/2026. 11 = mois d'émission.")}${champ("code_visite", "Code facture visite médicale", "FA 159/Visite médicale/2026 : même n° que la facture du mois émise avec elle, sinon un n° à elle.")}</div>
+        <div class="ligne-form lf2">${champ("code_mad", "Code facture mensuelle", "Vide (comme les factures d'ANO) : FA 159/11/2026. Avec un code : FA 159/11-MAD/2026. 11 = mois d'émission.")}${champ("code_visite", "Code facture visite médicale", "FA 159/Visite médicale/2026 : même n° que la facture du même mois et du même agent, même si elles sont émises à des jours différents. Un n° émis ne change plus jamais.")}</div>
         <p class="aide" id="p-exemples"></p>
         <div class="ligne-form lf2">${champ("bc_chiffres", "Chiffres d'un n° de BC client", "0 = pas de contrôle.")}<div></div></div>
         <div class="ligne-form lf2">${champ("alerte_fin_jours", "Alerte fin de contrat (jours avant)")}${champ("alerte_visite_jours", "Alerte visite médicale (jours avant)")}</div></div>

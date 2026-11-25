@@ -9,6 +9,8 @@ Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git
 
 ## En cours (branche dev)
 
+- Un n° de facture émis reste lié à son agent : la facture du mois émise après sa visite médicale reprend le n° de la visite (FA 87/Visite médicale/2026 puis FA 87/12/2026), et inversement ; modifier la DA (ordre des agents, dates, montants) ne change jamais le n° ni l'agent d'une facture émise ; un agent qui a des factures émises ne peut être ni retiré ni remplacé.
+
 - Recherche globale (case en haut du menu, touche « / ») : dossiers, factures, documents, clients, intérimaires ; plusieurs mots, accents ignorés, n° et montants avec espaces ; filtres type, client, statut, période, montant HT ; Lecture = factures seulement ; jamais hors de l'entreprise connectée.
 
 - Mise en page : la page ne défile plus jamais de côté, quelles que soient la largeur et le zoom (le menu restait coupé sur la page dossier) ; un tableau trop large défile dans son cadre.
