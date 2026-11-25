@@ -4,6 +4,7 @@
 //   B. version en ligne avec deux entreprises (connexion par code, isolation des données)
 // et vérifie à chaque page : aucune erreur JavaScript, accessibilité de base, pas de
 // défilement horizontal sur téléphone.
+// Pas de page.waitForFunction : la CSP de l'appli interdit eval, on attend avec des locators.
 // Lancer : ./tests/e2e/lancer_tests_navigateur.sh   (installe Playwright si besoin)
 // Sortie : code 0 si tout passe, 1 sinon ; captures dans le dossier affiché à la fin.
 
@@ -116,7 +117,7 @@ async function scenarioANO(navigateur) {
     await page.fill('input[data-c=poste]', 'Comptable fournisseurs');
     await page.fill('input[data-c=salaire_base]', '576300');
     await page.fill('#da-nom', 'AGENT FICTIF');
-    await page.waitForFunction(() => /6.648.214/.test(document.querySelector('#apercu').textContent), null, { timeout: 5000 });
+    await page.locator('#apercu', { hasText: /6.648.214/ }).waitFor({ timeout: 5000 });
     const apercu = await page.textContent('#apercu');
     verifier(/6.648.214/.test(apercu), 'cas de référence : cumul HT 6 648 214');
     verifier(/349-10-ANO-AGENT FICTIF\/2026/.test(apercu), 'n° de proforma 349-10-ANO-…/2026', apercu.match(/\d+-\d+-[A-Z]+-[^/]+\/\d+/)?.[0]);
@@ -181,7 +182,7 @@ async function scenarioANO(navigateur) {
     await page.selectOption('#pc-cat', 'BC');
     await page.setInputFiles('#pc-f', pdfFictif);
     await page.click('#pc-ok');
-    await page.waitForFunction(() => /BC fictif\.pdf/.test(document.querySelector('#ds-docs').textContent));
+    await page.locator('#ds-docs', { hasText: 'BC fictif.pdf' }).waitFor();
     verifier(true, 'pièce du client ajoutée (BC en PDF)');
     await controleAccessibilite(page, 'documents du dossier');
     const bouton = await page.$('#ds-docs tbody tr:first-child [data-doc-tel]');
@@ -242,7 +243,7 @@ r.creer('beta', 'Beta Services (fictif)', 'direction', 'Provisoire-Beta-22')`], 
     // mauvais code : même message qu'un mauvais mot de passe
     await a.fill('#c-ent', 'inconnue'); await a.fill('#c-id', 'direction'); await a.fill('#c-mdp', 'Provisoire-Alpha-1');
     await a.click('#f-cnx button');
-    await a.waitForFunction(() => document.querySelector('#c-err').textContent.length > 0);
+    await a.locator('#c-err', { hasText: /\S/ }).waitFor();
     const msg1 = await a.textContent('#c-err');
     await a.fill('#c-ent', 'alpha'); await a.fill('#c-mdp', 'Mauvais-mot-de-passe');
     await a.click('#f-cnx button');
@@ -260,7 +261,7 @@ r.creer('beta', 'Beta Services (fictif)', 'direction', 'Provisoire-Beta-22')`], 
     await a.fill('#da-d1', '2026-12-01'); await a.fill('#da-d2', '2027-02-28'); await a.fill('#da-dp', '2026-11-20');
     await a.fill('input[data-c=nom]', 'AGENT SECRET ALPHA'); await a.fill('input[data-c=poste]', 'Assistant');
     await a.fill('input[data-c=salaire_base]', '400000'); await a.fill('#da-nom', 'SECRET');
-    await a.waitForFunction(() => /ALPHA-SECRET/.test(document.querySelector('#apercu').textContent), null, { timeout: 5000 });
+    await a.locator('#apercu', { hasText: /ALPHA-SECRET/ }).waitFor({ timeout: 5000 });
     await a.click('#f-da button[type=submit]');
     await a.waitForSelector('#f-bc');
     verifier(/1-11-ALPHA-SECRET\/2026/.test(await a.textContent('body')), 'n° de proforma propre à Alpha (1-11-ALPHA-…)');
