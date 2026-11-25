@@ -129,8 +129,9 @@ const iso = (d) => d.toISOString().slice(0, 10);
     await page.locator('.toast', { hasText: 'préparée' }).first().waitFor();
     const d2 = await page.evaluate(async (id) => (await fetch('/api/dossiers/' + id)).json(), did);
     verifier(d2.dossier.statut === 'En cours' && d2.factures.length > 0, 'BC conforme : factures prévues créées, dossier « En cours »', [d2.dossier.statut, d2.factures.length]);
-    await page.locator('#ds-etape').waitFor();
-    verifier(/Émettre|Rien à faire/.test(await page.textContent('#ds-etape')), 'prochaine étape après le BC : émettre (ou rien à faire)');
+    // le dossier se redessine après le BC : on attend le nouveau texte (locator, pas waitForFunction : CSP sans eval)
+    const apresBC = await page.locator('#ds-etape', { hasText: /Émettre|Rien à faire/ }).waitFor({ timeout: 10000 }).then(() => true, () => false);
+    verifier(apresBC, 'prochaine étape après le BC : émettre (ou rien à faire)', await page.textContent('#ds-etape').catch(() => ''));
     await page.screenshot({ path: path.join(OUT, '3_dossier_prochaine_etape.png') });
 
     // --- contrat en place : la visite due aujourd'hui apparaît dans « À faire » ; « Faite le… » la retire
