@@ -240,8 +240,11 @@ def ajouter_heures_sup(c, did):
     c.ok("POST", "/api/heures-sup/%d/suivi" % h1, {"envoyee_le": "2026-11-06"})
     h2 = c.ok("POST", "/api/dossiers/%d/heures-sup" % did, {"agent_id": ag})["id"]
     c.ok("PUT", "/api/heures-sup/%d" % h2, dict(fiche, lignes=[
-        {"date": "2026-11-09", "debut": "17:00", "fin": "21:00", "justification": "Audit (fictif)"},
-        {"date": "2026-11-15", "debut": "22:00", "fin": "02:00", "justification": "Garde de nuit (fictif)"}]))
+        # saisie en grille (heures par jour), à cheval sur deux mois, avec un dimanche férié (Toussaint)
+        {"date": "2026-10-29", "heures": 4, "justification": "Audit (fictif)"},
+        {"date": "2026-10-31", "heures": 6, "justification": "Clôture (fictif)"},
+        {"date": "2026-11-01", "heures": 5, "justification": "Permanence (fictif)"},
+        {"date": "2026-11-02", "heures": 3}]))
     c.ok("POST", "/api/heures-sup/%d/devis" % h2, {"date": "2026-11-20"})
     return [h1, h2]
 

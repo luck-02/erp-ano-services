@@ -177,6 +177,19 @@ CREATE TABLE IF NOT EXISTS journal (
 );
 """
 
+# Jours fériés du Gabon (heures sup à la majoration des dimanches). « MM-JJ libellé » = chaque année ;
+# « AAAA-MM-JJ libellé » = une seule fois (fêtes mobiles : dates à vérifier chaque année, l'Aïd selon la lune).
+FERIES_GABON = [
+    "01-01 Jour de l'an", "04-17 Journée des droits de la femme", "05-01 Fête du travail", "08-15 Assomption",
+    "08-16 Fête de l'indépendance", "08-17 Fête de l'indépendance", "08-30 Journée de la libération",
+    "11-01 Toussaint", "12-25 Noël",
+    "2026-03-20 Aïd el-Fitr (à confirmer)", "2026-04-06 Lundi de Pâques", "2026-05-14 Ascension",
+    "2026-05-25 Lundi de Pentecôte", "2026-05-27 Aïd el-Kébir / Tabaski (à confirmer)",
+    "2027-03-10 Aïd el-Fitr (à confirmer)", "2027-03-29 Lundi de Pâques", "2027-05-06 Ascension",
+    "2027-05-17 Lundi de Pentecôte", "2027-05-17 Aïd el-Kébir / Tabaski (à confirmer)",
+]
+ANCIENS_FERIES = ["01-01", "04-17", "05-01", "08-15", "08-16", "08-17", "11-01", "12-25"]
+
 PARAMETRES_INITIAUX = {
     "raison_sociale": "ANO Services",
     "adresse": "BP 130",
@@ -215,7 +228,7 @@ PARAMETRES_INITIAUX = {
     "hs_taux1_pdm": 2800, "hs_taux2_pdm": 5600, "hs_taux3_pdm": 7500,
     "hs_seuil_semaine": 8,             # 8 premières h de chaque semaine (hors dimanche et férié) à la 1re majoration
     # dimanches et jours fériés à la 3e majoration ; MM-JJ = chaque année, AAAA-MM-JJ = une fois (fêtes mobiles)
-    "hs_jours_feries": ["01-01", "04-17", "05-01", "08-15", "08-16", "08-17", "11-01", "12-25"],
+    "hs_jours_feries": FERIES_GABON,
     "tva_visite": False,               # visite médicale sans TVA (règle ANO)
     "bc_chiffres": 6,                  # longueur habituelle d'un n° de BC (0 = pas de contrôle)
     "lieux": ["Moanda", "Libreville", "Port-Gentil"],
@@ -384,6 +397,9 @@ def migrer_factures(con):
     cols_d = [r[1] for r in con.execute("PRAGMA table_info(documents)")]
     if "hs_id" not in cols_d:
         con.execute("ALTER TABLE documents ADD COLUMN hs_id INTEGER REFERENCES heures_sup(id)")
+    r = con.execute("SELECT valeur FROM parametres WHERE cle = 'hs_jours_feries'").fetchone()
+    if r and json.loads(r[0]) == ANCIENS_FERIES:      # 1re liste (sans libellés) : remplacée par la liste complète
+        con.execute("UPDATE parametres SET valeur = ? WHERE cle = 'hs_jours_feries'", (json.dumps(FERIES_GABON),))
     if not con.execute("SELECT 1 FROM parametres WHERE cle = 'maj_mention_20261125'").fetchone():
         r = con.execute("SELECT valeur FROM parametres WHERE cle = 'raison_sociale'").fetchone()
         rs = _sans_accents(json.loads(r[0]) if r else "").upper().strip()

@@ -49,7 +49,7 @@ async function connexion(page) {
 const PAGES = [['#/tableau', '.kpi'], ['#/dossiers', 'table'], ['#/dossier/2', '#ds-docs table'], ['#/dossier/4', '#ds-docs table'],
   ['#/factures', '#fa-m'], ['#/nouvelle-da', '#f-da'], ['#/clients', '#cl-plus'], ['#/interimaires', '.entete'],
   ['#/journal', '.entete'], ['#/parametres', 'form'], ['#/utilisateurs', '.entete'], ['#/recherche/ndong', '.r-table'],
-  ['#/hs/2', '#hs-lignes']];
+  ['#/hs/2', '.hs-grille']];
 
 (async () => {
   const navigateur = await chromium.launch(process.env.CHROMIUM_ARGS ? { args: [process.env.CHROMIUM_ARGS] } : {});
@@ -112,6 +112,19 @@ const PAGES = [['#/tableau', '.kpi'], ['#/dossiers', 'table'], ['#/dossier/2', '
     const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#imp-word')]);
     const w = path.join(OUT, dl.suggestedFilename()); await dl.saveAs(w);
     verifier(fs.readFileSync(w).slice(0, 2).toString() === 'PK', 'export Word des factures du groupe (' + dl.suggestedFilename() + ')');
+
+    // heures supplémentaires : grille calendrier (à cheval sur octobre et novembre, Toussaint un dimanche)
+    await page.goto(SITE + '/#/hs/2'); await page.waitForSelector('.hs-grille');
+    const g = await page.evaluate(() => ({ t: document.querySelector('#hs-g-t').textContent, h1: document.querySelector('#hs-g-h1').textContent,
+      h3: document.querySelector('#hs-g-h3').textContent, ferie: !!document.querySelector('td[data-g="2026-11-01"].hs-repos .hs-f'),
+      hors: document.querySelectorAll('.hs-grille td.hs-hors').length }));
+    verifier(g.t === '18' && g.h1 === '11' && g.h3 === '5' && g.ferie && g.hors > 0, 'grille : semaines lundi → dimanche sur 2 mois, Toussaint en férié, totaux en direct', g);
+    await page.fill('td[data-g="2026-10-30"] [data-gh]', '2,5');
+    verifier((await page.textContent('#hs-g-t')) === '20,5', 'grille : total recalculé dès la saisie');
+    await page.click('#hs-f button[type=submit]'); await page.waitForTimeout(800);
+    const h2 = await page.evaluate(async () => (await (await fetch('/api/heures-sup/2')).json()).heures_sup);
+    verifier(h2.total_heures === 20.5 && h2.lignes.length === 5 && h2.heures.h1 === 11 && h2.heures.h2 === 4.5 && h2.heures.h3 === 5, 'grille enregistrée : 1 ligne par jour, classement 8 h / reste / dimanche', h2.heures);
+    await page.screenshot({ path: path.join(OUT, 'hs-grille.png'), fullPage: true });
 
     // heures supplémentaires : fiche d'attachement, Proforma H et facture FA H, chacune sur 1 page
     for (const [t, motif, lib] of [['fiche-hs', /Fiche d'attachement/, 'fiche d\'attachement'], ['devis-hs', /Proforma H[\s\S]*Montant Total/, 'Proforma H'],

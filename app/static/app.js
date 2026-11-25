@@ -1099,11 +1099,19 @@ async function pageHS(page, id) {
       <div class="ligne-form lf3">
         <div class="champ"><label for="hs-matricule">Matricule (chez le client)</label><input id="hs-matricule" maxlength="40" value="${h.matricule_client}" placeholder="ex. MAD" ${dis}></div>
         <div class="champ"><label for="hs-categorie">Catégorie</label><input id="hs-categorie" maxlength="40" value="${h.categorie}" ${dis}></div><div></div></div>
-      <p class="aide">Une ligne par plage d'heures du relevé. Avec le début et la fin, les heures réalisées se calculent seules.</p>
-      <table><thead><tr><th>Date</th><th>Début</th><th>Fin</th><th>Justification</th><th class="num">Heures réalisées</th><th></th></tr></thead>
-        <tbody id="hs-lignes">${(h.lignes.length ? h.lignes : [{}]).map((l) => ligneHS(l, dis))}</tbody>
-        <tfoot><tr class="total"><td colspan="4">Total</td><td class="num" id="hs-total">${hFr(h.total_heures)} h</td><td></td></tr></tfoot></table>
-      ${fige ? "" : html`<button type="button" class="lien" id="hs-plus">+ Ajouter une ligne</button>`}</div>
+      <div class="hs-modes"><label class="case"><input type="radio" name="hs-mode" value="grille" checked> Grille calendrier (heures par jour)</label>
+        <label class="case"><input type="radio" name="hs-mode" value="plages"> Plages horaires (détail début / fin)</label></div>
+      <div id="hs-zone-grille">
+        <div class="ligne-form lf3"><div class="champ"><label for="hs-du">Du</label><input id="hs-du" type="date" value="${h.periode_du || auj().slice(0, 8) + "01"}" ${dis}></div>
+          <div class="champ"><label for="hs-au">Au</label><input id="hs-au" type="date" value="${h.periode_au || auj()}" ${dis}></div>
+          <p class="aide" data-style="align-self:end">Tapez les heures sous chaque jour (le motif est facultatif). La période peut couvrir plusieurs mois. En orange : dimanches et jours fériés.</p></div>
+        <div id="hs-grille"></div></div>
+      <div id="hs-zone-plages" class="cache">
+        <p class="aide">Une ligne par plage d'heures du relevé. Avec le début et la fin, les heures réalisées se calculent seules.</p>
+        <table><thead><tr><th>Date</th><th>Début</th><th>Fin</th><th>Justification</th><th class="num">Heures réalisées</th><th></th></tr></thead>
+          <tbody id="hs-lignes">${(h.lignes.length ? h.lignes : [{}]).map((l) => ligneHS(l, dis))}</tbody>
+          <tfoot><tr class="total"><td colspan="4">Total</td><td class="num" id="hs-total">${hFr(h.total_heures)} h</td><td></td></tr></tfoot></table>
+        ${fige ? "" : html`<button type="button" class="lien" id="hs-plus">+ Ajouter une ligne</button>`}</div></div>
 
     <div class="carte"><h2>3. Classement des heures</h2>
       <p class="aide">Heures regroupées semaine par semaine (lundi → dimanche) : les ${p.hs_seuil_semaine} premières heures de chaque semaine à ${tauxFr(h.taux_pdm[0])}, le reste de la semaine à ${tauxFr(h.taux_pdm[1])}, les dimanches et jours fériés à ${tauxFr(h.taux_pdm[2])}. Corrigez à la main si besoin.</p>
@@ -1186,17 +1194,133 @@ async function pageHS(page, id) {
     appliquerStyles(corps);
     brancher();
   };
-  if ($("#hs-manuel")) $("#hs-manuel").onchange = (e) => { $$("[data-h]").forEach((i) => { i.disabled = !e.target.checked; }); };
-  $("#hs-f").onsubmit = async (e) => {
-    e.preventDefault();
+  // --- grille calendrier : une case par jour, semaines du lundi au dimanche, de date à date ---
+  const feries = new Map((p.hs_jours_feries || []).map((x) => { const [k, ...r] = String(x).trim().split(" "); return [k, r.join(" ") || "Jour férié"]; }));
+  const ferie = (iso) => feries.get(iso) || feries.get(iso.slice(5));
+  const addJ = (iso, n) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const jsem = (iso) => (new Date(iso + "T00:00:00Z").getUTCDay() + 6) % 7;
+  const etatGrille = new Map();
+  const chargerGrille = (lignes) => {
+    etatGrille.clear();
+    for (const l of lignes) {
+      const e = etatGrille.get(l.date) || { h: 0, j: [], detail: [] };
+      e.h += Number(l.heures) || 0;
+      if (l.justification && !e.j.includes(l.justification)) e.j.push(l.justification);
+      e.detail.push(l);
+      etatGrille.set(l.date, e);
+    }
+    for (const e of etatGrille.values()) { e.h = Math.round(e.h * 100) / 100; e.j = e.j.join(", "); e.h0 = e.h; e.j0 = e.j; }
+  };
+  const lireGrille = () => {
+    $$("[data-g]", $("#hs-grille")).forEach((td) => {
+      const d = td.dataset.g, n = nombre($("[data-gh]", td).value), jv = $("[data-gj]", td).value.trim();
+      const e = etatGrille.get(d) || { h: 0, j: "", detail: [], h0: null, j0: null };
+      e.h = n || 0; e.j = jv;
+      etatGrille.set(d, e);
+    });
+  };
+  const classerSemaine = (jours) => {
+    const r = { t: 0, h1: 0, h2: 0, h3: 0 };
+    for (const [d, v] of jours) {
+      r.t += v;
+      if (jsem(d) === 6 || ferie(d)) { r.h3 += v; continue; }
+      const a = Math.min(v, Math.max(0, (Number(p.hs_seuil_semaine) || 0) - r.h1));
+      r.h1 += a; r.h2 += v - a;
+    }
+    return r;
+  };
+  const majGrille = () => {
+    const tot = { t: 0, h1: 0, h2: 0, h3: 0 };
+    $$("tr[data-sem]", $("#hs-grille")).forEach((tr) => {
+      const jours = $$("[data-g]", tr).map((td) => [td.dataset.g, nombre($("[data-gh]", td).value) || 0]);
+      const r = classerSemaine(jours);
+      for (const k of ["t", "h1", "h2", "h3"]) { $("[data-s=" + k + "]", tr).textContent = r[k] ? hFr(r[k]) : "–"; tot[k] += r[k]; }
+    });
+    for (const k of ["t", "h1", "h2", "h3"]) { const c = $("#hs-g-" + k); if (c) c.textContent = hFr(tot[k]); }
+  };
+  const dessinerGrille = () => {
+    const zone = $("#hs-grille");
+    if ($$("[data-g]", zone).length) lireGrille();
+    const du = $("#hs-du").value, au = $("#hs-au").value;
+    if (!du || !au || au < du) { zone.innerHTML = '<p class="doux">Choisissez la période (du … au …).</p>'; return; }
+    let l0 = addJ(du, -jsem(du));
+    const fin = addJ(au, 6 - jsem(au));
+    const semaines = [];
+    for (; l0 <= fin && semaines.length < 60; l0 = addJ(l0, 7)) semaines.push(l0);
+    const t = h.taux_pdm;
+    zone.innerHTML = html`<table class="hs-grille"><thead><tr><th>Semaine</th>${["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((j) => html`<th>${j}</th>`)}
+        <th class="num">Total</th><th class="num">${t[0] / 100}%</th><th class="num">${t[1] / 100}%</th><th class="num">${t[2] / 100}%</th></tr></thead><tbody>
+      ${semaines.map((lun) => html`<tr data-sem="${lun}"><td class="petit">du ${dateFr(lun).slice(0, 5)}<br>au ${dateFr(addJ(lun, 6)).slice(0, 5)}</td>
+        ${[0, 1, 2, 3, 4, 5, 6].map((i) => {
+          const d = addJ(lun, i);
+          if (d < du || d > au) return html`<td class="hs-hors"></td>`;
+          const e = etatGrille.get(d) || { h: 0, j: "" };
+          const fe = ferie(d);
+          const plages = (e.detail || []).filter((x) => x.debut).length;
+          return html`<td data-g="${d}" class="${i === 6 || fe ? "hs-repos" : ""}" title="${fe || (i === 6 ? "Dimanche" : "")}">
+            <div class="hs-d">${d.slice(8) === "01" ? html`<b>${dateFr(d).slice(0, 5)}</b>` : dateFr(d).slice(0, 5)}${fe ? html` <span class="hs-f">férié</span>` : ""}</div>
+            <input data-gh aria-label="Heures le ${dateFr(d)}" inputmode="decimal" class="montant" value="${e.h ? hFr(e.h) : ""}" ${dis}>
+            <input data-gj aria-label="Motif le ${dateFr(d)}" placeholder="motif" maxlength="120" value="${e.j || ""}" ${dis}>
+            ${plages ? html`<div class="hs-d doux">${plages} plage(s)</div>` : ""}</td>`;
+        })}
+        <td class="num gras" data-s="t"></td><td class="num" data-s="h1"></td><td class="num" data-s="h2"></td><td class="num" data-s="h3"></td></tr>`)}
+      </tbody><tfoot><tr class="total"><td colspan="8">Total de la période</td><td class="num" id="hs-g-t"></td><td class="num" id="hs-g-h1"></td><td class="num" id="hs-g-h2"></td><td class="num" id="hs-g-h3"></td></tr></tfoot></table>`.s;
+    appliquerStyles(zone);
+    $$("input", zone).forEach((i) => { i.oninput = majGrille; });
+    majGrille();
+  };
+  const collecterGrille = () => {
+    lireGrille();
+    const du = $("#hs-du").value, au = $("#hs-au").value, res = [];
+    for (const d of [...etatGrille.keys()].sort()) {
+      const e = etatGrille.get(d);
+      if (d < du || d > au || !e.h) continue;
+      // jour saisi en plages horaires et pas retouché : les plages sont gardées telles quelles
+      if (e.detail && e.detail.length && e.h === e.h0 && e.j === e.j0) res.push(...e.detail);
+      else res.push({ date: d, debut: "", fin: "", justification: e.j, heures: e.h });
+    }
+    return res;
+  };
+  const collecterPlages = () => {
     const lignes = [];
     for (const tr of $$("tr", corps)) {
       const v = (k) => $("[data-l=" + k + "]", tr).value.trim();
       if (!v("date") && !v("heures") && !v("debut")) continue;
       const hh = v("heures");
-      if (hh && nombre(hh) === null) return toast("Heures réalisées invalides : " + hh, true);
+      if (hh && nombre(hh) === null) throw new Error("Heures réalisées invalides : " + hh);
       lignes.push({ date: v("date"), debut: v("debut"), fin: v("fin"), justification: v("justification"), heures: hh ? nombre(hh) : null });
     }
+    return lignes;
+  };
+  chargerGrille(h.lignes);
+  dessinerGrille();
+  $("#hs-du").onchange = dessinerGrille; $("#hs-au").onchange = dessinerGrille;
+  const mode = () => $("[name=hs-mode]:checked").value;
+  $$("[name=hs-mode]").forEach((r) => {
+    r.onchange = () => {
+      try {
+        if (mode() === "plages") {
+          const ls = collecterGrille();
+          corps.innerHTML = (ls.length ? ls : [{}]).map((l) => ligneHS(l, dis).s).join("");
+          appliquerStyles(corps); brancher(); majTotal();
+        } else {
+          const ls = collecterPlages().filter((l) => l.date);
+          chargerGrille(ls.map((l) => ({ ...l, heures: l.heures === null ? duree(l.debut, l.fin) || 0 : l.heures })));
+          if (ls.length) { $("#hs-du").value = ls.map((l) => l.date).sort()[0]; $("#hs-au").value = ls.map((l) => l.date).sort().pop(); }
+          $("#hs-grille").innerHTML = "";
+          dessinerGrille();
+        }
+      } catch (x) { toast(x.message, true); }
+      $("#hs-zone-grille").classList.toggle("cache", mode() !== "grille");
+      $("#hs-zone-plages").classList.toggle("cache", mode() !== "plages");
+    };
+  });
+  if ($("#hs-manuel")) $("#hs-manuel").onchange = (e) => { $$("[data-h]").forEach((i) => { i.disabled = !e.target.checked; }); };
+  $("#hs-f").onsubmit = async (e) => {
+    e.preventDefault();
+    let lignes;
+    try { lignes = mode() === "grille" ? collecterGrille() : collecterPlages(); } catch (x) { return toast(x.message, true); }
+    if (mode() === "grille" && $$("[data-gh]").some((i) => i.value.trim() && nombre(i.value) === null)) return toast("Grille : nombre d'heures invalide (ex. 4 ou 7,5).", true);
     let heures = null;
     if ($("#hs-manuel").checked) {
       heures = {};

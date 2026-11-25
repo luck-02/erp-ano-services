@@ -943,6 +943,17 @@ class TestsAPI(unittest.TestCase):
         self.assertEqual(h["lignes"][0]["heures"], 6)                 # calculée depuis début / fin
         self.assertEqual(h["heures"], {"h1": 12, "h2": 2, "h3": 4})   # proposition : 8 h/semaine, reste, dimanche
         self.assertEqual([(w["du"], w["total"]) for w in h["semaines"]], [("2026-10-12", 14), ("2026-10-19", 4)])
+        # jours fériés réglables (avec leur nom) : un férié passe au taux des dimanches
+        p0 = a.req("GET", "/api/parametres")[1]["parametres"]["hs_jours_feries"]
+        self.assertIn("08-17 Fête de l'indépendance", p0)
+        self.assertEqual(a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": ["13-45 Faux"]}})[0], 400)
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": ["2026-10-13  Férié  fictif", "01-01"]}})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["parametres"]["hs_jours_feries"], ["01-01", "2026-10-13 Férié fictif"])
+        hf = a.req("GET", "/api/heures-sup/%d" % hid)[1]["heures_sup"]
+        self.assertEqual(hf["heures"], {"h1": 10, "h2": 0, "h3": 8})
+        self.assertTrue([x for x in hf["semaines"][0]["jours"] if x["date"] == "2026-10-13"][0]["repos"])
+        a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": p0}})
         self.assertEqual(len(h["releves"]), 1)
         cout = h["cout_mensuel"]
         self.assertEqual(cout, d["proforma"]["agents"][0]["cout_mensuel"])

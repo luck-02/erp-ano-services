@@ -529,13 +529,14 @@ def modifier_parametres(ctx, g, body):
             x = str(x).strip()
             if not x:
                 continue
-            m = re.fullmatch(r"(?:(\d{4})-)?(\d{2})-(\d{2})", x)
+            x = " ".join(x.split())[:60]
+            m = re.fullmatch(r"(?:(\d{4})-)?(\d{2})-(\d{2})(?: .*)?", x)
             try:
                 dt.date(int(m.group(1) or 2024), int(m.group(2)), int(m.group(3)))
             except (AttributeError, ValueError):
-                raise ErreurAPI(400, "Jour férié « %s » invalide : MM-JJ (chaque année) ou AAAA-MM-JJ." % x[:20])
-            fer.append(x)
-        nouv["hs_jours_feries"] = sorted(set(fer))
+                raise ErreurAPI(400, "Jour férié « %s » invalide : MM-JJ (chaque année) ou AAAA-MM-JJ, puis le nom." % x[:20])
+            fer.append(texte({"x": x}, "x", 60))
+        nouv["hs_jours_feries"] = sorted(set(fer), key=lambda y: (len(y.split()[0]) > 5, y))
     for k in ("lieux", "services"):
         if k in p_in:
             v = p_in[k]
@@ -1870,7 +1871,7 @@ def _hs_params(p):
     return {"taux": [int(p.get("hs_taux1_pdm", 2800)), int(p.get("hs_taux2_pdm", 5600)), int(p.get("hs_taux3_pdm", 7500))],
             "diviseur": int(p.get("hs_diviseur_centiemes", 17333)),
             "seuil": int(p.get("hs_seuil_semaine", 8)),
-            "feries": set(p.get("hs_jours_feries") or [])}
+            "feries": {str(x).split()[0] for x in (p.get("hs_jours_feries") or []) if str(x).strip()}}
 
 
 def _hs_lignes(body):

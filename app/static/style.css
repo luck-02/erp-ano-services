@@ -301,6 +301,17 @@ label.case input { width: auto; }
 .hs-resp { display: flex; flex-direction: column; align-items: center; }
 .hs-resp .sig-img { width: 25mm; }
 
+.hs-modes { display: flex; flex-wrap: wrap; gap: .25rem 1.5rem; margin: .5rem 0; }
+.hs-grille { width: 100%; min-width: 760px; }
+.hs-grille td { vertical-align: top; padding: .3rem; }
+.hs-grille td[data-g], .hs-grille td.hs-hors { width: 10%; border-left: 1px solid var(--bord); }
+.hs-grille td.hs-hors { background: repeating-linear-gradient(45deg, transparent 0 6px, rgba(0,0,0,.03) 6px 12px); }
+.hs-grille td.hs-repos { background: #fff1de; }
+.hs-grille input { width: 100%; padding: .25rem .35rem; font-size: .85rem; margin-top: .15rem; }
+.hs-grille input[data-gj] { font-size: .72rem; }
+.hs-d { font-size: .72rem; color: var(--doux, #667); }
+.hs-f { color: #b45309; font-weight: 600; }
+
 /* --- facture --- */
 .fa { font-size: 11pt; padding: 12mm 14mm 8mm; }
 /* facture : double trait épais sous le logo, bloc ANO en Arial sans trait (comme la facture 152 bis) */
