@@ -9,10 +9,13 @@ SRC="${1:?dossier erp-mvp}"; DOMAINE_DEV="${2:?domaine}"
 [[ "$DOMAINE_DEV" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "Domaine invalide."; exit 1; }
 [ -f "$SRC/app/serveur.py" ] || { echo "Programme introuvable dans $SRC."; exit 1; }
 [ "$(id -u)" -eq 0 ] || { echo "À lancer en root."; exit 1; }
+# mot de passe de l'entreprise « verif » (tests en ligne), tiré au hasard par GitHub : lu puis effacé
+MDP_VERIF=""
+if [ -f "$SRC/.mdp-verif" ]; then MDP_VERIF="$(head -c 200 "$SRC/.mdp-verif")"; rm -f "$SRC/.mdp-verif"; fi
 NEUF=/opt/erp-dev/erp-mvp.neuf
 rm -rf /opt/erp-dev/erp-mvp.neuf /opt/erp-dev/erp-mvp.ancien
 mkdir -p "$NEUF"
-( cd "$SRC" && tar cf - --exclude '.git' --exclude 'donnees' --exclude 'donnees-essai' --exclude 'node_modules' \
+( cd "$SRC" && tar cf - --exclude '.git' --exclude 'donnees' --exclude 'donnees-essai' --exclude 'node_modules' --exclude '.mdp-verif' \
     --exclude 'app/prive/signature.png' --exclude 'app/prive/logo.png' . ) | ( cd "$NEUF" && tar xf - )
 # lisible par erp-dev, modifiable par root seulement (même si le zip arrive en droits 600)
 chown -R root:root /opt/erp-dev && chmod -R u=rwX,go=rX /opt/erp-dev
@@ -61,8 +64,21 @@ fi
 systemctl daemon-reload
 systemctl enable erp-ano-dev >/dev/null 2>&1
 systemctl restart erp-ano-dev
+demarre=""
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  curl -fsS http://127.0.0.1:8766/api/sante >/dev/null 2>&1 && { echo "site de test démarré ($(cat /opt/erp-dev/erp-mvp/VERSION 2>/dev/null))"; exit 0; }
+  curl -fsS http://127.0.0.1:8766/api/sante >/dev/null 2>&1 && { demarre=1; break; }
   sleep 1
 done
-echo "Le site de test ne répond pas : journalctl -u erp-ano-dev -n 50"; exit 1
+[ -n "$demarre" ] || { echo "Le site de test ne répond pas : journalctl -u erp-ano-dev -n 50"; exit 1; }
+echo "site de test démarré ($(cat /opt/erp-dev/erp-mvp/VERSION 2>/dev/null))"
+# données fictives : lancé sous erp-dev avec les mêmes protections que le site de test
+if [ -f /opt/erp-dev/erp-mvp/deploiement/dev-apres-installation.py ]; then
+  printf '%s\n' "$MDP_VERIF" | systemd-run --quiet --wait --pipe --collect --uid=erp-dev --gid=erp-dev \
+      --working-directory=/opt/erp-dev/erp-mvp -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes \
+      -p ReadWritePaths=/var/lib/erp-dev -p PrivateTmp=yes -p UMask=0077 \
+      -p "InaccessiblePaths=-/var/lib/erp -/var/lib/erp-deploiement -/etc/erp-deploiement.conf" \
+      -E ANO_HTTPS=1 -E ANO_PORT=8766 -E HOME=/tmp \
+      /usr/bin/python3 -I deploiement/dev-apres-installation.py /var/lib/erp-dev "$DOMAINE_DEV" \
+    || { echo "Données fictives : échec (voir ci-dessus)."; exit 1; }
+fi
+exit 0

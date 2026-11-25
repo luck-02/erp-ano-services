@@ -415,8 +415,8 @@ async function pageDossiers(page) {
       <div class="actions"><a class="bouton" href="#/nouvelle-da">+ Nouvelle DA</a></div></div>
     <div class="carte">
       <div class="ligne-form lf3" data-style="margin-bottom:.75rem">
-        <div><input id="d-q" placeholder="Rechercher : agent, matricule, n° proforma, BC, service…" value="${filtres.dosQ}"></div>
-        <div><select id="d-st"><option value="">Tous les statuts</option>${etat.params.statuts.map((s) => html`<option ${s === filtres.dosStatut ? "selected" : ""}>${s}</option>`)}</select></div>
+        <div><input id="d-q" aria-label="Rechercher un dossier" placeholder="Rechercher : agent, matricule, n° proforma, BC, service…" value="${filtres.dosQ}"></div>
+        <div><select id="d-st" aria-label="Filtrer par statut"><option value="">Tous les statuts</option>${etat.params.statuts.map((s) => html`<option ${s === filtres.dosStatut ? "selected" : ""}>${s}</option>`)}</select></div>
         <div class="doux petit" data-style="align-self:center">${r.dossiers.length} dossier(s)</div>
       </div>
       <div class="tableau-wrap"><table><thead><tr><th>N° proforma</th><th>Agent(s)</th><th>Service · lieu</th><th>Période</th><th class="num">Salaire de base</th><th class="num">Cumul HT</th><th>BC</th><th>Factures</th><th>Statut</th></tr></thead><tbody>
@@ -1052,7 +1052,7 @@ async function pageInterimaires(page) {
   rendre(page, html`<div class="entete"><div><h1>Intérimaires</h1>
       <p>Chaque intérimaire reçoit un matricule fixe à sa première DA. Il le garde à chaque nouvelle DA (reconnu par son nom, sans tenir compte des accents ni des majuscules). Usage interne : le matricule n'est pas imprimé sur les proformas et factures.</p></div>
       <div class="actions"><button id="it-plus">+ Ancien intérimaire</button></div></div>
-    <div class="carte"><div class="ligne-form lf3" data-style="margin-bottom:.75rem"><div><input id="it-q" placeholder="Rechercher : nom, matricule, poste…"></div><div></div><div class="doux petit" data-style="align-self:center">${r.interimaires.length} intérimaire(s), ${r.interimaires.filter((x) => x.en_contrat).length} en contrat aujourd'hui</div></div>
+    <div class="carte"><div class="ligne-form lf3" data-style="margin-bottom:.75rem"><div><input id="it-q" aria-label="Rechercher un intérimaire" placeholder="Rechercher : nom, matricule, poste…"></div><div></div><div class="doux petit" data-style="align-self:center">${r.interimaires.length} intérimaire(s), ${r.interimaires.filter((x) => x.en_contrat).length} en contrat aujourd'hui</div></div>
     <div class="tableau-wrap"><table><thead><tr><th>Matricule</th><th>Nom</th><th>Dernier poste · lieu</th><th class="num">Contrats</th><th>Depuis</th><th>Jusqu'au</th><th>Dossiers</th></tr></thead><tbody id="it-corps">
     ${r.interimaires.length ? r.interimaires.map((x) => html`<tr data-cherche="${(x.matricule + " " + x.nom + " " + x.poste + " " + x.lieu).toLowerCase()}">
       <td><span class="matricule">${x.matricule}</span></td><td class="gras">${x.nom}${x.en_contrat ? html` <span class="matricule nouveau">en contrat</span>` : ""}${x.ancien ? html` <span class="doux petit">(historique)</span>` : ""}<div><button class="lien petit" data-it="${x.id}">modifier la fiche</button></div></td>
