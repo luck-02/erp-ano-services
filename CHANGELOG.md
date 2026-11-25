@@ -8,6 +8,8 @@ Numérotation : `vMAJEUR.MINEUR.CORRECTIF`.
 Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git checkout v3.1.0`.
 
 ## En cours (branche dev)
+
+- `deploiement/vider-production.sh` : remet la production à zéro (copie complète gardée d'abord dans /root/sauvegardes-erp, confirmation « VIDER », `--restaurer` pour revenir en arrière) ; le site de test n'est pas touché.
 - Branche `dev` : tests GitHub à chaque envoi ; `main` reste la production.
 - Site de test https://dev.<ip>.sslip.io à côté de la production (compte `erp-dev`, port 8766, données
   `/var/lib/erp-dev`, production illisible pour lui), mis à jour automatiquement à chaque envoi sur `dev`
