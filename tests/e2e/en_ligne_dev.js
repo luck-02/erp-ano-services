@@ -73,6 +73,17 @@ const PAGES = [['#/tableau', '.kpi'], ['#/dossiers', 'table'], ['#/dossier/2', '
       await page.screenshot({ path: path.join(OUT, String(n++).padStart(2, '0') + '-' + h.replace(/[#/]+/g, '-').replace(/^-/, '') + '.png'), fullPage: true });
     }
     verifier(Object.keys(pbA).length === 0, PAGES.length + ' pages ouvertes : libellés, boutons nommés, rien ne déborde', pbA);
+    // toutes largeurs (= tous niveaux de zoom) : la page ne défile jamais de côté
+    const larges = [];
+    for (const w of [1600, 1440, 1280, 1170, 1024, 900, 768, 600]) {
+      await page.setViewportSize({ width: w, height: 900 });
+      for (const [h2, sel] of PAGES) {
+        await page.goto(SITE + '/' + h2); await page.waitForSelector(sel); await page.waitForTimeout(250);
+        if (!(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1))) larges.push(w + ' ' + h2);
+      }
+    }
+    await page.setViewportSize({ width: 1360, height: 900 });
+    verifier(larges.length === 0, 'de 1600 à 600 px (zoom compris) : aucune page ne défile de côté', larges);
 
     await page.goto(SITE + '/#/dossiers'); await page.waitForSelector('table');
     const liste = await page.textContent('table');

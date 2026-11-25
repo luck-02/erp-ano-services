@@ -388,6 +388,18 @@ function appliquerStyles(racine) {
 function lignesCliquables(racine) {
   $$("tr[data-href]", racine).forEach((tr) => { tr.onclick = (e) => { if (!e.target.closest("button, input, a")) location.hash = tr.dataset.href; }; });
 }
+// Tableaux larges : chacun défile dans son cadre au lieu d'élargir toute la page
+// (y compris ceux ajoutés plus tard par une mise à jour partielle de la page).
+function encadrerTableaux(racine) {
+  racine.querySelectorAll("table").forEach((t) => {
+    if (t.closest(".doc") || (t.parentElement && t.parentElement.classList.contains("defile"))) return;
+    const d = document.createElement("div");
+    d.className = "defile";
+    t.parentNode.insertBefore(d, t);
+    d.appendChild(t);
+  });
+}
+new MutationObserver(() => encadrerTableaux(document.body)).observe(document.body, { childList: true, subtree: true });
 function rendre(page, contenu) { page.innerHTML = contenu.s; appliquerStyles(page); lignesCliquables(page); marquerObligatoires(page); }
 
 // Aide d'un champ : petite icône ⓘ, le texte s'affiche au survol (ou au toucher / clavier)

@@ -9,6 +9,8 @@ Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git
 
 ## En cours (branche dev)
 
+- Mise en page : la page ne défile plus jamais de côté, quelles que soient la largeur et le zoom (le menu restait coupé sur la page dossier) ; un tableau trop large défile dans son cadre.
+
 - Site de test : jeu de données fictives (`outils/donnees_fictives.py` : agent seul, groupe de 9, prolongation, prorata, « bis », facture corrigée, visite à l'anniversaire, trop-perçu, DA annulée). L'entreprise « essai » est remplie une fois ; l'entreprise « verif » est recréée à chaque mise à jour pour les tests en ligne (`tests/en_ligne/verifier_dev_api.py`, `tests/e2e/en_ligne_dev.js`).
 - `plateforme.py mdp CODE IDENTIFIANT` : mot de passe oublié, nouveau mot de passe provisoire.
 - Champs de recherche des dossiers et intérimaires : libellés pour les lecteurs d'écran.
