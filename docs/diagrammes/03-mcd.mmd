@@ -1,0 +1,105 @@
+erDiagram
+  CLIENT ||--o{ DOSSIER : "passe (DA)"
+  UTILISATEUR |o--o{ DOSSIER : "crée"
+  DOSSIER ||--|{ AGENT : "comprend (1..N)"
+  INTERIMAIRE ||--o{ AGENT : "est placé comme (par le nom)"
+  AGENT ||--o{ FACTURE : "est facturé"
+  FACTURE |o--o| FACTURE : "est remplacée par (bis)"
+  DOSSIER ||--o{ DOCUMENT : "garde (DA, BC, PV, copies)"
+  FACTURE |o--o{ DOCUMENT : "copie figée (Word, PDF)"
+  UTILISATEUR ||--o{ SESSION : "ouvre"
+  UTILISATEUR |o--o{ JOURNAL : "trace"
+  PARAMETRE }o--|| ENTREPRISE : "règle"
+  CHARGE }|--|| ENTREPRISE : "compose le barème"
+
+  ENTREPRISE {
+    text code PK
+    text nom
+    text chemin_db
+    bool actif
+  }
+  CLIENT {
+    int id PK
+    text code UK
+    text nom
+    text ville
+    bool actif
+  }
+  DOSSIER {
+    int id PK
+    int num_seq UK
+    text numero_proforma UK
+    text num_da
+    date date_proforma
+    date date_debut
+    date date_fin
+    text statut
+    text bc_numero
+    int bc_montant
+    json bareme_json
+  }
+  AGENT {
+    int id PK
+    int dossier_id FK
+    text nom
+    text poste
+    int salaire_base
+    date derniere_visite
+  }
+  INTERIMAIRE {
+    int id PK
+    text matricule UK
+    text nom
+    text cle UK
+  }
+  FACTURE {
+    int id PK
+    int agent_id FK
+    text type
+    text mois
+    int montant_ht
+    int tva
+    int ttc
+    text numero UK
+    date paye_le
+    int remplace_id FK
+  }
+  DOCUMENT {
+    int id PK
+    int dossier_id FK
+    int facture_id FK
+    text categorie
+    text nom
+    text fichier UK
+    text type_mime
+    int taille
+    text sha256
+    datetime retire_le
+  }
+  UTILISATEUR {
+    int id PK
+    text identifiant UK
+    text role
+    text mdp_hash
+    bool doit_changer_mdp
+  }
+  SESSION {
+    text token_hash PK
+    int user_id FK
+    text csrf
+  }
+  JOURNAL {
+    int id PK
+    datetime quand
+    text action
+    text objet
+  }
+  PARAMETRE {
+    text cle PK
+    text valeur
+  }
+  CHARGE {
+    int id PK
+    text libelle
+    int taux_pdm
+  }

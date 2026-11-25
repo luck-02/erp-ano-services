@@ -59,6 +59,7 @@ L'application demande de créer le **compte de la direction** (administrateur) :
 | 6. Envoi / PV / paiement | **Factures** | Cochez les lignes : « Marquer envoyée(s) », « Enregistrer un paiement » (date + n° de confirmation). PV avec un autre montant : bouton **Bis (PV)** sur la facture. |
 | Intérimaires | **Intérimaires** | Chaque intérimaire reçoit un matricule fixe (INT-0001, INT-0002…) à sa première DA et le garde à chaque nouvelle DA (reconnu par son nom, sans tenir compte des accents ni des majuscules). Usage interne : jamais imprimé sur les documents. |
 | Anciens intérimaires | **Intérimaires** > **+ Ancien intérimaire** | Nom, poste, lieu, dates de l'ancien contrat, dernière visite médicale. Il reçoit un matricule, sans proforma ni facture. À sa prochaine DA, le même matricule et sa dernière visite sont repris. |
+| Documents | Dossier > **Documents** | Une copie de chaque facture est gardée automatiquement au moment où elle est émise (Word, et PDF si LibreOffice est installé : c'est le cas sur le serveur en ligne). Joignez aussi les pièces reçues du client : DA, BC, PV (PDF, PNG ou JPEG, 8 Mo au plus). Direction et Gestion téléchargent ; seule la Direction peut retirer une pièce de la liste (le fichier reste gardé). Les copies de factures ne se retirent pas. |
 | Export | **Factures** > **Exporter (Excel)** | Tableau des factures affichées (mêmes filtres) pour Excel ou Numbers : n°, mois, agent, HT, TVA, TTC, statut, paiement. Jamais de salaire. |
 | 7. Suivi | **Tableau de bord** | En haut, la liste **À faire** (factures à émettre, à envoyer, en retard, proformas sans BC, brouillons), chaque ligne mène au bon écran. Puis par mois : personnes en contrat, à facturer, facturé, payé, impayés, retards, fins de contrat et visites médicales à refaire. |
 
@@ -87,6 +88,7 @@ Cas de référence vérifié : salaire 576 300, du 02/11/2026 au 01/05/2027 → 
 - Session : cookie HttpOnly / SameSite=Strict, déconnexion après 30 minutes d'inactivité (10 h maximum).
 - Protection CSRF (jeton), contrôle de l'hôte et de l'origine, en-têtes de sécurité (CSP stricte, anti-iframe), validation de toutes les saisies côté serveur, requêtes SQL paramétrées.
 - **Cachet + signature** : fichier `app/prive/signature.png`, ajouté automatiquement sous « Signature » / « Le responsable » sur la proforma et les factures. Il n'est jamais servi comme fichier public : seuls les comptes Direction et Gestion connectés peuvent l'afficher (le rôle Lecture imprime sans signature). Pour le changer, remplacez ce fichier (PNG à fond transparent). Ne partagez pas le dossier `app/prive/`.
+- **Documents** (copies de factures, DA, BC, PV) : rangés dans `documents/` à côté de la base de l'entreprise, sous un nom aléatoire, droits réservés au compte de l'application. Jamais servis en accès direct : seulement par l'application, à un compte Direction ou Gestion connecté de la même entreprise. Le contenu est vérifié (PDF, PNG, JPEG réels), pas seulement l'extension. Ils ne sont jamais modifiés ni effacés ; une copie hors du serveur doit inclure ce dossier.
 - **Journal d'activité** : connexions, créations, émissions, paiements, changements de paramètres.
 - **Sauvegardes** : une copie de la base à chaque lancement dans `donnees/sauvegardes/` (30 dernières gardées) ; bouton « Faire une sauvegarde maintenant » dans Paramètres. Pensez à copier ce dossier sur une clé USB ou un disque externe chiffré de temps en temps.
 - Recommandé : activer **FileVault** sur le Mac (Réglages > Confidentialité et sécurité), car la base n'est pas chiffrée en elle-même.
@@ -102,6 +104,7 @@ app/api.py           API : DA, proformas, BC, factures, tableau de bord, utilisa
 app/metier.py        règles de calcul (coût, prorata, visites, numéros)
 app/db.py            base SQLite, valeurs initiales, sauvegardes, matricules
 app/docx_facture.py  export des factures en Word (.docx)
+app/documents.py     documents gardés : copies des factures émises, pièces du client
 app/static/          interface (HTML, CSS, JavaScript sans dépendance)
 tests/               tests automatiques
 donnees/             créé au 1er lancement : base ano.db + sauvegardes (ne pas partager)
@@ -121,6 +124,16 @@ Double-cliquez sur **« Essai plusieurs entreprises.command »**. Deux entrepris
 
 ## Vérifications avant chaque mise en ligne
 
-`bash avant-mise-en-ligne.sh` lance tous les tests : calculs, API, sécurité, plusieurs entreprises, puis 37 vérifications dans un vrai navigateur (`tests/e2e/`, Playwright installé automatiquement la première fois, Node.js requis). Ces vérifications couvrent le parcours complet ANO, les PDF, Word et CSV, l'isolation entre entreprises, l'accessibilité de base et l'affichage sur téléphone. Si un test échoue, on ne met pas en ligne.
+`bash avant-mise-en-ligne.sh` lance tous les tests : calculs, API, sécurité, plusieurs entreprises, puis 43 vérifications dans un vrai navigateur (`tests/e2e/`, Playwright installé automatiquement la première fois, Node.js requis). Ces vérifications couvrent le parcours complet ANO, les PDF, Word et CSV, l'isolation entre entreprises, l'accessibilité de base et l'affichage sur téléphone. Si un test échoue, on ne met pas en ligne.
 
 Supervision : `/api/sante` répond `{"ok": true}` sans connexion (pour un service de surveillance). Sauvegarde de toutes les entreprises : `python3 app/sauvegarde_quotidienne.py` (lancée chaque nuit sur le serveur).
+
+Après la mise en ligne, sur le serveur : `bash deploiement/verifier-en-ligne.sh <nom-du-site>` contrôle le HTTPS, les en-têtes de sécurité, les accès refusés sans connexion, l'invisibilité des fichiers internes, les services, les droits et les sauvegardes (29 contrôles web + 8 contrôles serveur).
+
+## Versions et dépôt Git
+
+Le dossier est un dépôt Git : `git log --oneline` liste les versions, `git tag` leurs étiquettes, et `CHANGELOG.md` dit ce que chacune apporte. Le cachet (`app/prive/`) et les données (`donnees/`) ne sont jamais versionnés.
+
+## Documentation technique
+
+Dans `docs/` : description de l'API au format OpenAPI (`openapi.yaml`, lisible dans Swagger), MCD et diagrammes UML en Mermaid (`docs/diagrammes/`). Voir `docs/LISEZ-MOI.md`.

@@ -31,9 +31,16 @@ Guide pas à pas pour Oracle : https://claude.ai/artifact/AiDterS47ehZG7ieoybBz1
    Le compte devra changer son mot de passe à la première connexion.
 7. Se connecter sur https://erp.votre-domaine.com avec le code entreprise (ex. `ano`).
 
+## Mettre à jour le programme
+Envoyer le nouveau zip sur le serveur puis relancer le script (les données ne sont pas touchées) :
+`scp ERP_ANO_Services.zip root@<ip>:` puis, sur le serveur,
+`unzip -o ERP_ANO_Services.zip && cd erp-mvp && bash deploiement/installer-serveur.sh <domaine>`.
+Les nouvelles tables se créent seules au redémarrage.
+
 ## Sauvegardes
-Une copie de chaque base est faite à chaque démarrage dans
-`/var/lib/erp/entreprises/<code>/sauvegardes/`. Copier régulièrement `/var/lib/erp`
+Une copie de chaque base est faite à chaque démarrage et chaque nuit dans
+`/var/lib/erp/entreprises/<code>/sauvegardes/`. Les documents (copies de factures, DA, BC, PV)
+sont dans `/var/lib/erp/entreprises/<code>/documents/` : jamais modifiés ni effacés. Copier régulièrement `/var/lib/erp`
 hors du serveur (chiffré), par exemple une fois par jour.
 
 ## Commandes utiles

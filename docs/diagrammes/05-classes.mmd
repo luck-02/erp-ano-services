@@ -1,0 +1,96 @@
+classDiagram
+  direction LR
+  class Gestionnaire {
+    <<serveur.py>>
+    +traiter(methode)
+    -hote_ok() bool
+    -origine_ok() bool
+    -session(con, jeton)
+  }
+  class Registre {
+    <<plateforme.py>>
+    +trouver(code) Entreprise
+    +choisir(code) Entreprise
+    +creer(code, nom, admin, mdp)
+    +activer(code, actif)
+  }
+  class Entreprise {
+    +code
+    +nom
+    +chemin_db
+    +actif
+  }
+  class Api {
+    <<api.py>>
+    +connexion()
+    +creer_dossier()
+    +bc_dossier()
+    +generer_factures()
+    +emettre()
+    +paiement()
+    +facture_bis()
+    +tableau_de_bord()
+  }
+  class Metier {
+    <<metier.py>>
+    +calcul_proforma(dossier, agents, charges, bareme)
+    +mois_couverts(debut, fin)
+    +numero_proforma(seq, date, nom, code)
+    +numero_facture(n, type, mois)
+    +statut_facture(facture, jour)
+  }
+  class Securite {
+    <<securite.py>>
+    +hacher_mdp(mdp)
+    +verifier_mdp(mdp, empreinte)
+    +probleme_mdp(mdp, identifiant)
+    +LimiteurIP
+  }
+  class Client {
+    +code
+    +nom
+  }
+  class Dossier {
+    +numero_proforma
+    +num_da
+    +date_debut
+    +date_fin
+    +statut
+    +bc_numero
+    +bc_montant
+    +bareme
+  }
+  class Agent {
+    +nom
+    +poste
+    +salaire_base
+    +derniere_visite
+  }
+  class Facture {
+    +type
+    +mois
+    +montant_ht
+    +tva
+    +ttc
+    +numero
+    +paye_le
+  }
+  class Interimaire {
+    +matricule
+    +nom
+  }
+  class Utilisateur {
+    +identifiant
+    +role
+  }
+  Gestionnaire --> Registre : choisit la base
+  Gestionnaire --> Securite : vérifie
+  Gestionnaire --> Api : appelle la route
+  Registre "1" o-- "*" Entreprise
+  Api --> Metier : calcule
+  Client "1" --> "*" Dossier
+  Dossier "1" *-- "1..*" Agent
+  Agent "1" *-- "*" Facture
+  Facture "0..1" --> "0..1" Facture : remplacée par
+  Interimaire "1" .. "*" Agent : même nom
+  Utilisateur "1" --> "*" Dossier : crée

@@ -1,0 +1,21 @@
+stateDiagram-v2
+  state "Brouillon" as Brouillon
+  state "Envoyé" as Envoye
+  state "Validé" as Valide
+  state "BC reçu" as BCrecu
+  state "En cours" as EnCours
+  state "Terminé" as Termine
+  state "Annulé" as Annule
+  [*] --> Brouillon : DA saisie
+  Brouillon --> Envoye : proforma envoyée
+  Envoye --> Valide : accord du client
+  Valide --> BCrecu : BC enregistré
+  BCrecu --> EnCours : factures générées
+  Brouillon --> EnCours : génération forcée
+  EnCours --> Termine : fin du contrat
+  Brouillon --> Annule
+  Envoye --> Annule
+  Valide --> Annule
+  BCrecu --> Annule : si aucune facture émise
+  Termine --> [*]
+  Annule --> [*]

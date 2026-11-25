@@ -1,0 +1,10 @@
+flowchart LR
+  NAV["Navigateur<br/>Mac, PC, téléphone"] -->|HTTPS 443| CAD["Caddy<br/>certificat, HSTS, gzip"]
+  CAD -->|127.0.0.1:8765| APP["ERP Python 3<br/>serveur.py + api.py"]
+  APP --> REG[("plateforme.db<br/>registre des entreprises")]
+  APP --> DBA[("base entreprise A")]
+  APP --> DBB[("base entreprise B")]
+  APP --> PRIV["dossiers privés<br/>logo, cachet"]
+  TIM["minuterie 2 h"] --> SAV["sauvegardes<br/>par entreprise"]
+  DBA -.-> SAV
+  DBB -.-> SAV

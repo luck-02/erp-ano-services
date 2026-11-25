@@ -89,7 +89,7 @@ async function telecharger(chemin) {
   if (window.showSaveFilePicker) {
     try {
       const ext = nom.slice(nom.lastIndexOf("."));
-      const desc = { ".zip": "Archive zip", ".docx": "Document Word", ".csv": "Tableau (Excel, Numbers)" }[ext] || "Fichier";
+      const desc = { ".zip": "Archive zip", ".docx": "Document Word", ".csv": "Tableau (Excel, Numbers)", ".pdf": "Document PDF", ".png": "Image", ".jpg": "Image", ".jpeg": "Image" }[ext] || "Fichier";
       const h = await window.showSaveFilePicker({ suggestedName: nom, types: [{ description: desc, accept: { [blob.type.split(";")[0]]: [ext] } }] });
       const w = await h.createWritable(); await w.write(blob); await w.close();
       return nom;
@@ -612,8 +612,10 @@ async function pageDossier(page, id) {
       <div class="actions">${d.statut !== "Annulé" ? html`<button class="vert" id="ds-gen">${nbFact ? "Mettre à jour les factures prévues" : "Générer les factures"}</button>` : ""}
       ${nbEmises ? html`<a class="bouton secondaire" href="#/imprimer/factures/${r.factures.filter((f) => f.numero && f.statut !== "Remplacée").map((f) => f.id).join(",")}">Toutes les factures en PDF</a>` : ""}</div></div>
       ${nbFact ? tableFactures(r.factures, false) : html`<p class="doux">Aucune facture encore. À réception du BC, cliquez sur « Générer les factures » : une facture de visite médicale (si due) et une facture par mois, au prorata. Les mois déjà écoulés seront émis en rattrapage.</p>`}
-    </div>`);
+    </div>
+    ${peut("admin", "gestion") ? html`<div class="carte" id="ds-docs"><h2>Documents</h2><p class="doux">Chargement…</p></div>` : ""}`);
   brancherTableFactures(page, () => pageDossier(page, id));
+  if (peut("admin", "gestion")) chargerDocuments(id);
 
   $("#ds-statut").onchange = async (e) => {
     const s = e.target.value;
@@ -653,6 +655,60 @@ async function pageDossier(page, id) {
       }
     }
     pageDossier(page, id);
+  };
+}
+
+// Documents gardés sur le serveur : copies des factures émises et pièces du client
+const CAT_PIECES = { DA: "Demande d'achat (DA)", BC: "Bon de commande (BC)", PV: "PV de réception", Autre: "Autre pièce" };
+const tailleFr = (o) => (o < 1024 * 1024 ? Math.max(1, Math.round(o / 1024)) + " Ko" : (o / 1048576).toLocaleString("fr-FR", { maximumFractionDigits: 1 }) + " Mo");
+async function chargerDocuments(id) {
+  const zone = $("#ds-docs");
+  if (!zone) return;
+  let r;
+  try { r = await api("GET", "/api/dossiers/" + id + "/documents"); } catch (e) { zone.innerHTML = html`<h2>Documents</h2><p class="doux">${e.message}</p>`.s; return; }
+  if (!zone.isConnected) return;
+  const admin = peut("admin");
+  zone.innerHTML = html`<h2>Documents</h2>
+    <p class="doux petit">Une copie de chaque facture est gardée ici au moment où elle est émise${r.conversion_pdf ? " (Word et PDF)" : " (Word ; le PDF s'ajoute quand LibreOffice est installé sur le serveur)"}. Ajoutez aussi les pièces reçues du client : DA, BC, PV.</p>
+    ${r.documents.length ? html`<table><thead><tr><th>Ajouté le</th><th>Type</th><th>Nom</th><th class="num">Taille</th><th></th></tr></thead><tbody>
+      ${r.documents.map((d) => html`<tr><td class="petit">${dateFr(d.ajoute_le.slice(0, 10))}</td>
+        <td>${d.categorie === "Facture" ? html`<span class="badge b-Payée">Facture ${d.facture_numero || ""}</span>` : html`<span class="badge b-Envoyée">${d.categorie}</span>`}</td>
+        <td>${d.nom}${d.ajoute_par_nom ? html`<div class="doux petit">par ${d.ajoute_par_nom}</div>` : ""}</td>
+        <td class="num petit">${tailleFr(d.taille)}</td>
+        <td><div class="actions"><button class="secondaire" data-doc-tel="${d.id}">Télécharger</button>
+          ${admin && d.categorie !== "Facture" ? html`<button class="secondaire" data-doc-ret="${d.id}" data-nom="${d.nom}">Retirer</button>` : ""}</div></td></tr>`)}
+    </tbody></table>` : html`<p class="doux">Aucun document pour ce dossier.</p>`}
+    <form id="f-piece" data-style="margin-top:.75rem"><div class="ligne-form lf3">
+      <div class="champ"><label for="pc-cat">Pièce reçue</label><select id="pc-cat">${Object.entries(CAT_PIECES).map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select></div>
+      <div class="champ"><label for="pc-f">Fichier (PDF, PNG ou JPEG, 8 Mo au plus)</label><input id="pc-f" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" required></div>
+      <div class="champ"><span class="doux petit">&nbsp;</span><button type="submit" id="pc-ok">Ajouter la pièce</button></div></div></form>`.s;
+  appliquerStyles(zone);
+  $$("[data-doc-tel]", zone).forEach((b) => {
+    b.onclick = async () => { try { const n = await telecharger("/api/documents/" + b.dataset.docTel); if (n) toast("Document enregistré : " + n); } catch (e) { toast(e.message, true); } };
+  });
+  $$("[data-doc-ret]", zone).forEach((b) => {
+    b.onclick = async () => {
+      if (!(await confirmer("Retirer cette pièce ?", "« " + b.dataset.nom + " » ne sera plus listée. Le fichier reste gardé sur le serveur (trace).", "Retirer", "danger"))) return;
+      try { await action(() => api("POST", "/api/documents/" + b.dataset.docRet + "/retirer", {}), "Pièce retirée."); } catch (e) { return; }
+      chargerDocuments(id);
+    };
+  });
+  $("#f-piece", zone).onsubmit = (e) => {
+    e.preventDefault();
+    const f = $("#pc-f", zone).files[0];
+    if (!f) return toast("Choisissez un fichier.", true);
+    if (f.size > 8 * 1024 * 1024) return toast("Fichier trop lourd (8 Mo au plus).", true);
+    if (!/\.(pdf|png|jpe?g)$/i.test(f.name)) return toast("Format refusé : PDF, PNG ou JPEG seulement.", true);
+    const btn = $("#pc-ok", zone); btn.disabled = true;
+    const lecteur = new FileReader();
+    lecteur.onload = async () => {
+      try {
+        await action(() => api("POST", "/api/dossiers/" + id + "/pieces", { categorie: $("#pc-cat", zone).value, nom: f.name, contenu: lecteur.result }), "Pièce ajoutée : " + f.name);
+        chargerDocuments(id);
+      } catch (x) { btn.disabled = false; }
+    };
+    lecteur.onerror = () => { btn.disabled = false; toast("Lecture du fichier impossible.", true); };
+    lecteur.readAsDataURL(f);
   };
 }
 

@@ -80,7 +80,7 @@ async function scenarioANO(navigateur) {
   const prive = path.join(donnees, 'prive-test');
   fs.mkdirSync(prive);
   fs.copyFileSync(path.join(RACINE, 'app', 'static', 'logo.png'), path.join(prive, 'signature.png'));   // cachet fictif
-  const srv = await lancerServeur({ ANO_DONNEES: donnees, ANO_PRIVE: prive });
+  const srv = await lancerServeur({ ANO_DONNEES: donnees, ANO_PRIVE: prive, ANO_SOFFICE: path.join(donnees, 'sans-libreoffice') });
   const U = `http://localhost:${srv.port}`;
   const ctx = await navigateur.newContext({ viewport: { width: 1360, height: 900 }, acceptDownloads: true });
   await ctx.addInitScript(() => { delete window.showSaveFilePicker; });   // téléchargement classique
@@ -171,9 +171,32 @@ async function scenarioANO(navigateur) {
     verifier(csv.charCodeAt(0) === 0xfeff && csv.includes('N° facture;'), 'export CSV lisible par Excel');
     verifier(!csv.includes('576300'), 'CSV sans salaire');
 
+    // Documents du dossier : copies des factures émises + pièce du client
+    await page.goto(U + '/#/dossier/1');
+    await page.waitForSelector('#ds-docs table');
+    const lignes = await page.$$eval('#ds-docs tbody tr', (t) => t.map((x) => x.textContent));
+    verifier(lignes.length >= 1 && lignes.every((t) => /Facture FA /.test(t)), 'copie de chaque facture émise gardée dans le dossier', lignes.length);
+    const pdfFictif = path.join(OUT, 'BC fictif.pdf');
+    fs.writeFileSync(pdfFictif, '%PDF-1.4\n% BC fictif pour les tests\n%%EOF\n');
+    await page.selectOption('#pc-cat', 'BC');
+    await page.setInputFiles('#pc-f', pdfFictif);
+    await page.click('#pc-ok');
+    await page.waitForFunction(() => /BC fictif\.pdf/.test(document.querySelector('#ds-docs').textContent));
+    verifier(true, 'pièce du client ajoutée (BC en PDF)');
+    await controleAccessibilite(page, 'documents du dossier');
+    const bouton = await page.$('#ds-docs tbody tr:first-child [data-doc-tel]');
+    const p = await telechargement(page, () => bouton.click());
+    verifier(p.nom === 'BC fictif.pdf' && p.contenu.toString().startsWith('%PDF-'), 'pièce téléchargée telle quelle', p.nom);
+    const faux = path.join(OUT, 'page.html');
+    fs.writeFileSync(faux, '<html>pas une pièce</html>');
+    await page.setInputFiles('#pc-f', faux);
+    await page.click('#pc-ok');
+    await page.waitForSelector('.toast.err');
+    verifier(/PDF, PNG ou JPEG/.test(await page.textContent('.toast.err')), 'fichier HTML refusé');
+
     // téléphone
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const [h, sel] of [['#/tableau', '.kpi'], ['#/factures', '#fa-m'], ['#/dossiers', 'table']]) {
+    for (const [h, sel] of [['#/tableau', '.kpi'], ['#/factures', '#fa-m'], ['#/dossiers', 'table'], ['#/dossier/1', '#ds-docs table']]) {
       await page.goto(U + '/' + h); await page.waitForSelector(sel);
       await pasDeDefilementHorizontal(page, h);
     }

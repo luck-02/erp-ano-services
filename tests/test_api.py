@@ -24,6 +24,8 @@ PORT = s.getsockname()[1]
 s.close()
 os.environ["ANO_DONNEES"] = TMP
 os.environ["ANO_PORT"] = str(PORT)
+# copies PDF des factures : désactivées ici (test séparé), pour des tests rapides
+os.environ["ANO_SOFFICE"] = os.path.join(TMP, "pas-de-libreoffice")
 # cachet fictif dans un dossier temporaire : jamais le vrai cachet de app/prive
 os.environ["ANO_PRIVE"] = os.path.join(TMP, "prive")
 os.makedirs(os.environ["ANO_PRIVE"])
@@ -543,6 +545,110 @@ class TestsAPI(unittest.TestCase):
         lec.connexion("boss", "Tableau-de-bord-77")
         st, corps = lec.req("GET", "/api/signature")
         self.assertEqual(st, 200)       # cachet sur tous les documents, pour tout compte connecté
+
+    def test_18_documents(self):
+        import base64
+        import io
+        import zipfile
+        a = self.admin
+        did = self.did
+        # copies figées des factures émises au test 02 (Word ; PDF désactivé dans ces tests)
+        st, j = a.req("GET", "/api/dossiers/%d/documents" % did)
+        self.assertEqual(st, 200, j)
+        self.assertFalse(j["conversion_pdf"])
+        fact = [d for d in j["documents"] if d["categorie"] == "Facture"]
+        self.assertEqual(len(fact), 4)                  # visite, novembre, décembre, bis
+        self.assertIn("FA 154 bis/11-MAD/2026", [d["facture_numero"] for d in fact])
+        for d in j["documents"]:
+            self.assertNotIn("fichier", d)              # le nom sur le disque reste interne
+            self.assertNotIn("sha256", d)
+        st, doc = a.req("GET", "/api/documents/%d" % fact[0]["id"])
+        self.assertEqual(st, 200)
+        self.assertIn("attachment", a.derniere.getheader("Content-Disposition"))
+        self.assertIn("word/document.xml", zipfile.ZipFile(io.BytesIO(doc)).namelist())
+        # fichiers rangés hors du programme, droits 600, noms aléatoires
+        racine = os.path.join(TMP, "documents")
+        fichiers = [os.path.join(r, f) for r, _, fs in os.walk(racine) for f in fs]
+        self.assertGreaterEqual(len(fichiers), 4)
+        for f in fichiers:
+            self.assertEqual(os.stat(f).st_mode & 0o777, 0o600)
+            self.assertNotIn("FA", os.path.basename(f))
+        # pièce du client : PDF accepté
+        pdf = b"%PDF-1.4\n% piece fictive\n%%EOF\n"
+        corps = {"categorie": "BC", "nom": "BC fictif.pdf", "contenu": "data:application/pdf;base64," + base64.b64encode(pdf).decode()}
+        st, j = a.req("POST", "/api/dossiers/%d/pieces" % did, corps)
+        self.assertEqual(st, 200, j)
+        pid = j["id"]
+        st, doc = a.req("GET", "/api/documents/%d" % pid)
+        self.assertEqual((st, doc), (200, pdf))
+        self.assertEqual(a.derniere.getheader("Content-Type"), "application/pdf")
+        # refus : format, catégorie, taille, nom avec chemin, dossier inconnu
+        st, j = a.req("POST", "/api/dossiers/%d/pieces" % did, dict(corps, contenu=base64.b64encode(b"<html>x</html>").decode()))
+        self.assertEqual(st, 400)
+        st, j = a.req("POST", "/api/dossiers/%d/pieces" % did, dict(corps, categorie="Facture"))
+        self.assertEqual(st, 400)                       # une pièce ne se fait pas passer pour une facture émise
+        st, j = a.req("POST", "/api/dossiers/%d/pieces" % did, dict(corps, contenu="pas du base64 !"))
+        self.assertEqual(st, 400)
+        gros = base64.b64encode(b"%PDF-" + b"0" * (8 * 1024 * 1024)).decode()
+        st, j = a.req("POST", "/api/dossiers/%d/pieces" % did, dict(corps, contenu=gros))
+        self.assertEqual(st, 413)
+        st, j = a.req("POST", "/api/dossiers/%d/pieces" % did, dict(corps, nom="../../app/serveur.py"))
+        self.assertEqual(st, 200, j)
+        st, l = a.req("GET", "/api/dossiers/%d/documents" % did)
+        self.assertIn(".._.._app_serveur.py", [d["nom"] for d in l["documents"]])
+        st, j = a.req("POST", "/api/dossiers/99999/pieces", corps)
+        self.assertEqual(st, 404)
+        # rôles : Gestion ajoute et télécharge mais ne retire pas ; Lecture ne voit rien
+        st, j = a.req("POST", "/api/utilisateurs", {"identifiant": "agent2", "nom": "Gestion pièces", "role": "gestion",
+                                                     "mot_de_passe": "Temporaire-Pieces-1"})
+        self.assertEqual(st, 200, j)
+        g = Client()
+        g.connexion("agent2", "Temporaire-Pieces-1")
+        st, j = g.req("POST", "/api/moi/mot-de-passe", {"actuel": "Temporaire-Pieces-1", "nouveau": "Pieces-du-client-58"})
+        self.assertEqual(st, 200, j)
+        st, j = g.req("GET", "/api/documents/%d" % pid)
+        self.assertEqual(st, 200)
+        st, j = g.req("POST", "/api/documents/%d/retirer" % pid, {})
+        self.assertEqual(st, 403)
+        lec = Client()
+        lec.connexion("boss", "Tableau-de-bord-77")
+        for m, ch in (("GET", "/api/dossiers/%d/documents" % did), ("GET", "/api/documents/%d" % pid)):
+            st, j = lec.req(m, ch)
+            self.assertEqual(st, 403)
+        st, j = lec.req("POST", "/api/dossiers/%d/pieces" % did, corps)
+        self.assertEqual(st, 403)
+        st, j = Client().req("GET", "/api/documents/%d" % pid)
+        self.assertEqual(st, 401)
+        # retrait par la Direction : masqué, fichier gardé ; copie de facture : jamais
+        st, j = a.req("POST", "/api/documents/%d/retirer" % fact[0]["id"], {})
+        self.assertEqual(st, 409)
+        st, j = a.req("POST", "/api/documents/%d/retirer" % pid, {})
+        self.assertEqual(st, 200, j)
+        st, j = a.req("GET", "/api/documents/%d" % pid)
+        self.assertEqual(st, 404)
+        self.assertGreaterEqual(len([1 for r, _, fs in os.walk(racine) for f in fs]), len(fichiers) + 2)
+        st, jl = a.req("GET", "/api/journal")
+        actions = json.dumps(jl)
+        self.assertIn("piece_ajoutee", actions)
+        self.assertIn("piece_retiree", actions)
+        # une ligne de base qui pointerait hors du dossier n'est jamais lue
+        with self.assertRaises(FileNotFoundError):
+            serveur.api.DOC.lire(os.path.join(TMP, "ano.db"), {"fichier": "../ano.db"})
+
+    def test_19_conversion_pdf(self):
+        DOC = serveur.api.DOC
+        ancien = os.environ.pop("ANO_SOFFICE")
+        try:
+            if not DOC.soffice():
+                self.skipTest("LibreOffice absent : conversion PDF non testée")
+            st, j = self.admin.req("GET", "/api/factures?dossier=%d" % self.did)
+            f = [x for x in j["factures"] if x["numero"]][0]
+            st, docx = self.admin.req("GET", "/api/factures/word?ids=%d" % f["id"])
+            pdf = DOC.en_pdf(docx)
+            self.assertIsNotNone(pdf)
+            self.assertTrue(pdf.startswith(b"%PDF-"))
+        finally:
+            os.environ["ANO_SOFFICE"] = ancien
 
     def test_99_parametres_entreprise(self):
         """V1 B2B : codes de n°, TVA visite et images réglables ; ANO inchangé par défaut."""

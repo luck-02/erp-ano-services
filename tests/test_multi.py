@@ -223,6 +223,27 @@ class TestsMultiEntreprises(unittest.TestCase):
             d = plateforme.Registre(TMP).trouver(code)["sauvegardes_abs"]
             self.assertTrue(os.listdir(d))
 
+    def test_09_documents_isoles(self):
+        a, b = self.a, self.b
+        st, l = a.req("GET", "/api/dossiers")
+        did = l["dossiers"][0]["id"]
+        pdf = b"%PDF-1.4\n% DA fictive Alpha\n%%EOF\n"
+        st, j = a.req("POST", "/api/dossiers/%d/pieces" % did,
+                      {"categorie": "DA", "nom": "DA Alpha.pdf", "contenu": base64.b64encode(pdf).decode()})
+        self.assertEqual(st, 200, j)
+        doc_id = j["id"]
+        st, j = b.req("GET", "/api/documents/%d" % doc_id)
+        self.assertEqual(st, 404)                       # la pièce d'Alpha n'existe pas pour Beta
+        st, l = b.req("GET", "/api/dossiers")
+        st, j = b.req("GET", "/api/dossiers/%d/documents" % l["dossiers"][0]["id"])
+        self.assertEqual(j["documents"], [])
+        ea, eb = (plateforme.Registre(TMP).trouver(c) for c in ("alpha", "beta"))
+        da_ = os.path.join(os.path.dirname(ea["chemin_db_abs"]), "documents")
+        db_ = os.path.join(os.path.dirname(eb["chemin_db_abs"]), "documents")
+        self.assertNotEqual(da_, db_)
+        self.assertTrue(any(fs for _, _, fs in os.walk(da_)))
+        self.assertFalse(any(fs for _, _, fs in os.walk(db_)))
+
     def test_99_entreprise_desactivee(self):
         reg = plateforme.Registre(TMP)
         reg.activer("beta", False)

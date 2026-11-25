@@ -1,0 +1,13 @@
+flowchart LR
+  DA["DA du client<br/>PDF, capture ou mail"] --> SAI["Saisie de la DA<br/>agents, salaires, dates"]
+  SAI --> PRO["Proforma<br/>cumul HT, n° auto"]
+  PRO -->|envoyée| BC{"BC reçu ?<br/>montant = cumul ?"}
+  BC -->|non ou écart| REL["Relance du client<br/>ou correction"]
+  REL --> BC
+  BC -->|oui| GEN["Génération des factures<br/>visite + mois écoulés"]
+  GEN --> EMI["Émission mensuelle<br/>n° FA, PDF ou Word"]
+  EMI --> ENV["Envoi au client"]
+  ENV --> PV{"PV du client<br/>même montant ?"}
+  PV -->|non| BIS["Facture bis<br/>montant et date du PV"]
+  BIS --> PAY
+  PV -->|oui| PAY["Paiement<br/>date, référence"]

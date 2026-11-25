@@ -117,6 +117,21 @@ CREATE TABLE IF NOT EXISTS sessions (
     cree_le TEXT NOT NULL,
     vu_le TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY,
+    dossier_id INTEGER NOT NULL REFERENCES dossiers(id),
+    facture_id INTEGER REFERENCES factures(id),
+    categorie TEXT NOT NULL CHECK (categorie IN ('Facture','DA','BC','PV','Autre')),
+    nom TEXT NOT NULL,
+    fichier TEXT NOT NULL UNIQUE,           -- chemin relatif au dossier « documents » de l'entreprise
+    type_mime TEXT NOT NULL,
+    taille INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    ajoute_par INTEGER REFERENCES utilisateurs(id),
+    ajoute_le TEXT NOT NULL,
+    retire_le TEXT                          -- pièce retirée de la liste (le fichier est gardé)
+);
+CREATE INDEX IF NOT EXISTS ix_documents_dossier ON documents(dossier_id);
 CREATE TABLE IF NOT EXISTS journal (
     id INTEGER PRIMARY KEY,
     quand TEXT NOT NULL,

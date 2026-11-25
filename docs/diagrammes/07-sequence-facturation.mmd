@@ -1,0 +1,23 @@
+sequenceDiagram
+  actor G as Gestion
+  participant A as API
+  participant M as Métier
+  participant B as Base
+  G->>A: POST /api/dossiers (DA, agents, salaires)
+  A->>M: calcul_proforma()
+  M-->>A: mois, prorata, cumul HT
+  A->>B: dossier + agents, n° proforma = dernier + 1
+  A-->>G: n° de proforma
+  G->>A: POST /api/dossiers/{id}/bc (n°, montant)
+  A->>M: cumul de la proforma
+  A-->>G: écart avec le cumul
+  G->>A: POST /api/dossiers/{id}/generer-factures
+  alt pas de BC ou écart > 1 XAF
+    A-->>G: 409 SANS_BC ou ECART_BC
+  else BC conforme
+    A->>B: une facture par agent et par mois + visites, statut En cours
+    A-->>G: nombre de factures créées
+  end
+  G->>A: POST /api/factures/emettre (mois, rattrapage)
+  A->>B: n° FA = dernier + 1, date, échéance
+  A-->>G: factures émises, prêtes en PDF ou Word

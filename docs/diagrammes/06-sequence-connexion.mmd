@@ -1,0 +1,22 @@
+sequenceDiagram
+  actor U as Utilisateur
+  participant C as Caddy (HTTPS)
+  participant S as Serveur ERP
+  participant R as Registre
+  participant B as Base de l'entreprise
+  U->>C: POST /api/connexion (code, identifiant, mot de passe)
+  C->>S: requête + adresse IP
+  S->>S: hôte et origine autorisés ? limite IP ?
+  S->>R: trouver(code)
+  alt entreprise inconnue
+    S-->>U: 401 Identifiant ou mot de passe incorrect
+  else entreprise active
+    S->>B: utilisateur, empreinte du mot de passe
+    alt mot de passe faux
+      S->>B: échecs + 1 (blocage 15 min après 5)
+      S-->>U: 401 même message
+    else correct
+      S->>B: nouvelle session (empreinte du jeton, CSRF)
+      S-->>U: 200 + cookie code.jeton (HttpOnly, Secure, SameSite)
+    end
+  end

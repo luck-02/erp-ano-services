@@ -38,6 +38,7 @@ DERRIERE_PROXY = os.environ.get("ANO_PROXY") == "1"
 HOTES = [h.strip().lower() for h in os.environ.get("ANO_HOTES", "").split(",") if h.strip()]
 REGISTRE = plateforme.Registre(DONNEES)
 TAILLE_MAX = 1_000_000
+TAILLE_MAX_PIECE = 11_500_000      # pièce jointe de 8 Mo encodée en base64
 COOKIE = "ano_session"
 
 STATIQUES = {
@@ -79,6 +80,10 @@ ROUTES = [
     ("POST", r"/api/dossiers/(\d+)/statut", api.statut_dossier, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/bc", api.bc_dossier, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/generer-factures", api.generer_factures, EQUIPE),
+    ("GET", r"/api/dossiers/(\d+)/documents", api.documents_dossier, EQUIPE),
+    ("POST", r"/api/dossiers/(\d+)/pieces", api.ajouter_piece, EQUIPE),
+    ("GET", r"/api/documents/(\d+)", api.telecharger_document, EQUIPE),
+    ("POST", r"/api/documents/(\d+)/retirer", api.retirer_piece, (A,)),
     ("GET", r"/api/factures", api.liste_factures, TOUS),
     ("GET", r"/api/factures/word", api.factures_word, EQUIPE),
     ("GET", r"/api/factures/export\.csv", api.factures_csv, TOUS),
@@ -280,7 +285,7 @@ class Gestionnaire(BaseHTTPRequestHandler):
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 return self._erreur(400, "Requête invalide.")
-            if n > TAILLE_MAX:
+            if n > (TAILLE_MAX_PIECE if fonction is api.ajouter_piece else TAILLE_MAX):
                 return self._erreur(413, "Requête trop volumineuse.")
             brut = self.rfile.read(n) if n > 0 else b"{}"
             self._corps_lu = True

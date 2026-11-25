@@ -8,6 +8,7 @@ import re
 
 import db
 import docx_facture
+import documents as DOC
 import metier as M
 import securite as S
 
@@ -1057,7 +1058,8 @@ def emettre(ctx, g, body):
         if ids_emis:
             con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('dernier_num_facture', ?)", (json.dumps(n),))
             journaliser(ctx, "factures_emises", "", "%d facture(s), jusqu'au n° %d" % (len(ids_emis), n))
-    return {"emises": len(ids_emis), "ids": ids_emis}
+    archivees = _archiver_factures(ctx, ids_emis)
+    return {"emises": len(ids_emis), "ids": ids_emis, "archivees": archivees}
 
 
 def marquer_envoyees(ctx, g, body):
@@ -1140,6 +1142,7 @@ def facture_bis(ctx, g, body):
         con.execute("UPDATE factures SET remplacee_par_id = ?, pv_montant = ?, pv_date = ?, remarque = ? WHERE id = ?",
                     (cur.lastrowid, montant, dpv.isoformat(), "Remplacée par %s" % num, fid))
         journaliser(ctx, "facture_bis", num, "PV %d XAF HT (avant %d)" % (montant, f["montant_ht"]))
+    _archiver_factures(ctx, [cur.lastrowid])
     return {"id": cur.lastrowid, "numero": num}
 
 
@@ -1318,6 +1321,116 @@ def factures_word(ctx, g, body):
     clients = " + ".join(sorted({f["client_nom"] for f in fs}))
     return Fichier(docx_facture.lot_zip(fichiers), "application/zip", docx_facture.propre(
         "%s - Factures %s (%d).zip" % (clients, ", ".join(docx_facture.mois_fr(m + "-01") for m in mois), len(fichiers))))
+
+
+# ---------------------------------------------------------------------------
+# Documents gardés sur le serveur (copies des factures émises, pièces du client)
+# ---------------------------------------------------------------------------
+def _archiver_factures(ctx, ids):
+    """Copie figée (Word, puis PDF en tâche de fond si LibreOffice est là) de
+    chaque facture qui vient d'être émise. Un échec n'annule jamais l'émission."""
+    if not ids:
+        return 0
+    con = ctx["con"]
+    user_id = ctx["user"]["id"] if ctx.get("user") else None
+    a_convertir, n = [], 0
+    try:
+        rows = con.execute(SQL_FACTURES + " WHERE f.id IN (%s)" % ",".join("?" * len(ids)) + ORDRE_FACTURES,
+                           list(ids)).fetchall()
+        p = parametres(con)
+        with Transaction(con):
+            for r in rows:
+                f = dict(r)
+                contenu = docx_facture.facture_docx(p, f, prive=ctx["prive"], origine=ctx["origine"])
+                nom = docx_facture.nom_fichier(f)
+                DOC.enregistrer(con, ctx["chemin_db"], f["dossier_id"], f["id"], "Facture", nom, contenu,
+                                DOC.MIME_DOCX, ".docx", user_id)
+                a_convertir.append((f["dossier_id"], f["id"], nom, contenu))
+                n += 1
+    except Exception as x:          # pragma: no cover - disque plein, droits…
+        with Transaction(con):
+            journaliser(ctx, "archive_echec", "", str(x)[:200])
+        return 0
+    DOC.convertir_en_tache_de_fond(ctx["chemin_db"], a_convertir, user_id)
+    return n
+
+
+def _vue_document(r):
+    d = dict(r)
+    d.pop("fichier", None)
+    d.pop("sha256", None)
+    return d
+
+
+def documents_dossier(ctx, g, body):
+    con = ctx["con"]
+    did = int(g[0])
+    _dossier_row(con, did)
+    rows = con.execute("SELECT d.*, f.numero AS facture_numero, u.nom AS ajoute_par_nom FROM documents d "
+                       "LEFT JOIN factures f ON f.id = d.facture_id LEFT JOIN utilisateurs u ON u.id = d.ajoute_par "
+                       "WHERE d.dossier_id = ? AND d.retire_le IS NULL ORDER BY d.ajoute_le DESC, d.id DESC",
+                       (did,)).fetchall()
+    return {"documents": [_vue_document(r) for r in rows], "conversion_pdf": DOC.soffice() is not None}
+
+
+def ajouter_piece(ctx, g, body):
+    """Pièce reçue du client (DA, BC, PV…) : PDF, PNG ou JPEG, 8 Mo au plus."""
+    import base64
+    import binascii
+    con = ctx["con"]
+    did = int(g[0])
+    _dossier_row(con, did)
+    cat = body.get("categorie")
+    if cat not in DOC.CATEGORIES_PIECES:
+        raise ErreurAPI(400, "Type de pièce inconnu (DA, BC, PV ou Autre).")
+    nom = texte(body, "nom", 150, True)
+    nom = re.sub(r"[\\/\x00-\x1f]", "_", nom).strip() or "piece"
+    b64 = body.get("contenu")
+    if not isinstance(b64, str) or not b64:
+        raise ErreurAPI(400, "Fichier manquant.")
+    if len(b64) > DOC.TAILLE_MAX_PIECE * 4 // 3 + 100:
+        raise ErreurAPI(413, "Fichier trop lourd (8 Mo au plus).")
+    try:
+        contenu = base64.b64decode(b64.split(",", 1)[-1], validate=True)
+    except (binascii.Error, ValueError):
+        raise ErreurAPI(400, "Fichier illisible.")
+    if not contenu or len(contenu) > DOC.TAILLE_MAX_PIECE:
+        raise ErreurAPI(413, "Fichier vide ou trop lourd (8 Mo au plus).")
+    fmt = DOC.format_fichier(contenu)
+    if not fmt:
+        raise ErreurAPI(400, "Format refusé : PDF, PNG ou JPEG seulement.")
+    with Transaction(con):
+        doc_id = DOC.enregistrer(con, ctx["chemin_db"], did, None, cat, nom, contenu, fmt[0], fmt[1],
+                                 ctx["user"]["id"])
+        journaliser(ctx, "piece_ajoutee", "dossier %d" % did, "%s : %s (%d Ko)" % (cat, nom, len(contenu) // 1024))
+    return {"id": doc_id}
+
+
+def telecharger_document(ctx, g, body):
+    con = ctx["con"]
+    r = con.execute("SELECT * FROM documents WHERE id = ?", (int(g[0]),)).fetchone()
+    if not r or r["retire_le"]:
+        raise ErreurAPI(404, "Document introuvable.")
+    try:
+        contenu = DOC.lire(ctx["chemin_db"], r)
+    except OSError:
+        raise ErreurAPI(404, "Fichier introuvable sur le serveur.")
+    return Fichier(contenu, r["type_mime"], r["nom"])
+
+
+def retirer_piece(ctx, g, body):
+    """Direction : retire une pièce de la liste (erreur de fichier). Le fichier
+    est gardé ; les copies de factures ne se retirent pas."""
+    con = ctx["con"]
+    with Transaction(con):
+        r = con.execute("SELECT * FROM documents WHERE id = ?", (int(g[0]),)).fetchone()
+        if not r or r["retire_le"]:
+            raise ErreurAPI(404, "Document introuvable.")
+        if r["categorie"] == "Facture":
+            raise ErreurAPI(409, "La copie d'une facture émise ne se retire pas.")
+        con.execute("UPDATE documents SET retire_le = ? WHERE id = ?", (db.maintenant(), r["id"]))
+        journaliser(ctx, "piece_retiree", "dossier %d" % r["dossier_id"], "%s : %s" % (r["categorie"], r["nom"]))
+    return {"ok": True}
 
 
 def _valider_interimaire(body):

@@ -1,0 +1,34 @@
+flowchart LR
+  DIR(["Direction"])
+  GES(["Gestion"])
+  LEC(["Lecture"])
+  ADM(["Administrateur<br/>de la plateforme"])
+  subgraph ERP["ERP d'une entreprise"]
+    UC1("Consulter le tableau de bord")
+    UC2("Consulter et exporter les factures (CSV)")
+    UC3("Saisir une DA et sa proforma")
+    UC4("Enregistrer le BC")
+    UC5("Générer et émettre les factures")
+    UC6("Exporter en PDF ou Word")
+    UC7("Saisir un paiement, faire une facture bis")
+    UC8("Gérer clients et intérimaires")
+    UC9("Régler paramètres, logo, cachet")
+    UC10("Gérer les comptes, lire le journal, sauvegarder")
+  end
+  subgraph PF["Serveur"]
+    UC11("Créer, désactiver une entreprise")
+  end
+  LEC --- UC1
+  LEC --- UC2
+  GES --- UC1
+  GES --- UC2
+  GES --- UC3
+  GES --- UC4
+  GES --- UC5
+  GES --- UC6
+  GES --- UC7
+  GES --- UC8
+  DIR -. hérite de .-> GES
+  DIR --- UC9
+  DIR --- UC10
+  ADM --- UC11

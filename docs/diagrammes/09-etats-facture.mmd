@@ -1,0 +1,20 @@
+stateDiagram-v2
+  state "À émettre" as AEmettre
+  state "À envoyer" as AEnvoyer
+  state "Envoyée" as Envoyee
+  state "En retard" as EnRetard
+  state "Payée" as Payee
+  state "Remplacée" as Remplacee
+  [*] --> AEmettre : factures générées
+  AEmettre --> AEnvoyer : émise (n° + date)
+  AEnvoyer --> Envoyee : marquée envoyée
+  Envoyee --> EnRetard : échéance dépassée
+  AEnvoyer --> Payee : paiement
+  Envoyee --> Payee : paiement
+  EnRetard --> Payee : paiement
+  Payee --> Envoyee : paiement annulé
+  AEnvoyer --> Remplacee : facture bis (PV)
+  Envoyee --> Remplacee : facture bis (PV)
+  EnRetard --> Remplacee : facture bis (PV)
+  Payee --> [*]
+  Remplacee --> [*]

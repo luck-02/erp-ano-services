@@ -13,6 +13,8 @@ Environment=ANO_HTTPS=1
 Environment=ANO_PROXY=1
 Environment=ANO_HOTES=erp.exemple.com
 Environment=ANO_DONNEES=/var/lib/erp
+# dossier personnel temporaire pour LibreOffice (conversion des factures en PDF)
+Environment=HOME=/tmp
 ExecStart=/usr/bin/python3 app/serveur.py
 Restart=on-failure
 # durcissement : pas d'accès au reste du système

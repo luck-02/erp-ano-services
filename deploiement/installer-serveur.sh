@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installe l'ERP sur un serveur Ubuntu (Oracle Cloud « Always Free » ou autre).
+# Installe l'ERP sur un serveur Ubuntu 24.04 (Hetzner, Oracle Cloud ou autre).
 # À lancer SUR LE SERVEUR, depuis le dossier erp-mvp décompressé :
 #     sudo bash deploiement/installer-serveur.sh                 (adresse gratuite <ip>.sslip.io)
 #     sudo bash deploiement/installer-serveur.sh erp.mondomaine.com
@@ -14,7 +14,7 @@ DONNEES=/var/lib/erp
 # 1. nom de domaine : celui donné, sinon une adresse gratuite basée sur l'IP publique
 DOMAINE="${1:-}"
 if [ -z "$DOMAINE" ]; then
-  IP="$(curl -fsS https://ifconfig.me || true)"
+  IP="$(curl -4fsS https://ifconfig.me || true)"
   [ -n "$IP" ] || { echo "IP publique introuvable : donnez le nom de domaine en argument."; exit 1; }
   DOMAINE="$(echo "$IP" | tr '.' '-').sslip.io"
 fi
@@ -30,20 +30,27 @@ if ! command -v caddy >/dev/null; then
   apt-get update -q && apt-get install -y -q caddy
 fi
 dpkg-reconfigure -f noninteractive unattended-upgrades
+# LibreOffice (sans interface) : copie PDF de chaque facture émise. Facultatif :
+# sans lui, l'ERP garde seulement la copie Word.
+apt-get install -y -q --no-install-recommends libreoffice-writer-nogui fonts-crosextra-carlito fonts-liberation \
+  || echo "==> LibreOffice non installé : les factures émises seront gardées en Word seulement."
 
 # 3. pare-feu de la machine : SSH + HTTP/HTTPS seulement (les images Oracle bloquent 80/443 par défaut)
+# (Oracle : règle REJECT dans INPUT -> on insère juste avant ; Hetzner et autres : rien à faire ici)
 if command -v iptables >/dev/null; then
   for port in 80 443; do
-    iptables -C INPUT -p tcp --dport "$port" -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null \
-      || iptables -I INPUT 5 -p tcp --dport "$port" -m conntrack --ctstate NEW -j ACCEPT
+    REJ="$(iptables -L INPUT --line-numbers -n | awk '$2=="REJECT"{print $1; exit}')"
+    if [ -n "$REJ" ] && ! iptables -C INPUT -p tcp --dport "$port" -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null; then
+      iptables -I INPUT "$REJ" -p tcp --dport "$port" -m conntrack --ctstate NEW -j ACCEPT
+    fi
   done
-  command -v netfilter-persistent >/dev/null && netfilter-persistent save || true
+  if command -v netfilter-persistent >/dev/null; then netfilter-persistent save || true; fi
 fi
 
 # 4. compte dédié, programme et données (droits minimaux)
 id erp >/dev/null 2>&1 || useradd --system --home /opt/erp --shell /usr/sbin/nologin erp
 mkdir -p "$APP" "$DONNEES"
-( cd "$SRC" && tar cf - --exclude 'donnees' --exclude 'donnees-essai' --exclude 'node_modules' \
+( cd "$SRC" && tar cf - --exclude '.git' --exclude 'donnees' --exclude 'donnees-essai' --exclude 'node_modules' \
     --exclude 'app/prive/signature.png' --exclude 'app/prive/logo.png' . ) | ( cd "$APP" && tar xf - )
 chown -R root:root /opt/erp && chmod -R go-w /opt/erp
 chown erp:erp "$DONNEES" && chmod 700 "$DONNEES"
