@@ -44,5 +44,25 @@ verif "zip hors de erp-mvp/ refusé"      "$(lancer 'deployer v1.3.0' "$T/v1.3.0
 verif "zip vide refusé"                  "$(lancer 'deployer v1.4.0' "$T/vide.zip")" 4
 verif "rien installé par les refus"      "$(grep -c . "$T/journal")" 3
 
+# --- site de test (branche dev)
+python3 - "$T/dev.zip" <<'FIN'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("erp-mvp/app/serveur.py", "# faux\n")
+FIN
+verif "dev : commande mal écrite refusée"   "$(lancer 'deployer-dev v1.0.0' "$T/dev.zip")" 2
+verif "dev : site pas installé = rien fait" "$(lancer 'deployer-dev dev-abc1234' "$T/dev.zip")" 0
+echo "DOMAINE_DEV=dev.erp.exemple.test" >> "$ERP_DEPLOIEMENT_TEST/erp-deploiement.conf"
+printf '#!/bin/bash\necho "dev $1 $2" >> %s\n' "$T/journal-dev" > "$ERP_DEPLOIEMENT_TEST/erp-installer-dev"
+chmod +x "$ERP_DEPLOIEMENT_TEST/erp-installer-dev"
+printf '#!/bin/bash\necho "0 controle, 0 echec"\n' > "$ERP_DEPLOIEMENT_TEST/recette-dev"
+verif "dev : site de test mis à jour"       "$(lancer 'deployer-dev dev-abc1234' "$T/dev.zip")" 0
+verif "dev : installé avec le domaine dev"  "$(awk '{print $1, $3}' "$T/journal-dev")" "dev dev.erp.exemple.test"
+verif "dev : production inchangée"          "$(actuelle)" v1.0.0
+printf '#!/bin/bash\nexit 1\n' > "$ERP_DEPLOIEMENT_TEST/recette-dev"
+verif "dev : recette en échec signalée"     "$(lancer 'deployer-dev dev-def5678' "$T/dev.zip")" 5
+verif "dev : production toujours inchangée" "$(actuelle)" v1.0.0
+verif "dev : zip piégé refusé"              "$(lancer 'deployer-dev dev-0000000' "$T/v1.3.0.zip")" 4
+
 echo "$OK contrôle(s) réussi(s), $KO échec(s)."
 [ "$KO" -eq 0 ]

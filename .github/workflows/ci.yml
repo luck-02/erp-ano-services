@@ -61,3 +61,49 @@ jobs:
         working-directory: tests/e2e
         run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
       - run: node tests/e2e/parcours_complet.js
+
+  # Branche dev : une fois tous les tests verts, le site de test (dev.…) est mis à jour.
+  # Même clé limitée que la production, autre commande (« deployer-dev ») : la production
+  # n'est jamais touchée. Sauté tant que le déploiement automatique n'est pas activé.
+  site-de-test:
+    name: Mise à jour du site de test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs: [hygiene, tests, navigateur]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: site-de-test
+      cancel-in-progress: false
+    steps:
+      - name: Déploiement activé ?
+        id: actif
+        env:
+          CLE: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$CLE" ]; then
+            echo "Déploiement automatique pas encore activé (secret DEPLOY_SSH_KEY absent) : étape sautée."
+            echo "ok=non" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=oui" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.actif.outputs.ok == 'oui'
+        with:
+          persist-credentials: false
+      - name: Envoi au serveur (site de test seulement)
+        if: steps.actif.outputs.ok == 'oui'
+        env:
+          CLE: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOTE: ${{ secrets.DEPLOY_HOST }}
+          CONNUS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          V="dev-$(git rev-parse --short=12 HEAD)"
+          git archive --format=zip --prefix=erp-mvp/ -o site-de-test.zip HEAD
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$CLE" > ~/.ssh/deploiement && chmod 600 ~/.ssh/deploiement
+          printf '%s\n' "$CONNUS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploiement -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              "deploiement@$HOTE" "deployer-dev $V" < site-de-test.zip
+      - name: Effacer la clé
+        if: always()
+        run: rm -f ~/.ssh/deploiement

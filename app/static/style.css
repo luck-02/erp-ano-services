@@ -361,3 +361,11 @@ th .info .bulle { top: calc(100% + 6px); bottom: auto; }
 .pf-noms { word-break: break-word; }
 /* ordinateur portable étroit : l'aperçu de la proforma passe sous le formulaire */
 @media (max-width: 1250px) { .da { grid-template-columns: minmax(0, 1fr); } .apercu { position: static; } }
+/* site de test (adresse dev.…) : bandeau permanent */
+body.site-test { padding-top: 1.6rem; }
+body.site-test::before {
+  content: "SITE DE TEST · données fictives · ce n'est pas la production"; position: fixed; top: 0; left: 0; right: 0; z-index: 70;
+  background: #b45309; color: #fff; font-weight: 700; font-size: .85rem; text-align: center; padding: .3rem .5rem;
+}
+body.site-test .menu { top: 1.6rem; height: calc(100vh - 1.6rem); }
+@media print { body.site-test { padding-top: 0; } body.site-test::before { display: none; } }

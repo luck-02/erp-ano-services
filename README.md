@@ -144,7 +144,14 @@ Le dossier est un dépôt Git : `git log --oneline` liste les versions, `git tag
 Au quotidien (Mac) :
 1. `git checkout dev && git pull` : récupérer la dernière version de travail.
 2. Modifier, puis `git commit -am "…"` et `git push` : les tests tournent sur GitHub (onglet « Actions »).
-3. Essayer en local : double-clic sur « Lancer ANO.command » (données de test sur le Mac).
+3. Essayer : sur le site de test (ci-dessous), ou en local avec « Lancer ANO.command ».
+
+**Site de test** : https://dev.2-29-210-17.sslip.io (bandeau orange « SITE DE TEST », données fictives,
+compte et données séparés de la production). Après chaque envoi sur `dev`, une fois les tests verts,
+GitHub le met à jour tout seul (onglet « Actions », étape « Mise à jour du site de test »).
+Installation, une seule fois, depuis le Mac (dossier erp-mvp) :
+`git fetch && git archive origin/dev | ssh root@2.29.210.17 'rm -rf /root/erp-dev-src && mkdir /root/erp-dev-src && tar xf - -C /root/erp-dev-src && bash /root/erp-dev-src/deploiement/installer-dev.sh'`
+Le script affiche une fois le mot de passe provisoire de l'entreprise fictive « essai ». Retirer : même commande avec `installer-dev.sh --retirer`.
 
 Passer en production, quand `dev` est validée :
 1. `git checkout main && git pull && git merge dev` puis `git push`.

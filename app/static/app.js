@@ -1293,6 +1293,8 @@ async function pageJournal(page) {
 // Démarrage
 // ---------------------------------------------------------------------------
 async function demarrage() {
+  // site de test (dev.…) : bandeau permanent pour ne jamais le confondre avec la production
+  if (/^dev\./.test(location.hostname)) document.body.classList.add("site-test");
   try {
     const e = await api("GET", "/api/etat");
     etat.multi = !!e.multi;

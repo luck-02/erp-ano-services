@@ -7,6 +7,14 @@ Numérotation : `vMAJEUR.MINEUR.CORRECTIF`.
 
 Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git checkout v3.1.0`.
 
+## En cours (branche dev)
+- Branche `dev` : tests GitHub à chaque envoi ; `main` reste la production.
+- Site de test https://dev.<ip>.sslip.io à côté de la production (compte `erp-dev`, port 8766, données
+  `/var/lib/erp-dev`, production illisible pour lui), mis à jour automatiquement à chaque envoi sur `dev`
+  après les tests ; bandeau « SITE DE TEST ». Installation : `deploiement/installer-dev.sh`.
+- `erp-deployer` accepte aussi « deployer-dev dev-<commit> » (site de test seulement, code copié sans
+  être exécuté en root).
+
 ## v3.5.0 – 25/11/2026 : retours de test de Luc et Lola, cas réels
 - N° des factures calqués sur les vraies : facture du mois FA 159/11/2026 (11 = mois d'émission),
   visite médicale FA 159/Visite médicale/2026 avec le même n° quand elle part avec la facture du mois,

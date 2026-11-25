@@ -2,6 +2,7 @@
 # Commande forcée du compte « deploiement » (installée dans /usr/local/sbin/erp-deployer
 # par activer-deploiement-auto.sh). C'est la SEULE chose que la clé de GitHub peut faire :
 #   ssh deploiement@<ip> deployer v3.4.0 < ERP_ANO_Services-v3.4.0.zip
+#   ssh deploiement@<ip> deployer-dev dev-1a2b3c4 < zip de la branche dev  (site de test)
 # 1. reçoit le zip (50 Mo au plus) et le contrôle
 # 2. sauvegarde les bases
 # 3. installe la version
@@ -17,28 +18,64 @@ VERSIONS="$BASE/versions"
 ACTUELLE="$BASE/actuelle"
 [ -n "${ERP_DEPLOIEMENT_TEST:-}" ] || [ "$(id -u)" -eq 0 ] || { echo "erp-deployer doit tourner en root (sudo)."; exit 1; }
 # shellcheck source=/dev/null
-. "$CONF"                                   # DOMAINE=...
+. "$CONF"                                   # DOMAINE=... (et DOMAINE_DEV=... si site de test)
 [[ "${DOMAINE:-}" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "DOMAINE invalide dans $CONF"; exit 1; }
 
 # La commande demandée arrive dans SSH_ORIGINAL_COMMAND (rien d'autre n'est exécuté).
+#   deployer vX.Y.Z           production (étiquette sur main)
+#   deployer-dev dev-<commit> site de test (envoi sur la branche dev)
 read -r ACTION V RESTE <<< "${SSH_ORIGINAL_COMMAND:-${*:-}}" || true
-[ "${ACTION:-}" = deployer ] && [ -z "${RESTE:-}" ] || { echo "Seule commande permise : deployer vX.Y.Z"; exit 2; }
-[[ "${V:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version invalide : ${V:-}"; exit 2; }
+[ -z "${RESTE:-}" ] || { echo "Seules commandes permises : deployer vX.Y.Z, deployer-dev dev-<commit>"; exit 2; }
+case "${ACTION:-}" in
+  deployer)     [[ "${V:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version invalide : ${V:-}"; exit 2; } ;;
+  deployer-dev) [[ "${V:-}" =~ ^dev-[0-9a-f]{7,40}$ ]] || { echo "Version de test invalide : ${V:-}"; exit 2; } ;;
+  *) echo "Seules commandes permises : deployer vX.Y.Z, deployer-dev dev-<commit>"; exit 2 ;;
+esac
+
+# Zip reçu sur l'entrée standard : 50 Mo au plus, tout sous erp-mvp/, aucun « .. »
+recevoir_zip() {   # $1 = zip, $2 = dossier où décompresser
+  head -c 52428800 > "$1"
+  [ -s "$1" ] || { echo "Zip vide."; exit 4; }
+  command -v unzip >/dev/null || apt-get install -y -q unzip >/dev/null
+  if unzip -Z1 "$1" | grep -qvE '^erp-mvp/'; then echo "Zip refusé : contenu hors de erp-mvp/."; exit 4; fi
+  if unzip -Z1 "$1" | grep -qE '(^|/)\.\.(/|$)'; then echo "Zip refusé : chemin avec ..";  exit 4; fi
+  rm -rf "$2" && mkdir -p "$2" && unzip -q "$1" -d "$2"
+}
 
 exec 9>"$BASE/verrou"
 if command -v flock >/dev/null; then       # (absent sur Mac : seulement pour les tests)
   flock -n 9 || { echo "Un déploiement est déjà en cours."; exit 3; }
 fi
 
+# --- site de test : le code de dev est copié par erp-installer-dev (installé une fois en
+# root par installer-dev.sh), jamais exécuté en root ; la recette est celle de la production.
+if [ "$ACTION" = deployer-dev ]; then
+  INSTALLEUR_DEV="${ERP_DEPLOIEMENT_TEST:+$BASE/erp-installer-dev}"; INSTALLEUR_DEV="${INSTALLEUR_DEV:-/usr/local/sbin/erp-installer-dev}"
+  RECETTE_DEV="${ERP_DEPLOIEMENT_TEST:+$BASE/recette-dev}"; RECETTE_DEV="${RECETTE_DEV:-/opt/erp/erp-mvp/deploiement/verifier-en-ligne.sh}"
+  [[ "${DOMAINE_DEV:-}" =~ ^[A-Za-z0-9.-]+$ ]] && [ -x "$INSTALLEUR_DEV" ] \
+    || { echo "Site de test pas encore installé sur le serveur (deploiement/installer-dev.sh) : rien à faire."; exit 0; }
+  DD="$BASE/dev"
+  mkdir -p "$DD"
+  recevoir_zip "$DD/$V.zip" "$DD/$V"
+  [ -f "$DD/$V/erp-mvp/app/serveur.py" ] || { echo "Zip refusé : programme absent."; exit 4; }
+  echo "==> site de test : $V"
+  if "$INSTALLEUR_DEV" "$DD/$V/erp-mvp" "$DOMAINE_DEV" > "$DD/$V.log" 2>&1 && sleep 3 \
+     && bash "$RECETTE_DEV" "$DOMAINE_DEV" > "$DD/$V.recette" 2>&1; then
+    tail -1 "$DD/$V.recette"
+    echo "==> https://$DOMAINE_DEV à jour ($V)"
+    # ne garder que cette version de test
+    for x in "$DD"/dev-*; do case "$x" in "$DD/$V"|"$DD/$V".*) ;; *) rm -rf "$x" ;; esac; done
+    exit 0
+  fi
+  echo "ÉCHEC du site de test $V (la production n'est pas concernée) :"
+  tail -15 "$DD/$V.recette" 2>/dev/null || tail -15 "$DD/$V.log"
+  exit 5
+fi
+
 mkdir -p "$VERSIONS"
 ZIP="$VERSIONS/$V.zip"
 D="$VERSIONS/$V"
-head -c 52428800 > "$ZIP"                  # 50 Mo au plus
-[ -s "$ZIP" ] || { echo "Zip vide."; exit 4; }
-command -v unzip >/dev/null || apt-get install -y -q unzip >/dev/null
-if unzip -Z1 "$ZIP" | grep -qvE '^erp-mvp/'; then echo "Zip refusé : contenu hors de erp-mvp/."; exit 4; fi
-if unzip -Z1 "$ZIP" | grep -qE '(^|/)\.\.(/|$)'; then echo "Zip refusé : chemin avec ..";  exit 4; fi
-rm -rf "$D" && mkdir -p "$D" && unzip -q "$ZIP" -d "$D"
+recevoir_zip "$ZIP" "$D"
 [ -f "$D/erp-mvp/deploiement/installer-serveur.sh" ] || { echo "Zip refusé : installateur absent."; exit 4; }
 [ "$(cat "$D/erp-mvp/VERSION" 2>/dev/null)" = "$V" ] || { echo "Zip refusé : VERSION ne correspond pas à $V."; exit 4; }
 
