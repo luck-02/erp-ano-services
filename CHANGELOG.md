@@ -19,8 +19,8 @@ Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git
 - Facture modifiable (émise ou non) : quantité, unité, montant HT, date, remarque. Le n° ne change pas,
   TVA et TTC recalculés, nouvelle copie gardée, avant/après dans le journal. Une facture payée ne se modifie pas.
 - Unité de la facture au choix (Jours, Mois, Heures, Forfait…).
-- Tableau de bord : le facturé est comparé au payé en TTC ; un paiement plus grand que la facture est refusé ;
-  le reste à encaisser n'est plus jamais négatif ; alerte si un ancien paiement dépasse sa facture.
+- Tableau de bord : le facturé est comparé au payé en TTC ; le reste à encaisser n'est plus jamais négatif ;
+  un paiement plus grand que sa facture reste permis mais est signalé.
 - Salaire de base dans la liste des dossiers.
 - Bouton « Tout désélectionner » dans les factures.
 - Compte Lecture : une page qui ne lui est pas ouverte renvoie au tableau de bord au lieu d'une erreur.

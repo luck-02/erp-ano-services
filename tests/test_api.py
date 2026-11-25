@@ -738,19 +738,16 @@ class TestsAPI(unittest.TestCase):
         st, j = a.req("POST", "/api/dossiers/%d/generer-factures" % gid, {})
         st, f = a.req("GET", "/api/factures?ids=%d" % fs[1]["id"])
         self.assertEqual(f["factures"][0]["montant_ht"], 123)
-        # --- paiement : jamais plus que le TTC
-        st, j = a.req("POST", "/api/factures/paiement", {"ids": [fa["id"]], "date": "2027-05-10", "montant": 99999999})
-        self.assertEqual(st, 400, j)
-        self.assertIn("dépasse", j["erreur"])
-        st, j = a.req("POST", "/api/factures/paiement", {"ids": [fa["id"]], "date": "2027-05-10"})
-        self.assertEqual(j["modifiees"], 1)
+        # --- paiement plus grand que le TTC : permis, signalé au tableau de bord, reste jamais négatif
+        st, j = a.req("POST", "/api/factures/paiement", {"ids": [fa["id"]], "date": "2027-05-10", "montant": 5000000})
+        self.assertEqual(j["modifiees"], 1, j)
         st, j = a.req("PUT", "/api/factures/%d" % fa["id"], {"montant_ht": 1})
         self.assertEqual(st, 409)                       # payée : annuler le paiement d'abord
         st, t = a.req("GET", "/api/tableau-de-bord?mois=2027-03")
         self.assertGreaterEqual(t["reste_a_encaisser"], 0)
-        self.assertEqual(t["trop_percus"], [])
+        self.assertEqual([x["numero"] for x in t["trop_percus"]], [fa["numero"]])
         mars = [x for x in t["serie"] if x["mois"] == "2027-03-01"][0]
-        self.assertEqual((mars["facture_ttc"], mars["paye"]), (3800000 + 684000, 3800000 + 684000))
+        self.assertEqual((mars["facture_ttc"], mars["paye"]), (3800000 + 684000, 5000000))
         # --- visite médicale seule : n° à elle (FA N/Visite médicale/AAAA)
         corps = {"client_id": 1, "service": "DAF", "lieu": "Moanda", "date_debut": "2027-06-01", "date_fin": "2027-07-31",
                  "visite_mode": "Auto", "agents": [{"nom": "VISITE Seule Fictive", "poste": "p", "salaire_base": 200000}]}

@@ -1112,10 +1112,6 @@ def marquer_envoyees(ctx, g, body):
     return {"modifiees": cur.rowcount}
 
 
-def _milliers(n):
-    return format(int(n), ",").replace(",", " ")
-
-
 def paiement(ctx, g, body):
     con = ctx["con"]
     ids = liste_ids(body)
@@ -1130,9 +1126,8 @@ def paiement(ctx, g, body):
             f = con.execute("SELECT * FROM factures WHERE id = ?", (fid,)).fetchone()
             if not f or not f["numero"] or f["remplacee_par_id"]:
                 continue
-            if montant is not None and montant > f["ttc"]:
-                raise ErreurAPI(400, "Le montant reçu (%s XAF) dépasse le TTC de la facture %s (%s XAF). "
-                                     "Vérifiez la saisie." % (_milliers(montant), f["numero"], _milliers(f["ttc"])))
+            # un montant plus grand que le TTC reste permis (choix de Luc, 25/11/2026) :
+            # le tableau de bord le signale sans le compter dans le reste à encaisser
             if montant == 0:
                 raise ErreurAPI(400, "Montant reçu à 0 : laissez vide pour le TTC complet.")
             con.execute("UPDATE factures SET paye_le=?, montant_paye=?, ref_paiement=? WHERE id=?",
