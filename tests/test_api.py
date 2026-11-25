@@ -1054,6 +1054,12 @@ class TestsAPI(unittest.TestCase):
         self.assertIn("Heures supplémentaires", csv.decode("utf-8"))
         st, rq = a.req("GET", "/api/recherche?q=" + urllib.parse.quote("FA H 111"))
         self.assertEqual([(x["titre"], x["lien"]) for x in rq["resultats"]], [("FA H 111/11/2026", "#/hs/%d" % h2)])
+        # tableau de bord : la FA H compte dans « À faire » et dans le facturé
+        tb1 = a.req("GET", "/api/tableau-de-bord?mois=2026-11")[1]
+        a.req("POST", "/api/heures-sup/%d/suivi" % h2, {"envoyee_le": "2026-12-01"})
+        tb2 = a.req("GET", "/api/tableau-de-bord?mois=2026-11")[1]
+        self.assertEqual(tb1["a_faire"]["a_envoyer"] - tb2["a_faire"]["a_envoyer"], 1)
+        self.assertGreaterEqual(tb2["facture_ht"], 50000 + attendu)
         # lignes invalides
         for mauvais in ([{"date": "2026-10-12"}], [{"date": "2026-10-12", "heures": "30"}], [{"date": "x", "heures": 2}],
                         [{"date": "2026-10-12", "debut": "25:00", "fin": "26:00"}]):

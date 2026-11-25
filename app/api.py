@@ -1704,7 +1704,9 @@ def tableau_de_bord(ctx, g, body):
                                        "passee": suivantes[0] < auj})
     alertes_fin.sort(key=lambda x: x["fin"])
     fact = _vue_factures(con.execute(SQL_FACTURES + ORDRE_FACTURES).fetchall(), con)
-    valides = [f for f in fact if f["numero"] and not f["remplacee_par_id"]]
+    valides_mad = [f for f in fact if f["numero"] and not f["remplacee_par_id"]]
+    # factures FA H (heures supplémentaires) comptées avec les autres : facturé, payé, retard, à envoyer
+    valides = valides_mad + factures_hs(con)
     du_mois = [f for f in valides if f["mois"] == m.isoformat()]
     a_emettre_passe = [f for f in fact if not f["numero"] and f["mois"] < m.isoformat() and f["type"] != "BIS"]
     a_emettre_mois = [f for f in fact if not f["numero"] and f["mois"] == m.isoformat() and f["type"] != "BIS"]
@@ -1730,7 +1732,7 @@ def tableau_de_bord(ctx, g, body):
     # reste dû facture par facture : un paiement saisi en trop ne rend pas le reste négatif
     reste = sum(max(0, f["ttc"] - (f["montant_paye"] or 0)) for f in valides)
     trop_percus = [{"id": f["id"], "numero": f["numero"], "ttc": f["ttc"], "paye": f["montant_paye"]}
-                   for f in valides if (f["montant_paye"] or 0) > f["ttc"]]
+                   for f in valides_mad if (f["montant_paye"] or 0) > f["ttc"]]
     return {
         "mois": m.isoformat(), "libelle": M.libelle_mois(m),
         "personnes_en_contrat": personnes, "personnes_en_attente": attente,
