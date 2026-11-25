@@ -941,7 +941,8 @@ class TestsAPI(unittest.TestCase):
         h = j["heures_sup"]
         self.assertEqual(h["total_heures"], 18)
         self.assertEqual(h["lignes"][0]["heures"], 6)                 # calculée depuis début / fin
-        self.assertEqual(h["heures"], {"h1": 8, "h2": 6, "h3": 4})    # proposition
+        self.assertEqual(h["heures"], {"h1": 12, "h2": 2, "h3": 4})   # proposition : 8 h/semaine, reste, dimanche
+        self.assertEqual([(w["du"], w["total"]) for w in h["semaines"]], [("2026-10-12", 14), ("2026-10-19", 4)])
         self.assertEqual(len(h["releves"]), 1)
         cout = h["cout_mensuel"]
         self.assertEqual(cout, d["proforma"]["agents"][0]["cout_mensuel"])

@@ -488,7 +488,7 @@ CHAMPS_ENTIER_PARAM = {
     "visite_ht": (0, 10_000_000), "validite_visite_mois": (1, 60), "dernier_num_proforma": (0, 10_000_000),
     "alerte_fin_jours": (1, 365), "alerte_visite_jours": (1, 365), "bc_chiffres": (0, 20),
     "hs_diviseur_centiemes": (100, 100000), "hs_taux1_pdm": (0, 50000), "hs_taux2_pdm": (0, 50000),
-    "hs_taux3_pdm": (0, 50000), "hs_seuil_semaine": (0, 80), "hs_nuit_debut": (0, 23), "hs_nuit_fin": (0, 23),
+    "hs_taux3_pdm": (0, 50000), "hs_seuil_semaine": (0, 80),
 }
 
 
@@ -520,6 +520,22 @@ def modifier_parametres(ctx, g, body):
     for k in ("dernier_num_facture", "dernier_num_proforma_h", "dernier_num_facture_h"):
         if k in p_in:
             nouv[k] = entier(p_in, k, 0, 10_000_000, requis=False)
+    if "hs_jours_feries" in p_in:
+        v = p_in["hs_jours_feries"]
+        if not isinstance(v, list) or len(v) > 100:
+            raise ErreurAPI(400, "Liste des jours fériés invalide.")
+        fer = []
+        for x in v:
+            x = str(x).strip()
+            if not x:
+                continue
+            m = re.fullmatch(r"(?:(\d{4})-)?(\d{2})-(\d{2})", x)
+            try:
+                dt.date(int(m.group(1) or 2024), int(m.group(2)), int(m.group(3)))
+            except (AttributeError, ValueError):
+                raise ErreurAPI(400, "Jour férié « %s » invalide : MM-JJ (chaque année) ou AAAA-MM-JJ." % x[:20])
+            fer.append(x)
+        nouv["hs_jours_feries"] = sorted(set(fer))
     for k in ("lieux", "services"):
         if k in p_in:
             v = p_in[k]
@@ -1854,7 +1870,7 @@ def _hs_params(p):
     return {"taux": [int(p.get("hs_taux1_pdm", 2800)), int(p.get("hs_taux2_pdm", 5600)), int(p.get("hs_taux3_pdm", 7500))],
             "diviseur": int(p.get("hs_diviseur_centiemes", 17333)),
             "seuil": int(p.get("hs_seuil_semaine", 8)),
-            "nuit": (int(p.get("hs_nuit_debut", 21)), int(p.get("hs_nuit_fin", 5)))}
+            "feries": set(p.get("hs_jours_feries") or [])}
 
 
 def _hs_lignes(body):
@@ -1892,7 +1908,7 @@ def _hs_lignes(body):
 def _hs_proposition(lignes, hp):
     return M.hs_classer([{"date": dt.date.fromisoformat(l["date"]), "debut": l["debut"], "fin": l["fin"],
                           "heures": Fraction(l["heures"]).limit_denominator(100)} for l in lignes],
-                        hp["seuil"], hp["nuit"][0], hp["nuit"][1])
+                        hp["seuil"], hp["feries"])
 
 
 def _hs_vue(con, r, avec_docs=True):
@@ -1905,12 +1921,15 @@ def _hs_vue(con, r, avec_docs=True):
     ag = con.execute("SELECT a.*, i.matricule FROM agents a LEFT JOIN interimaires i ON i.id = a.interimaire_id "
                      "WHERE a.id = ?", (r["agent_id"],)).fetchone()
     cout = r["cout_mensuel"] or M.cout_mensuel(ag["salaire_base"], _bareme(drow)["charges"])
-    prop = _hs_proposition(lignes, hp)
+    prop, semaines = _hs_proposition(lignes, hp)
     retenu = {k: Fraction(str(heures[k])) for k in M.HS_CATEGORIES} if heures else prop
     calc = M.hs_lignes_montants(cout, [retenu[k] for k in M.HS_CATEGORIES], hp["taux"], hp["diviseur"])
     total_h = sum((Fraction(l["heures"]).limit_denominator(100) for l in lignes), Fraction(0))
     cl = con.execute("SELECT * FROM clients WHERE id = ?", (drow["client_id"],)).fetchone()
     x.update(lignes=lignes, proposition={k: float(v) for k, v in prop.items()},
+             semaines=[{"du": w["du"].isoformat(), "au": w["au"].isoformat(), "total": float(w["total"]),
+                        "jours": [{"date": d.isoformat(), "heures": float(h), "repos": d.weekday() == 6 or M.hs_est_ferie(d, hp["feries"])}
+                                  for d, h in w["jours"]], **{k: float(w[k]) for k in M.HS_CATEGORIES}} for w in semaines],
              heures={k: float(v) for k, v in retenu.items()}, total_heures=float(total_h),
              ecart_heures=float(sum(retenu.values()) - total_h), calcul=calc, cout_mensuel=cout,
              taux_pdm=hp["taux"], agent=ag["nom"], poste=ag["poste"], matricule=ag["matricule"],

@@ -348,52 +348,39 @@ def _minutes(hhmm):
     return int(m.group(1)) * 60 + int(m.group(2) or 0)
 
 
-def hs_part_nuit(debut, fin, nuit_debut=21, nuit_fin=5):
-    """Fraction de la plage [debut, fin) (HH:MM, peut passer minuit) tombée la nuit."""
-    d, f = _minutes(debut), _minutes(fin)
-    if d is None or f is None or d == f:
-        return None
-    if f <= d:
-        f += 24 * 60
-    nd, nf = nuit_debut * 60, nuit_fin * 60
-    nuit = 0
-    for jour in (-1, 0, 1):          # nuits de la veille, du jour et du lendemain
-        a = nd + jour * 1440
-        b = (nf + (jour + 1) * 1440) if nf <= nd else nf + jour * 1440
-        nuit += max(0, min(f, b) - max(d, a))
-    return Fraction(nuit, f - d)
+JOURS_FR = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
 
 
-def hs_classer(lignes, seuil_semaine=8, nuit_debut=21, nuit_fin=5, jours_repos=(6,)):
-    """Classement PROPOSÉ (modifiable) des heures réalisées :
-    - heures de nuit -> h3 (75 %)
-    - jour de repos (dimanche par défaut) -> h2 (56 %)
-    - jours ouvrables : les `seuil_semaine` premières heures de la semaine -> h1 (28 %), au-delà -> h2.
-    lignes : [{"date": date, "debut": "20:00", "fin": "23:00", "heures": Fraction}]"""
-    tot = {"h1": Fraction(0), "h2": Fraction(0), "h3": Fraction(0)}
-    deja = {}
-    for l in sorted(lignes, key=lambda x: (x["date"], _minutes(x.get("debut")) or 0)):
-        h = Fraction(l["heures"])
-        pn = hs_part_nuit(l.get("debut"), l.get("fin"), nuit_debut, nuit_fin) or Fraction(0)
-        nuit = h * pn
-        jour = h - nuit
-        tot["h3"] += nuit
-        if l["date"].weekday() in jours_repos:
-            tot["h2"] += jour
-            continue
-        sem = l["date"].isocalendar()[:2]
-        reste = max(Fraction(0), Fraction(seuil_semaine) - deja.get(sem, 0))
-        a28 = min(jour, reste)
-        deja[sem] = deja.get(sem, 0) + a28
-        tot["h1"] += a28
-        tot["h2"] += jour - a28
-    # au quart d'heure, sans perdre d'heure au total
-    res = {k: Fraction(round(v * 4), 4) for k, v in tot.items()}
-    ecart = sum((Fraction(l["heures"]) for l in lignes), Fraction(0)) - sum(res.values())
-    if ecart:
-        k = max(res, key=lambda x: res[x])
-        res[k] += ecart
-    return res
+def hs_est_ferie(d, feries):
+    """feries : « MM-JJ » (chaque année) ou « AAAA-MM-JJ » (une seule fois, ex. lundi de Pâques)."""
+    return d.isoformat() in feries or d.isoformat()[5:] in feries
+
+
+def hs_classer(lignes, seuil_semaine=8, feries=(), jours_repos=(6,)):
+    """Règle de Luc (25/11/2026), comme le tableau Excel de Lola :
+    heures regroupées par semaine du calendrier (lundi -> dimanche), total par jour puis par semaine ;
+    - dimanches et jours fériés -> h3
+    - autres jours : les `seuil_semaine` premières heures de la semaine -> h1, le reste -> h2.
+    Renvoie (totaux {h1, h2, h3}, semaines [{du, au, jours: [(date, heures)], total, h1, h2, h3}])."""
+    par_jour = {}
+    for l in lignes:
+        par_jour[l["date"]] = par_jour.get(l["date"], Fraction(0)) + Fraction(l["heures"])
+    semaines = {}
+    for d in sorted(par_jour):
+        lundi = d - dt.timedelta(days=d.weekday())
+        s = semaines.setdefault(lundi, {"du": lundi, "au": lundi + dt.timedelta(days=6), "jours": [],
+                                        "total": Fraction(0), "h1": Fraction(0), "h2": Fraction(0), "h3": Fraction(0)})
+        h = par_jour[d]
+        s["jours"].append((d, h))
+        s["total"] += h
+        if d.weekday() in jours_repos or hs_est_ferie(d, feries):
+            s["h3"] += h
+        else:
+            a = min(h, max(Fraction(0), Fraction(seuil_semaine) - s["h1"]))
+            s["h1"] += a
+            s["h2"] += h - a
+    tot = {k: sum((s[k] for s in semaines.values()), Fraction(0)) for k in HS_CATEGORIES}
+    return tot, [semaines[k] for k in sorted(semaines)]
 
 
 def numero_proforma_h(n, date_devis, code="ANO", suite="MAD"):

@@ -84,15 +84,22 @@ class TestsMetier(unittest.TestCase):
         self.assertEqual([x["taux_horaire"] for x in r["lignes"]], [9510, 11590, 13002])
         self.assertEqual([x["total"] for x in r["lignes"]], [256764, 324522, 195025])
         self.assertEqual(r["total"], 776311)
-        self.assertEqual(M.hs_part_nuit("20:00", "23:00"), Fraction(2, 3))
-        self.assertEqual(M.hs_part_nuit("23:00", "01:00"), 1)
-        self.assertEqual(M.hs_part_nuit("08:00", "16:00"), 0)
         d = dt.date
-        lignes = [{"date": d(2026, 10, 12), "debut": "15:00", "fin": "21:00", "heures": 6},   # lundi
-                  {"date": d(2026, 10, 13), "debut": "15:00", "fin": "19:00", "heures": 4},   # mardi
-                  {"date": d(2026, 10, 18), "debut": "08:00", "fin": "12:00", "heures": 4},   # dimanche
-                  {"date": d(2026, 10, 19), "debut": "22:00", "fin": "02:00", "heures": 4}]   # nuit
-        self.assertEqual(M.hs_classer(lignes), {"h1": 8, "h2": 6, "h3": 4})
+        # fiche d'exemple (70 h) : semaines du calendrier, 8 premières h à 28 %, reste à 56 %, dimanche à 75 % -> 27 / 28 / 15
+        fiche = [(d(2026, 9, 26), 8), (d(2026, 9, 26), 4), (d(2026, 9, 26), 4), (d(2026, 9, 26), 3), (d(2026, 10, 2), 6),
+                 (d(2026, 10, 2), 4), (d(2026, 10, 13), 4), (d(2026, 10, 13), 3), (d(2026, 10, 13), 4), (d(2026, 10, 13), 4),
+                 (d(2026, 10, 14), 4), (d(2026, 10, 15), 4), (d(2026, 10, 18), 8), (d(2026, 10, 18), 4), (d(2026, 10, 18), 3),
+                 (d(2026, 10, 19), 3)]
+        tot, sem = M.hs_classer([{"date": x, "heures": h} for x, h in fiche])
+        self.assertEqual(tot, {"h1": 27, "h2": 28, "h3": 15})
+        self.assertEqual([(w["du"], w["total"], w["h1"], w["h2"], w["h3"]) for w in sem],
+                         [(d(2026, 9, 21), 19, 8, 11, 0), (d(2026, 9, 28), 10, 8, 2, 0),
+                          (d(2026, 10, 12), 38, 8, 15, 15), (d(2026, 10, 19), 3, 3, 0, 0)])
+        self.assertEqual(M.hs_lignes_montants(1287760, [tot["h1"], tot["h2"], tot["h3"]], [2800, 5600, 7500])["total"], 776311)
+        # jour férié (17 août, chaque année) et férié ponctuel (lundi de Pâques 2026)
+        tot, _ = M.hs_classer([{"date": d(2026, 8, 17), "heures": 5}, {"date": d(2026, 4, 6), "heures": 2},
+                               {"date": d(2026, 8, 18), "heures": 10}], feries={"08-17", "2026-04-06"})
+        self.assertEqual(tot, {"h1": 8, "h2": 2, "h3": 7})
         self.assertEqual(M.numero_proforma_h(124, d(2026, 10, 21)), "124-10-ANO-MAD/2026")
         self.assertEqual(M.numero_facture_h(110, d(2026, 11, 7)), "FA H 110/11/2026")
 

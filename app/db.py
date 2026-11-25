@@ -213,8 +213,9 @@ PARAMETRES_INITIAUX = {
     "code_facture_h": "H",
     "hs_diviseur_centiemes": 17333,    # 173,33 heures par mois
     "hs_taux1_pdm": 2800, "hs_taux2_pdm": 5600, "hs_taux3_pdm": 7500,
-    "hs_seuil_semaine": 8,             # proposition : 8 premières h de la semaine (jours ouvrables) à 28 %
-    "hs_nuit_debut": 21, "hs_nuit_fin": 5,   # proposition : heures de nuit à 75 %
+    "hs_seuil_semaine": 8,             # 8 premières h de chaque semaine (hors dimanche et férié) à la 1re majoration
+    # dimanches et jours fériés à la 3e majoration ; MM-JJ = chaque année, AAAA-MM-JJ = une fois (fêtes mobiles)
+    "hs_jours_feries": ["01-01", "04-17", "05-01", "08-15", "08-16", "08-17", "11-01", "12-25"],
     "tva_visite": False,               # visite médicale sans TVA (règle ANO)
     "bc_chiffres": 6,                  # longueur habituelle d'un n° de BC (0 = pas de contrôle)
     "lieux": ["Moanda", "Libreville", "Port-Gentil"],

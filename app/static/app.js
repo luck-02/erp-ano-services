@@ -1099,14 +1099,15 @@ async function pageHS(page, id) {
       <div class="ligne-form lf3">
         <div class="champ"><label for="hs-matricule">Matricule (chez le client)</label><input id="hs-matricule" maxlength="40" value="${h.matricule_client}" placeholder="ex. MAD" ${dis}></div>
         <div class="champ"><label for="hs-categorie">Catégorie</label><input id="hs-categorie" maxlength="40" value="${h.categorie}" ${dis}></div><div></div></div>
-      <p class="aide">Une ligne par plage d'heures du relevé. Avec le début et la fin, les heures réalisées se calculent seules (et les heures de nuit sont reconnues pour le classement).</p>
+      <p class="aide">Une ligne par plage d'heures du relevé. Avec le début et la fin, les heures réalisées se calculent seules.</p>
       <table><thead><tr><th>Date</th><th>Début</th><th>Fin</th><th>Justification</th><th class="num">Heures réalisées</th><th></th></tr></thead>
         <tbody id="hs-lignes">${(h.lignes.length ? h.lignes : [{}]).map((l) => ligneHS(l, dis))}</tbody>
         <tfoot><tr class="total"><td colspan="4">Total</td><td class="num" id="hs-total">${hFr(h.total_heures)} h</td><td></td></tr></tfoot></table>
       ${fige ? "" : html`<button type="button" class="lien" id="hs-plus">+ Ajouter une ligne</button>`}</div>
 
     <div class="carte"><h2>3. Classement des heures</h2>
-      <p class="aide">Proposition : les ${p.hs_seuil_semaine} premières heures de chaque semaine (jours ouvrables) à ${tauxFr(h.taux_pdm[0])}, le reste et le dimanche à ${tauxFr(h.taux_pdm[1])}, la nuit (${p.hs_nuit_debut}h – ${p.hs_nuit_fin}h) à ${tauxFr(h.taux_pdm[2])}. Corrigez à la main si besoin, comme dans le tableau Excel.</p>
+      <p class="aide">Heures regroupées semaine par semaine (lundi → dimanche) : les ${p.hs_seuil_semaine} premières heures de chaque semaine à ${tauxFr(h.taux_pdm[0])}, le reste de la semaine à ${tauxFr(h.taux_pdm[1])}, les dimanches et jours fériés à ${tauxFr(h.taux_pdm[2])}. Corrigez à la main si besoin.</p>
+      ${h.semaines.length ? tableSemainesHS(h) : ""}
       <label class="case"><input type="checkbox" id="hs-manuel" ${h.classement_manuel ? "checked" : ""} ${dis}> Classement à la main</label>
       <table><thead><tr><th>Désignation</th><th class="num">Proposé</th><th class="num">Retenu (heures)</th><th class="num">Taux horaire</th><th class="num">Total</th></tr></thead><tbody>
         ${cats.map(([k, t], i) => html`<tr><td>Heures supp à ${(t / 100).toLocaleString("fr-FR")}% (${tauxFr(t)} heures normales)</td><td class="num doux">${hFr(h.proposition[k])}</td>
@@ -1231,6 +1232,18 @@ async function pageHS(page, id) {
 }
 
 // Documents imprimables des heures supplémentaires, calqués sur ceux de Lola
+// Tableau semaine par semaine : total par jour, total de la semaine, puis répartition entre les 3 majorations
+function tableSemainesHS(h, doc) {
+  const JF = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
+  const jour = (iso) => JF[(new Date(iso + "T12:00:00").getDay() + 6) % 7] + " " + dateFr(iso).slice(0, 5);
+  const t = h.taux_pdm;
+  return html`<table class="${doc ? "hs-table hs-sem" : "hs-sem"}"><thead><tr><th>Semaine</th><th>Heures par jour</th><th class="num">Total semaine</th>
+      <th class="num">${t[0] / 100}%</th><th class="num">${t[1] / 100}%</th><th class="num">${t[2] / 100}% (dim./férié)</th></tr></thead><tbody>
+    ${h.semaines.map((w) => html`<tr><td>du ${dateFr(w.du).slice(0, 5)} au ${dateFr(w.au).slice(0, 5)}</td>
+      <td class="petit">${w.jours.map((j, i) => html`${i ? " · " : ""}${j.repos ? html`<b>${jour(j.date)} : ${hFr(j.heures)} h</b>` : html`${jour(j.date)} : ${hFr(j.heures)} h`}`)}</td>
+      <td class="num">${hFr(w.total)}</td><td class="num">${hFr(w.h1)}</td><td class="num">${hFr(w.h2)}</td><td class="num">${hFr(w.h3)}</td></tr>`)}
+    <tr class="${doc ? "hs-tot" : "total"}"><td colspan="2">Total</td><td class="num">${hFr(h.total_heures)}</td><td class="num">${hFr(h.proposition.h1)}</td><td class="num">${hFr(h.proposition.h2)}</td><td class="num">${hFr(h.proposition.h3)}</td></tr></tbody></table>`;
+}
 function blocClient(c, classe) {
   return html`<div class="${classe}">Nom du client : ${c.nom}<br>${c.adresse}<br>${c.ville}${c.telephone ? html`<br>Téléphone : ${c.telephone}` : ""}</div>`;
 }
@@ -1250,6 +1263,7 @@ function docFicheHS(p, h) {
     <table class="hs-table"><thead><tr><th>Heures prévues</th><th>Date</th><th>Justifications</th><th>Heures supplémentaires réalisées</th></tr></thead><tbody>
       ${h.lignes.map((l) => html`<tr><td>${plageFr(l)}</td><td>${dateFr(l.date)}</td><td>${l.justification}</td><td>${hFr(l.heures)} H</td></tr>`)}
       <tr class="hs-tot"><td colspan="3">Total</td><td>${hFr(h.total_heures)} H</td></tr></tbody></table>
+    ${tableSemainesHS(h, true)}
     <div class="hs-signs"><div><b>Signature de l'agent :</b><div class="petit">Avant :<br>Après :<br>Payées :<br>Récupérées :</div></div>
       <div class="hs-resp"><b>Signature Responsable ${p.raison_sociale} :</b>${imgSignature()}</div></div>
   </div><div class="pf-pied">RCCM ${p.rccm} – NIF ${p.nif} – N° CNSS ${p.cnss}<br>Compte bancaire ${p.banque} ${p.compte}</div></div>`;
@@ -1494,8 +1508,8 @@ async function pageParametres(page) {
       <div class="ligne-form lf3">${champ("code_proforma_h", "Code du n° de Proforma H", "124-10-ANO-MAD/2026 : le code est « MAD ».")}${champ("code_facture_h", "Code des factures H", "FA H 110/11/2026 : le code est « H » (11 = mois d'émission).")}
         <div class="champ"><label for="p-hs-div">Heures par mois</label><input id="p-hs-div" class="montant" value="${(p.hs_diviseur_centiemes / 100).toLocaleString("fr-FR")}" ${dis}></div></div>
       <div class="ligne-form lf3">${[1, 2, 3].map((i) => html`<div class="champ"><label for="p-hs-t${i}">Majoration ${i} (%)</label><input id="p-hs-t${i}" class="montant" value="${(p["hs_taux" + i + "_pdm"] / 100).toLocaleString("fr-FR")}" ${dis}></div>`)}</div>
-      <div class="ligne-form lf3">${champ("hs_seuil_semaine", "Heures par semaine à la 1re majoration", "Proposition de classement : les premières heures de la semaine (jours ouvrables) à la majoration 1, le reste et le dimanche à la majoration 2.")}
-        ${champ("hs_nuit_debut", "Nuit : début (heure)", "Les heures de nuit vont à la majoration 3.")}${champ("hs_nuit_fin", "Nuit : fin (heure)")}</div>
+      <div class="ligne-form lf2">${champ("hs_seuil_semaine", "Heures par semaine à la majoration 1", "Chaque semaine (lundi → dimanche), ces premières heures vont à la majoration 1 ; le reste de la semaine à la majoration 2 ; les dimanches et jours fériés à la majoration 3.")}
+        <div class="champ"><label for="p-feries">Jours fériés (un par ligne) ${aideIcone("MM-JJ : chaque année (ex. 08-17). AAAA-MM-JJ : une seule fois, pour les fêtes mobiles (lundi de Pâques, Ascension, Pentecôte, Tabaski…).")}</label><textarea id="p-feries" rows="4" ${dis}>${(p.hs_jours_feries || []).join("\n")}</textarea></div></div>
       <p class="aide">Le classement proposé reste modifiable à la main sur chaque relevé.</p></div>
     <div class="carte"><h2>Logo et cachet sur les documents</h2>
       <div class="grille g2">
@@ -1557,6 +1571,7 @@ async function pageParametres(page) {
     const div = pdmSaisi($("#p-hs-div").value);
     if (!div) return toast("Heures par mois : nombre attendu (ex. 173,33).", true);
     par.hs_diviseur_centiemes = div;
+    par.hs_jours_feries = $("#p-feries").value.split("\n").map((x) => x.trim()).filter(Boolean);
     par.lieux = $("#p-lieux").value.split("\n");
     par.services = $("#p-services").value.split("\n");
     const charges = [];
