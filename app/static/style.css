@@ -74,6 +74,8 @@ h3 { font-size: .95rem; margin: 1rem 0 .5rem; color: var(--doux); text-transform
 /* --- bandeaux --- */
 .bandeau { border-radius: var(--rayon); padding: .8rem 1rem; margin-bottom: 1rem; display: flex; gap: 1rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .bandeau.info { background: var(--marine-clair); border: 1px solid #c4d7ea; }
+.bandeau.info { width: auto; height: auto; border-radius: var(--rayon); font: inherit; color: inherit; margin-left: 0; vertical-align: baseline; cursor: auto; }  /* pas l'icône d'aide « .info » */
+.bandeau.info:not(.cache) { display: flex; }
 .bandeau.alerte { background: var(--orange-clair); border: 1px solid #f3d1a8; }
 .bandeau.danger { background: var(--rouge-clair); border: 1px solid #f5c2bd; }
 .bandeau.ok { background: var(--vert-clair); border: 1px solid #b9e2c8; }
@@ -311,6 +313,8 @@ label.case input { width: auto; }
 .hs-grille input[data-gj] { font-size: .72rem; }
 .hs-d { font-size: .72rem; color: var(--doux, #667); }
 .hs-f { color: #b45309; font-weight: 600; }
+.hs-grille td.hs-afc { background: repeating-linear-gradient(45deg, #fff7ec 0 6px, #fff 6px 12px); outline: 1px dashed #d97706; outline-offset: -1px; }
+.hs-sig-lignes div { min-height: 7mm; }
 .hs-grille .hs-js, .hs-court { display: none; }
 /* téléphone : chaque semaine devient un bloc, 4 jours par ligne, jours hors période masqués */
 @media screen and (max-width: 760px) {

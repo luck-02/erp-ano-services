@@ -238,6 +238,9 @@ def ajouter_heures_sup(c, did):
     c.ok("POST", "/api/heures-sup/%d/devis" % h1, {"date": "2026-10-20"})
     c.ok("POST", "/api/heures-sup/%d/facture" % h1, {"date_facture": "2026-11-05", "bc_numero": "900011"})
     c.ok("POST", "/api/heures-sup/%d/suivi" % h1, {"envoyee_le": "2026-11-06"})
+    for etape, jour in (("avant", "2026-10-02"), ("apres", "2026-10-15")):
+        c.ok("POST", "/api/heures-sup/%d/etape" % h1, {"etape": etape, "date": jour})
+    c.ok("POST", "/api/heures-sup/%d/suivi" % h1, {"fiche_envoyee_le": "2026-10-16"})
     h2 = c.ok("POST", "/api/dossiers/%d/heures-sup" % did, {"agent_id": ag})["id"]
     c.ok("PUT", "/api/heures-sup/%d" % h2, dict(fiche, lignes=[
         # saisie en grille (heures par jour), à cheval sur deux mois, avec un dimanche férié (Toussaint)

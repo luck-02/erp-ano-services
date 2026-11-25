@@ -1038,6 +1038,7 @@ const hFr = (h) => (h === null || h === undefined ? "" : Number(h).toLocaleStrin
 const plageFr = (l) => (l.debut && l.fin ? l.debut.replace(":00", "h").replace(":", "h") + " à " + l.fin.replace(":00", "h").replace(":", "h") : "");
 const tauxFr = (pdm) => "+" + (pdm / 100).toLocaleString("fr-FR") + "%";
 const ETAPES_HS = ["Relevé", "Fiche", "Classement", "Devis H", "Facture H"];
+const ETAPES_SIG = [["avant", "Avant"], ["apres", "Après"], ["payees", "Payées"], ["recuperees", "Récupérées"]];
 
 function carteHeuresSup(r, id) {
   const hs = r.heures_sup || [];
@@ -1083,6 +1084,9 @@ async function pageHS(page, id) {
     <div class="etapes">${ETAPES_HS.map((s, i) => html`<div class="etape ${i < iEtape ? "fait" : i === iEtape ? "courant" : ""}">${i + 1}. ${s}</div>`)}</div>
     ${fige ? html`<div class="bandeau info">Facture ${h.facture_numero} émise : la fiche et le classement ne se modifient plus.</div>` : ""}
 
+    ${h.feries_a_confirmer.length ? html`<div class="bandeau alerte" id="hs-afc"><div><b>Jour(s) férié(s) à confirmer avant le devis.</b> Ces dates sont annoncées au dernier moment : confirmez-les pour les compter au taux des dimanches (${tauxFr(h.taux_pdm[2])}).
+      ${h.feries_a_confirmer.map((f) => html`<div class="actions" data-style="margin-top:.4rem"><span>${dateFr(f.date)} · ${f.libelle}</span>
+        <button type="button" class="petit" data-ferie="${f.date}" data-oui="1">C'est férié</button><button type="button" class="petit secondaire" data-ferie="${f.date}" data-oui="">Pas férié</button></div>`)}</div></div>` : ""}
     <div class="carte"><h2>1. Relevé envoyé par le client</h2>
       ${h.releves.length ? html`<table><tbody>${h.releves.map((d) => html`<tr><td>${d.nom}</td><td class="petit doux">${dateFr(d.ajoute_le.slice(0, 10))} · ${tailleFr(d.taille)}</td><td><button class="secondaire" data-doc-tel="${d.id}">Télécharger</button></td></tr>`)}</tbody></table>` : html`<p class="doux">Joignez le scan du relevé (PDF ou photo) : il est gardé avec le dossier.</p>`}
       <form id="hs-f-rel" data-style="margin-top:.5rem"><div class="ligne-form lf2">
@@ -1091,7 +1095,8 @@ async function pageHS(page, id) {
 
     <form id="hs-f">
     <div class="carte"><div class="entete" data-style="margin-bottom:.5rem"><h2 data-style="margin:0">2. Fiche d'attachement</h2>
-      ${h.lignes.length ? html`<div class="actions"><a class="bouton secondaire" href="#/imprimer/fiche-hs/${id}">Fiche d'attachement en PDF</a></div>` : ""}</div>
+      ${h.lignes.length ? html`<div class="actions"><a class="bouton secondaire" href="#/imprimer/fiche-hs/${id}">Fiche en PDF</a>
+        <button type="button" class="secondaire" id="hs-word">Fiche en Word</button></div>` : ""}</div>
       <div class="ligne-form lf3">
         <div class="champ"><label for="hs-direction">Direction</label><input id="hs-direction" maxlength="80" value="${h.direction}" placeholder="ex. DRHST" ${dis}></div>
         <div class="champ"><label for="hs-service">Service</label><input id="hs-service" maxlength="80" value="${h.service}" ${dis}></div>
@@ -1127,6 +1132,19 @@ async function pageHS(page, id) {
       ${Math.abs(h.ecart_heures) > 0.001 ? html`<div class="bandeau alerte">Le classement retenu compte ${hFr(h.ecart_heures)} h de ${h.ecart_heures > 0 ? "plus" : "moins"} que la fiche.</div>` : ""}
       ${fige ? "" : html`<div class="actions" data-style="margin-top:.75rem"><button type="submit" class="vert">Enregistrer la fiche et le classement</button></div>`}</div>
     </form>
+
+    ${h.lignes.length ? html`<div class="carte"><h2>Fiche remise au client et signatures de l'agent</h2>
+      <p class="aide">La fiche d'attachement est refaite à nos couleurs, signée par l'agent à chaque étape, puis remise au client. Archivez-la pour en garder une copie dans les documents du dossier.</p>
+      <div class="actions"><button type="button" class="secondaire" id="hs-archiver">Archiver la fiche dans le dossier</button>
+        ${h.fiche_envoyee_le ? html`<span>Remise au client le <b>${dateFr(h.fiche_envoyee_le)}</b> <button type="button" class="lien petit" id="hs-fiche-nonenv">annuler</button></span>`
+          : html`<button type="button" class="secondaire" id="hs-fiche-env">Marquer remise au client aujourd'hui</button>`}</div>
+      <table class="hs-etapes" data-style="margin-top:.75rem"><thead><tr><th>Signature de l'agent</th><th>Signée le</th><th>Scan signé</th><th></th></tr></thead><tbody>
+        ${ETAPES_SIG.map(([k, lib]) => { const e = h.etapes[k] || {}; const doc = e.doc_id && h.releves.find((x) => x.id === e.doc_id); return html`<tr>
+          <td class="gras">${lib}</td><td>${e.date ? dateFr(e.date) : html`<span class="doux">pas encore</span>`}</td>
+          <td>${doc ? html`<button type="button" class="lien petit" data-doc-tel="${doc.id}">${doc.nom}</button>` : html`<span class="doux">—</span>`}</td>
+          <td><div class="actions"><button type="button" class="secondaire petit" data-etape="${k}">${e.date ? "Changer" : "Signée"}</button>
+            ${e.date ? html`<button type="button" class="lien petit" data-etape-x="${k}">effacer</button>` : ""}</div></td></tr>`; })}
+      </tbody></table></div>` : ""}
 
     <div class="grille g2">
       <div class="carte"><h2>4. Devis H (Proforma H)</h2>
@@ -1197,7 +1215,9 @@ async function pageHS(page, id) {
   };
   // --- grille calendrier : une case par jour, semaines du lundi au dimanche, de date à date ---
   const feries = new Map((p.hs_jours_feries || []).map((x) => { const [k, ...r] = String(x).trim().split(" "); return [k, r.join(" ") || "Jour férié"]; }));
-  const ferie = (iso) => feries.get(iso) || feries.get(iso.slice(5));
+  const libFerie = (iso) => feries.get(iso) || feries.get(iso.slice(5)) || "";
+  const ferie = (iso) => { const l = libFerie(iso); return l && !l.includes("(à confirmer)") ? l : ""; };   // confirmés seulement
+  const aConfirmer = (iso) => { const l = libFerie(iso); return l.includes("(à confirmer)") ? l : ""; };
   const addJ = (iso, n) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
   const jsem = (iso) => (new Date(iso + "T00:00:00Z").getUTCDay() + 6) % 7;
   const etatGrille = new Map();
@@ -1256,10 +1276,10 @@ async function pageHS(page, id) {
           const d = addJ(lun, i);
           if (d < du || d > au) return html`<td class="hs-hors"></td>`;
           const e = etatGrille.get(d) || { h: 0, j: "" };
-          const fe = ferie(d);
+          const fe = ferie(d), afc = aConfirmer(d);
           const plages = (e.detail || []).filter((x) => x.debut).length;
-          return html`<td data-g="${d}" class="${i === 6 || fe ? "hs-repos" : ""}" title="${fe || (i === 6 ? "Dimanche" : "")}">
-            <div class="hs-d"><span class="hs-js">${["lun", "mar", "mer", "jeu", "ven", "sam", "dim"][i]} </span>${d.slice(8) === "01" ? html`<b>${dateFr(d).slice(0, 5)}</b>` : dateFr(d).slice(0, 5)}${fe ? html` <span class="hs-f">férié</span>` : ""}</div>
+          return html`<td data-g="${d}" class="${i === 6 || fe ? "hs-repos" : afc ? "hs-afc" : ""}" title="${fe || afc || (i === 6 ? "Dimanche" : "")}">
+            <div class="hs-d"><span class="hs-js">${["lun", "mar", "mer", "jeu", "ven", "sam", "dim"][i]} </span>${d.slice(8) === "01" ? html`<b>${dateFr(d).slice(0, 5)}</b>` : dateFr(d).slice(0, 5)}${fe ? html` <span class="hs-f">férié</span>` : afc ? html` <span class="hs-f">férié ?</span>` : ""}</div>
             <input data-gh aria-label="Heures le ${dateFr(d)}" inputmode="decimal" class="montant" value="${e.h ? hFr(e.h) : ""}" ${dis}>
             <input data-gj aria-label="Motif le ${dateFr(d)}" placeholder="motif" maxlength="120" value="${e.j || ""}" ${dis}>
             ${plages ? html`<div class="hs-d doux">${plages} plage(s)</div>` : ""}</td>`;
@@ -1314,6 +1334,43 @@ async function pageHS(page, id) {
       } catch (x) { toast(x.message, true); }
       $("#hs-zone-grille").classList.toggle("cache", mode() !== "grille");
       $("#hs-zone-plages").classList.toggle("cache", mode() !== "plages");
+    };
+  });
+  $$("[data-ferie]", page).forEach((bt) => {
+    bt.onclick = async () => {
+      try {
+        await action(() => api("POST", "/api/feries/confirmer", { jour: bt.dataset.ferie, ferie: !!bt.dataset.oui }), bt.dataset.oui ? "Jour férié confirmé." : "Jour retiré des fériés.");
+        etat.params = await api("GET", "/api/parametres");
+        pageHS(page, id);
+      } catch (x) { /* affiché */ }
+    };
+  });
+  if ($("#hs-word")) $("#hs-word").onclick = async () => { try { const n = await telecharger("/api/heures-sup/" + id + "/fiche.docx"); if (n) toast("Fiche enregistrée : " + n); } catch (x) { toast(x.message, true); } };
+  if ($("#hs-archiver")) $("#hs-archiver").onclick = async () => {
+    try { const r = await action(() => api("POST", "/api/heures-sup/" + id + "/fiche-archiver", {})); toast("Fiche archivée dans les documents du dossier" + (r && r.pdf ? " (Word, le PDF suit)." : " (Word).")); pageHS(page, id); } catch (x) { /* affiché */ }
+  };
+  const ficheEnv = (v) => async () => { try { await action(() => api("POST", "/api/heures-sup/" + id + "/suivi", { fiche_envoyee_le: v }), v ? "Fiche marquée remise au client." : "Remise annulée."); pageHS(page, id); } catch (x) { /* affiché */ } };
+  if ($("#hs-fiche-env")) $("#hs-fiche-env").onclick = ficheEnv(auj());
+  if ($("#hs-fiche-nonenv")) $("#hs-fiche-nonenv").onclick = ficheEnv(null);
+  $$("[data-etape-x]", page).forEach((bt) => { bt.onclick = async () => { try { await action(() => api("POST", "/api/heures-sup/" + id + "/etape", { etape: bt.dataset.etapeX, date: null }), "Signature effacée."); pageHS(page, id); } catch (x) { /* affiché */ } }; });
+  $$("[data-etape]", page).forEach((bt) => {
+    bt.onclick = () => {
+      const k = bt.dataset.etape, lib = ETAPES_SIG.find((x) => x[0] === k)[1];
+      ouvrirModale(html`<h2>Signature de l'agent : ${lib}</h2><form id="hs-f-sig">
+        <div class="champ"><label for="sg-d">Signée le</label><input id="sg-d" type="date" value="${(h.etapes[k] || {}).date || auj()}" required></div>
+        <div class="champ"><label for="sg-f">Scan de la fiche signée (facultatif : PDF, PNG ou JPEG)</label><input id="sg-f" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"></div>
+        <div class="actions"><button type="submit" class="vert">Enregistrer</button><button type="button" class="secondaire" data-fermer>Annuler</button></div></form>`);
+      $("#hs-f-sig").onsubmit = (e) => {
+        e.preventDefault();
+        const corps = { etape: k, date: $("#sg-d").value };
+        const envoyer = async () => { fermerModale(); try { await action(() => api("POST", "/api/heures-sup/" + id + "/etape", corps), "Signature « " + lib + " » enregistrée."); pageHS(page, id); } catch (x) { /* affiché */ } };
+        const f = $("#sg-f").files[0];
+        if (!f) { envoyer(); return; }
+        if (f.size > 8 * 1024 * 1024) { toast("Fichier trop lourd (8 Mo au plus).", true); return; }
+        const lecteur = new FileReader();
+        lecteur.onload = () => { corps.nom = f.name; corps.contenu = lecteur.result; envoyer(); };
+        lecteur.readAsDataURL(f);
+      };
     };
   });
   if ($("#hs-manuel")) $("#hs-manuel").onchange = (e) => { $$("[data-h]").forEach((i) => { i.disabled = !e.target.checked; }); };
@@ -1389,7 +1446,7 @@ function docFicheHS(p, h) {
       ${h.lignes.map((l) => html`<tr><td>${plageFr(l)}</td><td>${dateFr(l.date)}</td><td>${l.justification}</td><td>${hFr(l.heures)} H</td></tr>`)}
       <tr class="hs-tot"><td colspan="3">Total</td><td>${hFr(h.total_heures)} H</td></tr></tbody></table>
     ${tableSemainesHS(h, true)}
-    <div class="hs-signs"><div><b>Signature de l'agent :</b><div class="petit">Avant :<br>Après :<br>Payées :<br>Récupérées :</div></div>
+    <div class="hs-signs"><div><b>Signature de l'agent :</b><div class="petit hs-sig-lignes">${ETAPES_SIG.map(([k, lib]) => html`<div>${lib} :${(h.etapes || {})[k] ? "  signé le " + dateFr(h.etapes[k].date) : ""}</div>`)}</div></div>
       <div class="hs-resp"><b>Signature Responsable ${p.raison_sociale} :</b>${imgSignature()}</div></div>
   </div><div class="pf-pied">RCCM ${p.rccm} – NIF ${p.nif} – N° CNSS ${p.cnss}<br>Compte bancaire ${p.banque} ${p.compte}</div></div>`;
 }

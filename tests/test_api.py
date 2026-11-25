@@ -953,7 +953,44 @@ class TestsAPI(unittest.TestCase):
         hf = a.req("GET", "/api/heures-sup/%d" % hid)[1]["heures_sup"]
         self.assertEqual(hf["heures"], {"h1": 10, "h2": 0, "h3": 8})
         self.assertTrue([x for x in hf["semaines"][0]["jours"] if x["date"] == "2026-10-13"][0]["repos"])
+        # férié « à confirmer » (Aïd, Tabaski) : pas appliqué, le devis attend la confirmation
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": ["2026-10-13 Aïd fictif (à confirmer)"]}})
+        self.assertEqual(st, 200, j)
+        hf = a.req("GET", "/api/heures-sup/%d" % hid)[1]["heures_sup"]
+        self.assertEqual(hf["feries_a_confirmer"], [{"date": "2026-10-13", "libelle": "Aïd fictif"}])
+        self.assertEqual(hf["proposition"], {"h1": 12, "h2": 2, "h3": 4})          # pas encore appliqué
+        st, j = a.req("POST", "/api/heures-sup/%d/devis" % hid, {"date": "2026-10-21"})
+        self.assertEqual((st, j.get("code")), (409, "FERIE_A_CONFIRMER"))
+        st, j = a.req("POST", "/api/feries/confirmer", {"jour": "2026-10-13", "ferie": True})
+        self.assertEqual(j["hs_jours_feries"], ["2026-10-13 Aïd fictif"])
+        hf = a.req("GET", "/api/heures-sup/%d" % hid)[1]["heures_sup"]
+        self.assertEqual((hf["feries_a_confirmer"], hf["proposition"]["h3"]), ([], 8))
+        a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": ["2026-10-13 Aïd fictif (à confirmer)"]}})
+        st, j = a.req("POST", "/api/feries/confirmer", {"jour": "2026-10-13", "ferie": False})
+        self.assertEqual(j["hs_jours_feries"], [])                                 # pas férié : retiré
         a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": p0}})
+        self.assertIn("08-30 Journée nationale de la Libération", p0)
+        self.assertIn("2027-05-16 Aïd el-Kébir / Tabaski (à confirmer)", p0)
+        # signatures de l'agent à chaque étape, scan signé joint ; fiche en Word, archivée, envoyée
+        pdf2 = b"%PDF-1.4\n% fiche signee fictive\n%%EOF\n"
+        st, j = a.req("POST", "/api/heures-sup/%d/etape" % hid, {"etape": "avant", "date": "2026-10-10", "nom": "avant.pdf",
+                                                                 "contenu": base64.b64encode(pdf2).decode()})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["heures_sup"]["etapes"]["avant"]["date"], "2026-10-10")
+        self.assertTrue(any(d["nom"].startswith("Fiche signée (avant)") for d in j["heures_sup"]["releves"]))
+        self.assertEqual(a.req("POST", "/api/heures-sup/%d/etape" % hid, {"etape": "pendant", "date": "2026-10-10"})[0], 400)
+        st, doc = a.req("GET", "/api/heures-sup/%d/fiche.docx" % hid)
+        self.assertEqual((st, doc[:2]), (200, b"PK"))
+        import io
+        import zipfile
+        xml = zipfile.ZipFile(io.BytesIO(doc)).read("word/document.xml").decode()
+        for mot in ("Fiche d'attachement", "Avant :  signé le 10/10/2026", "Après :", "Payées :", "Récupérées :", "Bilans des urgences"):
+            self.assertIn(mot, xml)
+        st, j = a.req("POST", "/api/heures-sup/%d/fiche-archiver" % hid, {})
+        self.assertEqual(st, 200, j)
+        st, j = a.req("POST", "/api/heures-sup/%d/suivi" % hid, {"fiche_envoyee_le": "2026-10-20"})
+        self.assertEqual((st, j["heures_sup"]["fiche_envoyee_le"]), (200, "2026-10-20"))
+        self.assertTrue(any(d["nom"].startswith("Fiche d'attachement") for d in j["heures_sup"]["releves"]))
         self.assertEqual(len(h["releves"]), 1)
         cout = h["cout_mensuel"]
         self.assertEqual(cout, d["proforma"]["agents"][0]["cout_mensuel"])

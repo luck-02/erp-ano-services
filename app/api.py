@@ -1871,7 +1871,10 @@ def _hs_params(p):
     return {"taux": [int(p.get("hs_taux1_pdm", 2800)), int(p.get("hs_taux2_pdm", 5600)), int(p.get("hs_taux3_pdm", 7500))],
             "diviseur": int(p.get("hs_diviseur_centiemes", 17333)),
             "seuil": int(p.get("hs_seuil_semaine", 8)),
-            "feries": {str(x).split()[0] for x in (p.get("hs_jours_feries") or []) if str(x).strip()}}
+            # un jour férié « (à confirmer) » n'est appliqué qu'une fois confirmé
+            "feries": {str(x).split()[0] for x in (p.get("hs_jours_feries") or []) if str(x).strip() and db.A_CONFIRMER not in str(x)},
+            "a_confirmer": {str(x).split()[0]: " ".join(str(x).split()[1:]).replace(db.A_CONFIRMER, "").strip()
+                            for x in (p.get("hs_jours_feries") or []) if db.A_CONFIRMER in str(x)}}
 
 
 def _hs_lignes(body):
@@ -1927,6 +1930,11 @@ def _hs_vue(con, r, avec_docs=True):
     calc = M.hs_lignes_montants(cout, [retenu[k] for k in M.HS_CATEGORIES], hp["taux"], hp["diviseur"])
     total_h = sum((Fraction(l["heures"]).limit_denominator(100) for l in lignes), Fraction(0))
     cl = con.execute("SELECT * FROM clients WHERE id = ?", (drow["client_id"],)).fetchone()
+    jours_saisis = sorted({l["date"] for l in lignes})
+    x.update(etapes=json.loads(x.pop("etapes_json") or "{}"),
+             feries_a_confirmer=[{"date": d, "libelle": hp["a_confirmer"].get(d) or hp["a_confirmer"].get(d[5:])}
+                                 for d in jours_saisis if (d in hp["a_confirmer"] or d[5:] in hp["a_confirmer"])
+                                 and d not in hp["feries"] and d[5:] not in hp["feries"]])
     x.update(lignes=lignes, proposition={k: float(v) for k, v in prop.items()},
              semaines=[{"du": w["du"].isoformat(), "au": w["au"].isoformat(), "total": float(w["total"]),
                         "jours": [{"date": d.isoformat(), "heures": float(h), "repos": d.weekday() == 6 or M.hs_est_ferie(d, hp["feries"])}
@@ -2038,6 +2046,10 @@ def devis_hs(ctx, g, body):
         r = _hs_row(con, hid)
         if not json.loads(r["lignes_json"]):
             raise ErreurAPI(400, "Saisissez d'abord les heures de la fiche d'attachement.")
+        afc = _hs_vue(con, r, False)["feries_a_confirmer"]
+        if afc:
+            raise ErreurAPI(409, "Confirmez d'abord le(s) jour(s) férié(s) : %s." % ", ".join(
+                "%s (%s)" % (x["date"], x["libelle"]) for x in afc), "FERIE_A_CONFIRMER")
         if r["facture_numero"]:
             raise ErreurAPI(409, "La facture est émise : le devis ne change plus.")
         p = parametres(con)
@@ -2096,8 +2108,11 @@ def suivi_hs(ctx, g, body):
     hid = int(g[0])
     with Transaction(con):
         r = _hs_row(con, hid)
-        if not r["facture_numero"]:
+        if ("envoyee_le" in body or "paye_le" in body) and not r["facture_numero"]:
             raise ErreurAPI(409, "Facture pas encore émise.")
+        if "fiche_envoyee_le" in body:
+            d = date_(body, "fiche_envoyee_le", requis=False)
+            con.execute("UPDATE heures_sup SET fiche_envoyee_le=? WHERE id=?", (d.isoformat() if d else None, hid))
         if "envoyee_le" in body:
             d = date_(body, "envoyee_le", requis=False)
             con.execute("UPDATE heures_sup SET envoyee_le=? WHERE id=?", (d.isoformat() if d else None, hid))
@@ -2107,7 +2122,8 @@ def suivi_hs(ctx, g, body):
             con.execute("UPDATE heures_sup SET paye_le=?, montant_paye=?, ref_paiement=? WHERE id=?",
                         (d.isoformat() if d else None, (m if m is not None else r["ttc"]) if d else None,
                          texte(body, "reference", 80) if d else "", hid))
-        journaliser(ctx, "hs_suivi", r["facture_numero"], json.dumps({k: body.get(k) for k in ("envoyee_le", "paye_le")}))
+        journaliser(ctx, "hs_suivi", r["facture_numero"] or "relevé %d" % hid,
+                    json.dumps({k: body.get(k) for k in ("fiche_envoyee_le", "envoyee_le", "paye_le") if k in body}))
     return detail_hs(ctx, g, body)
 
 
@@ -2136,3 +2152,87 @@ def supprimer_hs(ctx, g, body):
         con.execute("DELETE FROM heures_sup WHERE id = ?", (hid,))
         journaliser(ctx, "hs_supprime", "relevé %d" % hid)
     return {"ok": True}
+
+
+def etape_hs(ctx, g, body):
+    """L'agent signe la fiche à chaque étape (avant, après, payées, récupérées) : date et scan signé facultatif."""
+    con = ctx["con"]
+    hid = int(g[0])
+    etape = body.get("etape")
+    libs = dict(docx_facture.ETAPES_HS)
+    if etape not in libs:
+        raise ErreurAPI(400, "Étape inconnue (avant, après, payées ou récupérées).")
+    d = date_(body, "date", requis=False)
+    fichier = _fichier_recu(body) if body.get("contenu") else None
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        et = json.loads(r["etapes_json"] or "{}")
+        if d is None:
+            et.pop(etape, None)
+        else:
+            e = et.get(etape) or {}
+            e["date"] = d.isoformat()
+            if fichier:
+                nom, contenu, fmt = fichier
+                doc_id = DOC.enregistrer(con, ctx["chemin_db"], r["dossier_id"], None, "Autre",
+                                         "Fiche signée (%s) - %s" % (libs[etape].lower(), nom), contenu, fmt[0], fmt[1],
+                                         ctx["user"]["id"])
+                con.execute("UPDATE documents SET hs_id = ? WHERE id = ?", (hid, doc_id))
+                e["doc_id"] = doc_id
+            et[etape] = e
+        con.execute("UPDATE heures_sup SET etapes_json=?, maj_le=? WHERE id=?", (json.dumps(et), db.maintenant(), hid))
+        journaliser(ctx, "hs_signature", r["devis_numero"] or "relevé %d" % hid,
+                    "%s : %s%s" % (libs[etape], d or "effacée", " + scan" if fichier else ""))
+    return detail_hs(ctx, g, body)
+
+
+def fiche_hs_word(ctx, g, body):
+    con = ctx["con"]
+    h = _hs_vue(con, _hs_row(con, int(g[0])), False)
+    if not h["lignes"]:
+        raise ErreurAPI(409, "La fiche n'a encore aucune heure.")
+    return Fichier(docx_facture.fiche_hs_docx(parametres(con), h, prive=ctx["prive"], origine=ctx["origine"]),
+                   DOC.MIME_DOCX, docx_facture.nom_fiche_hs(h))
+
+
+def archiver_fiche_hs(ctx, g, body):
+    """Copie figée de la fiche remise au client (Word, puis PDF si LibreOffice est là), rangée avec le dossier."""
+    con = ctx["con"]
+    hid = int(g[0])
+    h = _hs_vue(con, _hs_row(con, hid), False)
+    if not h["lignes"]:
+        raise ErreurAPI(409, "La fiche n'a encore aucune heure.")
+    contenu = docx_facture.fiche_hs_docx(parametres(con), h, prive=ctx["prive"], origine=ctx["origine"])
+    nom = docx_facture.nom_fiche_hs(h)
+    with Transaction(con):
+        doc_id = DOC.enregistrer(con, ctx["chemin_db"], h["dossier_id"], None, "Autre", nom, contenu, DOC.MIME_DOCX,
+                                 ".docx", ctx["user"]["id"])
+        con.execute("UPDATE documents SET hs_id = ? WHERE id = ?", (hid, doc_id))
+        journaliser(ctx, "hs_fiche_archivee", h["devis_numero"] or "relevé %d" % hid, nom)
+    DOC.convertir_en_tache_de_fond(ctx["chemin_db"], [(h["dossier_id"], None, nom, contenu)], ctx["user"]["id"],
+                                   categorie="Autre", hs_id=hid)
+    return {"id": doc_id, "pdf": DOC.soffice() is not None}
+
+
+def confirmer_ferie(ctx, g, body):
+    """Jour férié « à confirmer » (Aïd, Tabaski…) : confirmé (appliqué au taux des dimanches) ou retiré."""
+    con = ctx["con"]
+    jour = date_(body, "jour").isoformat()
+    ferie = booleen(body, "ferie")
+    with Transaction(con):
+        liste = list(parametres(con).get("hs_jours_feries") or [])
+        neuve, trouve = [], False
+        for x in liste:
+            k = str(x).split()[0]
+            if k == jour and db.A_CONFIRMER in x:
+                trouve = True
+                if ferie:
+                    neuve.append(" ".join(x.replace(db.A_CONFIRMER, "").split()))
+                continue
+            neuve.append(x)
+        if ferie and not trouve and jour not in {str(x).split()[0] for x in neuve}:
+            neuve.append(jour + " " + (texte(body, "libelle", 40) or "Jour férié"))
+        con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('hs_jours_feries', ?)",
+                    (json.dumps(sorted(set(neuve), key=lambda y: (len(y.split()[0]) > 5, y))),))
+        journaliser(ctx, "ferie_confirme" if ferie else "ferie_retire", jour)
+    return {"hs_jours_feries": parametres(con)["hs_jours_feries"]}

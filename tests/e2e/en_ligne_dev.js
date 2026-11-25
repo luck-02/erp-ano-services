@@ -126,6 +126,36 @@ const PAGES = [['#/tableau', '.kpi'], ['#/dossiers', 'table'], ['#/dossier/2', '
     verifier(h2.total_heures === 20.5 && h2.lignes.length === 5 && h2.heures.h1 === 11 && h2.heures.h2 === 4.5 && h2.heures.h3 === 5, 'grille enregistrée : 1 ligne par jour, classement 8 h / reste / dimanche', h2.heures);
     await page.screenshot({ path: path.join(OUT, 'hs-grille.png'), fullPage: true });
 
+    // jour férié mobile « à confirmer » : pas compté tant qu'il n'est pas confirmé, devis bloqué
+    await page.evaluate(async () => {
+      const p = await api('GET', '/api/parametres');
+      await api('PUT', '/api/parametres', { parametres: { hs_jours_feries: [...p.parametres.hs_jours_feries, '2026-10-30 Fête d\'essai (à confirmer)'] } });
+    });
+    await page.goto(SITE + '/#/parametres'); await page.waitForSelector('#p-feries');
+    await page.goto(SITE + '/#/hs/2'); await page.waitForSelector('.hs-grille');
+    const afc = await page.evaluate(() => ({ cellule: !!document.querySelector('td[data-g="2026-10-30"].hs-afc'), bandeau: !!document.querySelector('#hs-afc [data-ferie="2026-10-30"]'),
+      h3: document.querySelector('#hs-g-h3').textContent }));
+    verifier(afc.cellule && afc.bandeau && afc.h3 === '5', 'férié à confirmer : signalé « férié ? », pas encore au taux dimanche', afc);
+    await page.click('#hs-afc [data-ferie="2026-10-30"][data-oui="1"]'); await page.waitForTimeout(800);
+    const conf = await page.evaluate(() => ({ bandeau: !!document.querySelector('#hs-afc'), repos: !!document.querySelector('td[data-g="2026-10-30"].hs-repos'),
+      h3: document.querySelector('#hs-g-h3').textContent }));
+    verifier(!conf.bandeau && conf.repos && conf.h3 === '7,5', 'férié confirmé en 1 clic : compté au taux dimanche', conf);
+    await page.evaluate(async () => { await api('POST', '/api/feries/confirmer', { jour: '2026-10-30', ferie: false }); });
+
+    // fiche d'attachement remise au client : signatures de l'agent par étape, Word
+    await page.goto(SITE + '/#/hs/1'); await page.waitForSelector('.hs-etapes');
+    await page.click('[data-etape="payees"]'); await page.waitForSelector('#sg-d');
+    await page.fill('#sg-d', '2026-11-20');
+    await page.setInputFiles('#sg-f', { name: 'fiche-signee.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%%EOF\n') });
+    await page.click('#hs-f-sig button[type=submit]'); await page.waitForTimeout(1000);
+    const h1v = await page.evaluate(async () => (await (await fetch('/api/heures-sup/1')).json()).heures_sup);
+    verifier(h1v.etapes.payees && h1v.etapes.payees.date === '2026-11-20' && h1v.etapes.payees.doc_id && /20\/11\/2026/.test(await page.textContent('.hs-etapes')),
+      'signature « Payées » datée, scan joint au dossier', h1v.etapes);
+    const [dlf] = await Promise.all([page.waitForEvent('download'), page.click('#hs-word')]);
+    const wf = path.join(OUT, dlf.suggestedFilename()); await dlf.saveAs(wf);
+    verifier(fs.readFileSync(wf).slice(0, 2).toString() === 'PK' && /Fiche/.test(dlf.suggestedFilename()), 'fiche d\'attachement en Word (' + dlf.suggestedFilename() + ')');
+    await page.screenshot({ path: path.join(OUT, 'hs-signatures.png'), fullPage: true });
+
     // heures supplémentaires : fiche d'attachement, Proforma H et facture FA H, chacune sur 1 page
     for (const [t, motif, lib] of [['fiche-hs', /Fiche d'attachement/, 'fiche d\'attachement'], ['devis-hs', /Proforma H[\s\S]*Montant Total/, 'Proforma H'],
       ['facture-hs', /Facture N° FA H [\s\S]*Heures supplémentaires de/, 'facture FA H']]) {

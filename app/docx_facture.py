@@ -264,14 +264,19 @@ def facture_docx(p, f, avec_signature=True, prive=None, origine=True):
     logo = chemin_logo(prive, origine)
     signature = os.path.join(prive or os.path.join(ICI, "prive"), "signature.png")
     avec_signature = avec_signature and os.path.exists(signature)
+    return paquet_docx(p, corps_document(p, f, avec_signature, logo, signature), logo, signature, avec_signature)
+
+
+def paquet_docx(p, corps, logo, signature, avec_signature, marges=(567, 851, 851, 851)):
+    """Assemble le .docx (zip) : corps XML, pied RCCM / NIF / banque, logo et cachet."""
     pied = (para(run("RCCM %s – NIF %s – N° CNSS %s" % (p["rccm"], p["nif"], p["cnss"]), taille=10), align="center") +
             para(run("Compte bancaire %s %s" % (p["banque"], p["compte"]), taille=10), align="center"))
     document = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document %s><w:body>%s'
         '<w:sectPr><w:footerReference w:type="default" r:id="rPied"/>'
-        '<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="567" w:right="851" w:bottom="851" w:left="851" '
+        '<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="%d" w:right="%d" w:bottom="%d" w:left="%d" '
         'w:header="0" w:footer="400" w:gutter="0"/></w:sectPr></w:body></w:document>'
-        % (NS, corps_document(p, f, avec_signature, logo, signature)))
+        % ((NS, corps) + tuple(marges)))
     footer = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr %s>%s</w:ftr>' % (NS, pied)
     styles = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
               '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -313,6 +318,112 @@ def facture_docx(p, f, avec_signature=True, prive=None, origine=True):
         if avec_signature:
             z.write(signature, "word/media/cachet.png")
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Fiche d'attachement des heures supplémentaires (remise au client, signée par l'agent)
+# ---------------------------------------------------------------------------
+GRIS_FONCE = "595959"
+JOURS = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
+
+
+def _plage(l):
+    def h(t):
+        return t.replace(":00", "h").replace(":", "h") if t else ""
+    return "%s à %s" % (h(l["debut"]), h(l["fin"])) if l.get("debut") and l.get("fin") else ""
+
+
+def _h(v):
+    return ("%g" % float(v)).replace(".", ",")
+
+
+def fiche_hs_docx(p, h, prive=None, origine=True):
+    """Fiche d'attachement en Word, calquée sur la fiche imprimée : en-tête, titre, identité de l'agent,
+    encadré client, créneaux, tableau semaine par semaine, signatures (agent : avant, après, payées,
+    récupérées ; responsable : cachet)."""
+    logo = chemin_logo(prive, origine)
+    signature = os.path.join(prive or os.path.join(ICI, "prive"), "signature.png")
+    avec_sig = os.path.exists(signature)
+    x = []
+    emet = (para(run(p["raison_sociale"], gras=True, taille=11, police="Arial")) +
+            "".join(para(run(t, taille=10, police="Arial")) for t in (p["adresse"], p["ville"], p["telephone"])) +
+            para(run(p["email"], taille=9, couleur="0563C1", police="Arial")))
+    trait = '<w:tcBorders><w:bottom w:val="double" w:sz="6" w:space="0" w:color="000000"/></w:tcBorders>'
+    x.append(tableau([[cellule(para(image("rLogo", 1, "logo", haut_mm=22, chemin=logo) if logo else run("")), 5200, bords=trait),
+                       cellule("", 800), cellule(emet, 4200)]], [5200, 800, 4200], align="center"))
+    x.append(para("", apres=160))
+    x.append(tableau([[cellule(para(run("Fiche d'attachement pour la réalisation d'heures supplémentaires", gras=True, taille=13,
+                                        couleur="FFFFFF"), align="center", avant=40, apres=40), LARGEUR, fond=GRIS_FONCE)]],
+                     [LARGEUR], align="center"))
+    x.append(para("", apres=160))
+    ident = []
+    if h.get("direction"):
+        ident.append(para(run("Direction : ", gras=True, taille=10) + run(h["direction"], taille=10), apres=40))
+    ident.append(para(run("Service : %s" % h.get("service", ""), gras=True, italique=True, taille=11), apres=40))
+    for lib, cle in (("Section", "section"), ("Matricule", "matricule_client"), ("Catégorie", "categorie")):
+        if h.get(cle):
+            ident.append(para(run("%s : %s" % (lib, h[cle]), gras=True, taille=10), apres=20))
+    ident.append(para(run(h["agent"], gras=True, taille=10), apres=20))
+    c = h["client"]
+    cl = ["Nom du client : %s" % c["nom"], c.get("adresse") or "", c.get("ville") or ""]
+    if c.get("telephone"):
+        cl.append("Téléphone : %s" % c["telephone"])
+    bc = bordures(12, 12, 12, 12)
+    x.append(tableau([[cellule("".join(ident), 5600), cellule("", 400),
+                       cellule("".join(para(run(t, taille=10), apres=30) for t in cl if t), 4200, bords=bc,
+                               marges={"top": 100, "bottom": 100, "left": 200, "right": 120})]],
+                     [5600, 400, 4200], align="center"))
+    x.append(para("", apres=200))
+    bt = bordures(8, 8, 8, 8)
+    x.append(tableau([[cellule(para(run("Planification d'heures supplémentaires pour raisons de service, selon les modalités suivantes :",
+                                        italique=True, taille=9.5), align="center", avant=40, apres=40), LARGEUR, bords=bt)]],
+                     [LARGEUR], align="center"))
+    x.append(para("", apres=120))
+    larg = [2100, 1700, 4100, 2300]
+    lignes = [[cellule(para(run(t, gras=True, taille=9.5), align="center"), l, bords=bt, valign="center")
+               for t, l in zip(["Heures prévues", "Date", "Justifications", "Heures supplémentaires réalisées"], larg)]]
+    for l in h["lignes"]:
+        vals = [_plage(l), date_fr(l["date"]), l.get("justification") or "", "%s H" % _h(l["heures"])]
+        lignes.append([cellule(para(run(v, taille=9.5), align="center"), w, bords=bt, valign="center") for v, w in zip(vals, larg)])
+    lignes.append([cellule(para(run("Total", gras=True, italique=True, taille=9.5), align="right"), sum(larg[:3]), bords=bt)
+                   .replace("<w:tcPr>", '<w:tcPr><w:gridSpan w:val="3"/>', 1),
+                   cellule(para(run("%s H" % _h(h["total_heures"]), gras=True, taille=9.5), align="center"), larg[3], bords=bt)])
+    x.append(tableau(lignes, larg, align="center"))
+    # semaine par semaine : total par jour, total de la semaine, répartition
+    x.append(para("", apres=160))
+    t = h["taux_pdm"]
+    larg2 = [1900, 3900, 1100, 1100, 1100, 1100]
+    sem = [[cellule(para(run(v, gras=True, taille=9), align="center"), w, bords=bt, valign="center") for v, w in zip(
+        ["Semaine", "Heures par jour", "Total semaine", "%g%%" % (t[0] / 100), "%g%%" % (t[1] / 100), "%g%% (dim./férié)" % (t[2] / 100)], larg2)]]
+    for w in h["semaines"]:
+        jours = " · ".join("%s %s : %s h" % (JOURS[dt.date.fromisoformat(j["date"]).weekday()], date_fr(j["date"])[:5], _h(j["heures"]))
+                           for j in w["jours"])
+        vals = ["du %s au %s" % (date_fr(w["du"])[:5], date_fr(w["au"])[:5]), jours, _h(w["total"]), _h(w["h1"]), _h(w["h2"]), _h(w["h3"])]
+        sem.append([cellule(para(run(v, taille=8.5), align="center"), l, bords=bt, valign="center") for v, l in zip(vals, larg2)])
+    tot = h["proposition"]
+    sem.append([cellule(para(run(v, gras=True, taille=9), align="center"), l, bords=bt) for v, l in zip(
+        ["Total", "", _h(h["total_heures"]), _h(tot["h1"]), _h(tot["h2"]), _h(tot["h3"])], larg2)])
+    x.append(tableau(sem, larg2, align="center"))
+    # signatures : l'agent signe à chaque étape (avant, après, payées, récupérées)
+    x.append(para("", apres=240))
+    etapes = h.get("etapes") or {}
+    agent = para(run("Signature de l'agent :", gras=True, taille=10), apres=80)
+    for k, lib in ETAPES_HS:
+        d = (etapes.get(k) or {}).get("date")
+        agent += para(run("%s :%s" % (lib, "  signé le " + date_fr(d) if d else ""), taille=9.5), apres=160)
+    resp = para(run("Signature Responsable %s :" % p["raison_sociale"], gras=True, taille=10), align="center", apres=60)
+    if avec_sig:
+        resp += para(image("rSig", 2, "cachet", larg_mm=26, chemin=signature), align="center")
+    x.append(tableau([[cellule(agent, 4600), cellule("", 600), cellule(resp, 5000)]], [4600, 600, 5000], align="center"))
+    return paquet_docx(p, "".join(x), logo, signature, avec_sig, marges=(567, 709, 851, 709))
+
+
+ETAPES_HS = (("avant", "Avant"), ("apres", "Après"), ("payees", "Payées"), ("recuperees", "Récupérées"))
+
+
+def nom_fiche_hs(h):
+    return propre("Fiche d'attachement des heures supplementaires - %s_%s" % (
+        date_fr(h.get("periode_au") or "").replace("/", "."), h["agent"])) + ".docx"
 
 
 def lot_zip(fichiers):

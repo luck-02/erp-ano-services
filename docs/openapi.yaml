@@ -624,6 +624,31 @@ paths:
       summary: Supprime un relevé tant que le devis H n'a pas de n°
       parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
       responses: {"200": {description: OK}, "409": {description: Devis H déjà numéroté}}
+  /api/heures-sup/{id}/etape:
+    post:
+      tags: [Heures supplémentaires]
+      summary: Signature de l'agent sur la fiche à une étape (avant, apres, payees, recuperees) - date, ou null pour effacer, scan facultatif
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {example: {etape: avant, date: "2026-10-02", nom: fiche-signee.pdf, contenu: "data:application/pdf;base64,JVBERi0..."}}}}
+      responses: {"200": {description: Relevé à jour (etapes)}, "400": {description: Étape ou fichier refusé}}
+  /api/heures-sup/{id}/fiche.docx:
+    get:
+      tags: [Heures supplémentaires]
+      summary: Fiche d'attachement en Word, à remettre au client
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses: {"200": {description: Document Word}}
+  /api/heures-sup/{id}/fiche-archiver:
+    post:
+      tags: [Heures supplémentaires]
+      summary: Garde la fiche (Word, puis PDF si LibreOffice) dans les documents du dossier
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses: {"200": {description: "{id, pdf}"}}
+  /api/feries/confirmer:
+    post:
+      tags: [Heures supplémentaires]
+      summary: Confirme (ferie true) ou retire (false) un jour férié « à confirmer » ; le devis H est bloqué tant qu'un tel jour tombe dans la période
+      requestBody: {content: {application/json: {example: {jour: "2026-05-27", ferie: true}}}}
+      responses: {"200": {description: Liste des jours fériés à jour}, "400": {description: Date invalide}}
   /api/logo:
     get:
       tags: [Paramètres]

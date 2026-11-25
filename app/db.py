@@ -162,6 +162,8 @@ CREATE TABLE IF NOT EXISTS heures_sup (
     montant_paye INTEGER,
     ref_paiement TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    etapes_json TEXT NOT NULL DEFAULT '{}',      -- signatures de l'agent : avant, après, payées, récupérées
+    fiche_envoyee_le TEXT,                       -- fiche d'attachement remise au client
     cree_le TEXT NOT NULL,
     maj_le TEXT NOT NULL
 );
@@ -180,15 +182,29 @@ CREATE TABLE IF NOT EXISTS journal (
 # Jours fériés du Gabon (heures sup à la majoration des dimanches). « MM-JJ libellé » = chaque année ;
 # « AAAA-MM-JJ libellé » = une seule fois (fêtes mobiles : dates à vérifier chaque année, l'Aïd selon la lune).
 FERIES_GABON = [
+    # fixes : Code du travail et décret n°0096/PR/MCJSA du 15/02/2024 (Journée nationale de la Libération, 30 août)
     "01-01 Jour de l'an", "04-17 Journée des droits de la femme", "05-01 Fête du travail", "08-15 Assomption",
-    "08-16 Fête de l'indépendance", "08-17 Fête de l'indépendance", "08-30 Journée de la libération",
+    "08-16 Fête de l'indépendance", "08-17 Fête de l'indépendance", "08-30 Journée nationale de la Libération",
     "11-01 Toussaint", "12-25 Noël",
-    "2026-03-20 Aïd el-Fitr (à confirmer)", "2026-04-06 Lundi de Pâques", "2026-05-14 Ascension",
-    "2026-05-25 Lundi de Pentecôte", "2026-05-27 Aïd el-Kébir / Tabaski (à confirmer)",
-    "2027-03-10 Aïd el-Fitr (à confirmer)", "2027-03-29 Lundi de Pâques", "2027-05-06 Ascension",
-    "2027-05-17 Lundi de Pentecôte", "2027-05-17 Aïd el-Kébir / Tabaski (à confirmer)",
+    # mobiles chrétiennes (calendrier de Pâques)
+    "2026-04-06 Lundi de Pâques", "2026-05-14 Ascension", "2026-05-25 Lundi de Pentecôte",
+    "2027-03-29 Lundi de Pâques", "2027-05-06 Ascension", "2027-05-17 Lundi de Pentecôte",
+    # fêtes musulmanes : date fixée par les autorités au dernier moment -> à confirmer avant d'appliquer
+    "2026-03-20 Aïd el-Fitr (à confirmer)", "2026-05-27 Aïd el-Kébir / Tabaski (à confirmer)",
+    "2027-03-09 Aïd el-Fitr (à confirmer)", "2027-05-16 Aïd el-Kébir / Tabaski (à confirmer)",
 ]
-ANCIENS_FERIES = ["01-01", "04-17", "05-01", "08-15", "08-16", "08-17", "11-01", "12-25"]
+A_CONFIRMER = "(à confirmer)"
+# listes livrées plus tôt sur le site de test, remplacées telles quelles par la liste ci-dessus
+FERIES_PRECEDENTS = [
+    ["01-01", "04-17", "05-01", "08-15", "08-16", "08-17", "11-01", "12-25"],
+    ["01-01 Jour de l'an", "04-17 Journée des droits de la femme", "05-01 Fête du travail", "08-15 Assomption",
+     "08-16 Fête de l'indépendance", "08-17 Fête de l'indépendance", "08-30 Journée de la libération",
+     "11-01 Toussaint", "12-25 Noël",
+     "2026-03-20 Aïd el-Fitr (à confirmer)", "2026-04-06 Lundi de Pâques", "2026-05-14 Ascension",
+     "2026-05-25 Lundi de Pentecôte", "2026-05-27 Aïd el-Kébir / Tabaski (à confirmer)",
+     "2027-03-10 Aïd el-Fitr (à confirmer)", "2027-03-29 Lundi de Pâques", "2027-05-06 Ascension",
+     "2027-05-17 Lundi de Pentecôte", "2027-05-17 Aïd el-Kébir / Tabaski (à confirmer)"],
+]
 
 PARAMETRES_INITIAUX = {
     "raison_sociale": "ANO Services",
@@ -394,11 +410,16 @@ def migrer_factures(con):
         con.execute("INSERT INTO parametres(cle, valeur) VALUES ('maj_numeros_20261125', 'true')")
     # « ANO SERVICE » sous la désignation des factures (comme les originaux), une seule fois,
     # seulement pour ANO Services et si personne n'a encore rempli le champ. Aucun n° émis touché.
+    cols_h = [r[1] for r in con.execute("PRAGMA table_info(heures_sup)")]
+    if "etapes_json" not in cols_h:
+        con.execute("ALTER TABLE heures_sup ADD COLUMN etapes_json TEXT NOT NULL DEFAULT '{}'")
+    if "fiche_envoyee_le" not in cols_h:
+        con.execute("ALTER TABLE heures_sup ADD COLUMN fiche_envoyee_le TEXT")
     cols_d = [r[1] for r in con.execute("PRAGMA table_info(documents)")]
     if "hs_id" not in cols_d:
         con.execute("ALTER TABLE documents ADD COLUMN hs_id INTEGER REFERENCES heures_sup(id)")
     r = con.execute("SELECT valeur FROM parametres WHERE cle = 'hs_jours_feries'").fetchone()
-    if r and json.loads(r[0]) == ANCIENS_FERIES:      # 1re liste (sans libellés) : remplacée par la liste complète
+    if r and json.loads(r[0]) in FERIES_PRECEDENTS:   # listes livrées plus tôt, jamais retouchées : mises à jour
         con.execute("UPDATE parametres SET valeur = ? WHERE cle = 'hs_jours_feries'", (json.dumps(FERIES_GABON),))
     if not con.execute("SELECT 1 FROM parametres WHERE cle = 'maj_mention_20261125'").fetchone():
         r = con.execute("SELECT valeur FROM parametres WHERE cle = 'raison_sociale'").fetchone()

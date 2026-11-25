@@ -159,6 +159,14 @@ def main():
     verifier(abs(sum(h["heures"].values()) - h["total_heures"]) < 0.01 and h["releves"], "classement = total de la fiche, relevé joint")
     verifier(a.req("PUT", "/api/heures-sup/%d" % h["id"], {"lignes": []})[0] == 409, "relevé facturé : plus modifiable")
     verifier(l_.req("GET", "/api/heures-sup/%d" % h["id"])[0] == 403, "Lecture : pas d'accès aux heures supplémentaires")
+    verifier(h["etapes"].get("avant", {}).get("date") and h["etapes"].get("apres", {}).get("date") and h["fiche_envoyee_le"],
+             "fiche : signatures Avant / Après datées et remise au client notée", h["etapes"])
+    st, docx = a.req("GET", "/api/heures-sup/%d/fiche.docx" % h["id"])
+    verifier(st == 200 and isinstance(docx, bytes) and docx[:2] == b"PK", "fiche d'attachement en Word téléchargeable", st)
+    st, j = a.req("POST", "/api/heures-sup/%d/etape" % h["id"], {"etape": "pendant", "date": "2026-10-10"})
+    verifier(st == 400, "étape de signature inconnue refusée", st)
+    st, j = a.req("POST", "/api/feries/confirmer", {"jour": "2026-13-40", "ferie": True})
+    verifier(st == 400, "confirmation d'un jour férié : date invalide refusée", st)
 
     print("\n8. Isolation des entreprises et sécurité")
     jeton = a.cookie.split("=", 1)[1].split(".", 1)[1]

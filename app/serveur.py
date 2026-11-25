@@ -92,6 +92,10 @@ ROUTES = [
     ("POST", r"/api/heures-sup/(\d+)/suivi", api.suivi_hs, EQUIPE),
     ("POST", r"/api/heures-sup/(\d+)/releve", api.releve_hs, EQUIPE),
     ("POST", r"/api/heures-sup/(\d+)/supprimer", api.supprimer_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/etape", api.etape_hs, EQUIPE),
+    ("GET", r"/api/heures-sup/(\d+)/fiche\.docx", api.fiche_hs_word, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/fiche-archiver", api.archiver_fiche_hs, EQUIPE),
+    ("POST", r"/api/feries/confirmer", api.confirmer_ferie, EQUIPE),
     ("POST", r"/api/documents/(\d+)/retirer", api.retirer_piece, (A,)),
     ("GET", r"/api/factures", api.liste_factures, TOUS),
     ("GET", r"/api/factures/word", api.factures_word, EQUIPE),
@@ -296,7 +300,7 @@ class Gestionnaire(BaseHTTPRequestHandler):
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 return self._erreur(400, "Requête invalide.")
-            if n > (TAILLE_MAX_PIECE if fonction in (api.ajouter_piece, api.releve_hs) else TAILLE_MAX):
+            if n > (TAILLE_MAX_PIECE if fonction in (api.ajouter_piece, api.releve_hs, api.etape_hs) else TAILLE_MAX):
                 return self._erreur(413, "Requête trop volumineuse.")
             brut = self.rfile.read(n) if n > 0 else b"{}"
             self._corps_lu = True
