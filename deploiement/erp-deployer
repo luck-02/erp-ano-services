@@ -1,0 +1,77 @@
+#!/bin/bash
+# Commande forcée du compte « deploiement » (installée dans /usr/local/sbin/erp-deployer
+# par activer-deploiement-auto.sh). C'est la SEULE chose que la clé de GitHub peut faire :
+#   ssh deploiement@<ip> deployer v3.4.0 < ERP_ANO_Services-v3.4.0.zip
+# 1. reçoit le zip (50 Mo au plus) et le contrôle
+# 2. sauvegarde les bases
+# 3. installe la version
+# 4. recette : verifier-en-ligne.sh ; en cas d'échec, réinstalle la version précédente
+# Les données (/var/lib/erp) ne sont jamais touchées.
+set -euo pipefail
+umask 077
+# ERP_DEPLOIEMENT_TEST : dossier de test (tests/test_deploiement.sh). sudo efface
+# l'environnement, donc la clé de GitHub ne peut pas s'en servir.
+BASE="${ERP_DEPLOIEMENT_TEST:-/var/lib/erp-deploiement}"
+CONF="${ERP_DEPLOIEMENT_TEST:+$BASE/erp-deploiement.conf}"; CONF="${CONF:-/etc/erp-deploiement.conf}"
+VERSIONS="$BASE/versions"
+ACTUELLE="$BASE/actuelle"
+[ -n "${ERP_DEPLOIEMENT_TEST:-}" ] || [ "$(id -u)" -eq 0 ] || { echo "erp-deployer doit tourner en root (sudo)."; exit 1; }
+# shellcheck source=/dev/null
+. "$CONF"                                   # DOMAINE=...
+[[ "${DOMAINE:-}" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "DOMAINE invalide dans $CONF"; exit 1; }
+
+# La commande demandée arrive dans SSH_ORIGINAL_COMMAND (rien d'autre n'est exécuté).
+read -r ACTION V RESTE <<< "${SSH_ORIGINAL_COMMAND:-${*:-}}" || true
+[ "${ACTION:-}" = deployer ] && [ -z "${RESTE:-}" ] || { echo "Seule commande permise : deployer vX.Y.Z"; exit 2; }
+[[ "${V:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version invalide : ${V:-}"; exit 2; }
+
+exec 9>"$BASE/verrou"
+if command -v flock >/dev/null; then       # (absent sur Mac : seulement pour les tests)
+  flock -n 9 || { echo "Un déploiement est déjà en cours."; exit 3; }
+fi
+
+mkdir -p "$VERSIONS"
+ZIP="$VERSIONS/$V.zip"
+D="$VERSIONS/$V"
+head -c 52428800 > "$ZIP"                  # 50 Mo au plus
+[ -s "$ZIP" ] || { echo "Zip vide."; exit 4; }
+command -v unzip >/dev/null || apt-get install -y -q unzip >/dev/null
+if unzip -Z1 "$ZIP" | grep -qvE '^erp-mvp/'; then echo "Zip refusé : contenu hors de erp-mvp/."; exit 4; fi
+if unzip -Z1 "$ZIP" | grep -qE '(^|/)\.\.(/|$)'; then echo "Zip refusé : chemin avec ..";  exit 4; fi
+rm -rf "$D" && mkdir -p "$D" && unzip -q "$ZIP" -d "$D"
+[ -f "$D/erp-mvp/deploiement/installer-serveur.sh" ] || { echo "Zip refusé : installateur absent."; exit 4; }
+[ "$(cat "$D/erp-mvp/VERSION" 2>/dev/null)" = "$V" ] || { echo "Zip refusé : VERSION ne correspond pas à $V."; exit 4; }
+
+PRECEDENTE="$(cat "$ACTUELLE" 2>/dev/null || true)"
+echo "==> $V (version en place : ${PRECEDENTE:-inconnue})"
+
+if [ -f /opt/erp/erp-mvp/app/sauvegarde_quotidienne.py ]; then
+  sudo -u erp env ANO_DONNEES=/var/lib/erp python3 /opt/erp/erp-mvp/app/sauvegarde_quotidienne.py >/dev/null
+  echo "    sauvegarde des bases faite"
+fi
+
+installer() { bash "$VERSIONS/$1/erp-mvp/deploiement/installer-serveur.sh" "$DOMAINE" > "$VERSIONS/$1.log" 2>&1; }
+recette()   { bash "$VERSIONS/$1/erp-mvp/deploiement/verifier-en-ligne.sh" "$DOMAINE" > "$VERSIONS/$1.recette" 2>&1; }
+
+if installer "$V" && sleep 5 && recette "$V"; then
+  echo "$V" > "$ACTUELLE"
+  tail -1 "$VERSIONS/$V.recette"
+  echo "==> $V en ligne sur https://$DOMAINE"
+  # garder les 5 dernières versions
+  ls -1 "$VERSIONS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1.2,1n -k2,2n -k3,3n \
+    | awk '{a[NR]=$0} END{for(i=1;i<=NR-5;i++)print a[i]}' \
+    | while read -r ancienne; do rm -rf "${VERSIONS:?}/$ancienne" "$VERSIONS/$ancienne".*; done
+  exit 0
+fi
+
+echo "ÉCHEC de $V :"
+tail -15 "$VERSIONS/$V.recette" 2>/dev/null || tail -15 "$VERSIONS/$V.log"
+if [ -n "$PRECEDENTE" ] && [ -d "$VERSIONS/$PRECEDENTE/erp-mvp" ]; then
+  echo "==> Retour automatique à $PRECEDENTE"
+  if installer "$PRECEDENTE" && sleep 5 && recette "$PRECEDENTE"; then
+    echo "    $PRECEDENTE remise en ligne : $(tail -1 "$VERSIONS/$PRECEDENTE.recette")"
+  else
+    echo "    le retour a aussi échoué : intervention nécessaire (sudo journalctl -u erp-ano -n 50)"
+  fi
+fi
+exit 5

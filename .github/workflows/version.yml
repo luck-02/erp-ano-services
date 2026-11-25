@@ -1,7 +1,13 @@
-# Livraison : quand une étiquette de version (v3.3.0…) est envoyée, les tests
-# repassent puis le zip de la version est publié dans « Releases » sur GitHub.
-# Le déploiement sur le serveur reste lancé à la main (deploiement/deployer.sh) :
-# aucune clé SSH du serveur n'est confiée à GitHub.
+# Livraison continue, sur le modèle du cycle en V. Déclenchée par une étiquette de
+# version (v3.4.0…) ; chaque étape ne démarre que si la précédente est verte.
+#
+#   Besoin (CHANGELOG)  ............................  Recette en ligne (verifier-en-ligne.sh)
+#     Conception (API, MCD)  ....................  Tests système (parcours Chromium)
+#       Codage  ..........................  Tests unitaires et d'intégration (Python)
+#
+# Le serveur n'accepte de GitHub qu'une seule commande : « deployer vX.Y.Z » avec le zip
+# (clé SSH limitée, voir deploiement/activer-deploiement-auto.sh). Si la recette échoue,
+# le serveur remet lui-même la version précédente.
 name: Version
 
 on:
@@ -11,8 +17,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: deploiement-production
+  cancel-in-progress: false
+
 jobs:
-  tests:
+  unitaires:
+    name: 1. Tests unitaires et d'intégration
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -24,8 +35,28 @@ jobs:
           python-version: "3.13"
       - run: bash outils/verifier-depot.sh && bash lancer_tests.sh
 
+  systeme:
+    name: 2. Tests système (parcours complet dans Chromium)
+    needs: unitaires
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - working-directory: tests/e2e
+        run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
+      - run: node tests/e2e/parcours_complet.js
+
   publier:
-    needs: tests
+    name: 3. Publication du zip (Releases)
+    needs: systeme
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -35,8 +66,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Zip de la version
-        run: bash outils/construire-zip.sh "$GITHUB_REF_NAME"
+      - run: bash outils/construire-zip.sh "$GITHUB_REF_NAME"
       - name: Release GitHub (notes = section du CHANGELOG)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -44,3 +74,48 @@ jobs:
           awk -v t="## $GITHUB_REF_NAME " 'index($0,t)==1{f=1;next} /^## v/{f=0} f' CHANGELOG.md > notes.md
           gh release create "$GITHUB_REF_NAME" "dist/ERP_ANO_Services-$GITHUB_REF_NAME.zip" \
             --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+
+  deployer:
+    name: 4. Mise en ligne et recette
+    needs: publier
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: production
+    steps:
+      - name: Déploiement activé ?
+        id: actif
+        env:
+          CLE: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$CLE" ]; then
+            echo "Déploiement automatique pas encore activé (secret DEPLOY_SSH_KEY absent) : étape sautée."
+            echo "ok=non" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=oui" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.actif.outputs.ok == 'oui'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Envoi au serveur (seule commande permise par la clé)
+        if: steps.actif.outputs.ok == 'oui'
+        env:
+          CLE: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOTE: ${{ secrets.DEPLOY_HOST }}
+          CONNUS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          ZIP=$(bash outils/construire-zip.sh "$GITHUB_REF_NAME")
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$CLE" > ~/.ssh/deploiement && chmod 600 ~/.ssh/deploiement
+          printf '%s\n' "$CONNUS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploiement -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              "deploiement@$HOTE" "deployer $GITHUB_REF_NAME" < "$ZIP"
+      - name: Recette depuis Internet
+        if: steps.actif.outputs.ok == 'oui'
+        env:
+          DOMAINE: ${{ secrets.DEPLOY_DOMAINE }}
+        run: bash deploiement/verifier-en-ligne.sh "$DOMAINE"
+      - name: Effacer la clé
+        if: always()
+        run: rm -f ~/.ssh/deploiement

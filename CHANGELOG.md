@@ -7,6 +7,13 @@ Numérotation : `vMAJEUR.MINEUR.CORRECTIF`.
 
 Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git checkout v3.1.0`.
 
+## v3.4.0 – 25/11/2026 : mise en ligne automatique (cycle en V)
+- Une étiquette de version envoyée sur GitHub enchaîne : tests unitaires et d'intégration, tests système dans Chromium, publication du zip, mise en ligne, recette depuis Internet. Chaque étape attend que la précédente soit verte.
+- Le serveur n'accepte de GitHub qu'une seule commande (« deployer vX.Y.Z ») avec une clé dédiée : pas de terminal, pas d'autre commande, pas de mot de passe.
+- Sur le serveur : sauvegarde des bases avant chaque mise en ligne, recette après ; si la recette échoue, la version précédente est remise automatiquement.
+- `deploiement/activer-deploiement-auto.sh` : activation en une fois (et `--desactiver`).
+- Tests de la commande de déploiement (`tests/test_deploiement.sh`) : commandes refusées, zip piégé, retour arrière.
+
 ## v3.3.0 – 25/11/2026 : livraison automatisée (DevOps)
 - Tests automatiques sur GitHub à chaque envoi : calculs, API, sécurité, plusieurs entreprises (Python 3.9 et 3.13), parcours complet dans Chromium, contrôle du dépôt (aucun cachet, aucune base, aucun secret).
 - Étiquette de version envoyée sur GitHub = tests + zip publié dans « Releases ».

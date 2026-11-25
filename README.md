@@ -141,7 +141,26 @@ Livrer une version :
 4. `bash deploiement/deployer.sh v3.4.0 <ip> <domaine>` : sauvegarde, installation et contrôle sur le serveur.
    En cas de problème, relancer avec la version précédente (ex. `v3.3.0`) : les données ne bougent pas.
 
-Les tests tournent aussi sur GitHub à chaque envoi (`.github/workflows/ci.yml`). Le serveur n'est jamais touché par GitHub : aucune clé SSH n'y est confiée.
+Les tests tournent aussi sur GitHub à chaque envoi (`.github/workflows/ci.yml`).
+
+### Mise en ligne automatique (cycle en V)
+
+Une fois activée, l'étape 4 se fait toute seule : l'étiquette envoyée à l'étape 3 déclenche sur GitHub (`.github/workflows/version.yml`) :
+
+| Branche descendante | Vérifiée par (branche montante) |
+|---|---|
+| Besoin : section du `CHANGELOG.md`, cahier des charges | 4. Recette en ligne : `verifier-en-ligne.sh` sur le serveur puis depuis Internet |
+| Conception : API (`docs/openapi.yaml`), MCD | 2. Tests système : parcours complet dans Chromium |
+| Codage | 1. Tests unitaires et d'intégration (calculs, API, sécurité, entreprises, déploiement) |
+
+Puis 3. publication du zip dans « Releases » et mise en ligne. Si la recette échoue sur le serveur, la version précédente est remise automatiquement.
+
+**Activer (une seule fois)**, depuis le Mac, dans le dossier `erp-mvp` :
+```
+ssh root@2.29.210.17 'cat > /usr/local/sbin/erp-deployer && chmod 755 /usr/local/sbin/erp-deployer' < deploiement/erp-deployer
+ssh root@2.29.210.17 'bash -s' -- 2-29-210-17.sslip.io < deploiement/activer-deploiement-auto.sh
+```
+La deuxième commande affiche 4 secrets à créer dans GitHub (dépôt > Settings > Secrets and variables > Actions) : `DEPLOY_HOST`, `DEPLOY_DOMAINE`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_SSH_KEY`. La clé ne permet qu'une seule chose sur le serveur : lancer `erp-deployer` avec un zip de version. Tant que les secrets n'existent pas, GitHub saute la mise en ligne. Désactiver : `ssh root@2.29.210.17 'bash -s' -- --desactiver < deploiement/activer-deploiement-auto.sh`.
 
 ## Documentation technique
 
