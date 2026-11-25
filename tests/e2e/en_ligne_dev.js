@@ -182,6 +182,26 @@ const PAGES = [['#/tableau', '.kpi'], ['#/dossiers', 'table'], ['#/dossier/2', '
     await m.goto(SITE + '/#/factures'); await m.waitForSelector('#fa-m'); await m.waitForTimeout(400);
     await m.screenshot({ path: path.join(OUT, '21-telephone-factures.png'), fullPage: true });
     verifier(defile.length === 0, 'téléphone : aucune page ne défile de côté', defile);
+    // heures supplémentaires sur téléphone : de 320 à 430 px, la grille tient dans l'écran (4 jours par ligne)
+    const pbHS = [];
+    for (const w of [320, 360, 390, 430]) {
+      await m.setViewportSize({ width: w, height: 844 });
+      for (const [h3, sel] of [['#/hs/2', '.hs-grille'], ['#/hs/1', '.hs-grille'], ['#/dossier/1', '#ds-docs'], ['#/parametres', '#p-feries']]) {
+        await m.goto(SITE + '/' + h3); await m.waitForSelector(sel); await m.waitForTimeout(300);
+        const r = await m.evaluate(() => ({ page: document.documentElement.scrollWidth <= window.innerWidth + 1,
+          grille: [...document.querySelectorAll('.hs-grille, .hs-sem, .hs-classement')].every((g) => g.scrollWidth <= g.clientWidth + 1 && g.parentElement.scrollWidth <= g.parentElement.clientWidth + 1),
+          petits: [...document.querySelectorAll('.hs-grille input[data-gh]')].filter((i) => i.getBoundingClientRect().width < 40).length }));
+        if (!r.page || !r.grille || r.petits) pbHS.push(w + ' ' + h3 + ' ' + JSON.stringify(r));
+      }
+      if (w === 360 || w === 390) {
+        await m.goto(SITE + '/#/hs/2'); await m.waitForSelector('.hs-grille'); await m.waitForTimeout(300);
+        await m.screenshot({ path: path.join(OUT, '22-telephone-hs-' + w + '.png'), fullPage: true });
+      }
+    }
+    verifier(pbHS.length === 0, 'téléphone 320 à 430 px : heures sup et grille sans défilement de côté, cases lisibles', pbHS);
+    await m.goto(SITE + '/#/hs/2'); await m.waitForSelector('.hs-grille');
+    await m.fill('td[data-g="2026-11-02"] [data-gh]', '4');
+    verifier((await m.textContent('#hs-g-t')) === '21,5', 'téléphone : saisie dans la grille et total recalculé');
     await mob.close();
 
     verifier(erreurs.length === 0, 'aucune erreur JavaScript', erreurs.slice(0, 5));

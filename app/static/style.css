@@ -311,6 +311,35 @@ label.case input { width: auto; }
 .hs-grille input[data-gj] { font-size: .72rem; }
 .hs-d { font-size: .72rem; color: var(--doux, #667); }
 .hs-f { color: #b45309; font-weight: 600; }
+.hs-grille .hs-js, .hs-court { display: none; }
+/* téléphone : chaque semaine devient un bloc, 4 jours par ligne, jours hors période masqués */
+@media screen and (max-width: 760px) {
+  .hs-grille { min-width: 0; display: block; }
+  .hs-grille td[data-s="t"], .hs-grille tfoot td[data-lib="Total"] { grid-column-start: 1; }
+  .hs-sem .hs-detail, .hs-long { display: none; }
+  .hs-court { display: inline !important; font-weight: 600; }
+  .hs-classement input { width: 4.5rem !important; font-size: 16px; }
+  .hs-classement td, .hs-classement th, .hs-sem td, .hs-sem th { padding-left: .25rem; padding-right: .25rem; white-space: normal; }
+  .hs-classement th, .hs-sem th { font-size: .62rem; letter-spacing: 0; }
+  .hs-classement, .hs-sem { width: 100%; }
+  .hs-grille thead { display: none; }
+  .hs-grille tbody, .hs-grille tfoot { display: block; }
+  .hs-grille tr { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .35rem; padding: .6rem 0; border-bottom: 1px solid var(--bord); }
+  .hs-grille tr > td:first-child { grid-column: 1 / -1; font-weight: 600; }
+  .hs-grille tr > td:first-child br { display: none; }
+  .hs-grille td { display: block; padding: .3rem; }
+  .hs-grille td.hs-hors { display: none; }
+  .hs-grille td[data-g] { width: auto; border: 1px solid var(--bord); border-radius: 6px; }
+  .hs-grille .hs-js { display: inline; font-weight: 600; }
+  .hs-grille td[data-lib] { text-align: center; background: var(--fond, #f5f6f8); border-radius: 6px; }
+  .hs-grille td[data-lib]::before { content: attr(data-lib); display: block; font-size: .7rem; font-weight: 400; color: #667; }
+  .hs-grille input { font-size: 16px; }    /* évite le zoom automatique de l'iPhone */
+  .hs-grille input[data-gj] { font-size: 13px; }
+}
+@media screen and (max-width: 420px) {
+  .hs-classement .hs-opt { display: none; }
+  .hs-classement input { width: 3.6rem !important; }
+}
 
 /* --- facture --- */
 .fa { font-size: 11pt; padding: 12mm 14mm 8mm; }

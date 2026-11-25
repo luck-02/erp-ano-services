@@ -1117,12 +1117,13 @@ async function pageHS(page, id) {
       <p class="aide">Heures regroupées semaine par semaine (lundi → dimanche) : les ${p.hs_seuil_semaine} premières heures de chaque semaine à ${tauxFr(h.taux_pdm[0])}, le reste de la semaine à ${tauxFr(h.taux_pdm[1])}, les dimanches et jours fériés à ${tauxFr(h.taux_pdm[2])}. Corrigez à la main si besoin.</p>
       ${h.semaines.length ? tableSemainesHS(h) : ""}
       <label class="case"><input type="checkbox" id="hs-manuel" ${h.classement_manuel ? "checked" : ""} ${dis}> Classement à la main</label>
-      <table><thead><tr><th>Désignation</th><th class="num">Proposé</th><th class="num">Retenu (heures)</th><th class="num">Taux horaire</th><th class="num">Total</th></tr></thead><tbody>
-        ${cats.map(([k, t], i) => html`<tr><td>Heures supp à ${(t / 100).toLocaleString("fr-FR")}% (${tauxFr(t)} heures normales)</td><td class="num doux">${hFr(h.proposition[k])}</td>
+      <table class="hs-classement"><thead><tr><th>Désignation</th><th class="num">Proposé</th><th class="num">Retenu (heures)</th><th class="num hs-opt">Taux horaire</th><th class="num">Total</th></tr></thead><tbody>
+        ${cats.map(([k, t], i) => html`<tr><td><span class="hs-long">Heures supp à ${(t / 100).toLocaleString("fr-FR")}% (${tauxFr(t)} heures normales)</span><span class="hs-court">${tauxFr(t)}</span></td><td class="num doux">${hFr(h.proposition[k])}</td>
           <td class="num"><input data-h="${k}" aria-label="Heures retenues à ${tauxFr(t)}" class="montant" inputmode="decimal" data-style="width:6rem" value="${hFr(h.heures[k])}" ${h.classement_manuel && !fige ? "" : "disabled"}></td>
-          <td class="num">${fmt(h.calcul.lignes[i].taux_horaire)}</td><td class="num gras">${fmt(h.calcul.lignes[i].total)}</td></tr>`)}
-        <tr class="total"><td>Montant total (coût mensuel ${fmt(h.cout_mensuel)} ÷ ${(p.hs_diviseur_centiemes / 100).toLocaleString("fr-FR")} h = ${fmt(h.calcul.taux_horaire)} / h)</td><td class="num">${hFr(h.total_heures)}</td><td class="num">${hFr(h.heures.h1 + h.heures.h2 + h.heures.h3)}</td><td></td><td class="num">${fmt(h.calcul.total)}</td></tr>
+          <td class="num hs-opt">${fmt(h.calcul.lignes[i].taux_horaire)}</td><td class="num gras">${fmt(h.calcul.lignes[i].total)}</td></tr>`)}
+        <tr class="total"><td>Montant total</td><td class="num">${hFr(h.total_heures)}</td><td class="num">${hFr(h.heures.h1 + h.heures.h2 + h.heures.h3)}</td><td class="hs-opt"></td><td class="num">${fmt(h.calcul.total)}</td></tr>
       </tbody></table>
+      <p class="aide">Taux horaire = coût mensuel ${fmt(h.cout_mensuel)} ÷ ${(p.hs_diviseur_centiemes / 100).toLocaleString("fr-FR")} h = ${fmt(h.calcul.taux_horaire)} XAF / h, puis majoré.</p>
       ${Math.abs(h.ecart_heures) > 0.001 ? html`<div class="bandeau alerte">Le classement retenu compte ${hFr(h.ecart_heures)} h de ${h.ecart_heures > 0 ? "plus" : "moins"} que la fiche.</div>` : ""}
       ${fige ? "" : html`<div class="actions" data-style="margin-top:.75rem"><button type="submit" class="vert">Enregistrer la fiche et le classement</button></div>`}</div>
     </form>
@@ -1250,7 +1251,7 @@ async function pageHS(page, id) {
     const t = h.taux_pdm;
     zone.innerHTML = html`<table class="hs-grille"><thead><tr><th>Semaine</th>${["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((j) => html`<th>${j}</th>`)}
         <th class="num">Total</th><th class="num">${t[0] / 100}%</th><th class="num">${t[1] / 100}%</th><th class="num">${t[2] / 100}%</th></tr></thead><tbody>
-      ${semaines.map((lun) => html`<tr data-sem="${lun}"><td class="petit">du ${dateFr(lun).slice(0, 5)}<br>au ${dateFr(addJ(lun, 6)).slice(0, 5)}</td>
+      ${semaines.map((lun) => html`<tr data-sem="${lun}"><td class="petit">du ${dateFr(lun).slice(0, 5)} <br>au ${dateFr(addJ(lun, 6)).slice(0, 5)}</td>
         ${[0, 1, 2, 3, 4, 5, 6].map((i) => {
           const d = addJ(lun, i);
           if (d < du || d > au) return html`<td class="hs-hors"></td>`;
@@ -1258,13 +1259,13 @@ async function pageHS(page, id) {
           const fe = ferie(d);
           const plages = (e.detail || []).filter((x) => x.debut).length;
           return html`<td data-g="${d}" class="${i === 6 || fe ? "hs-repos" : ""}" title="${fe || (i === 6 ? "Dimanche" : "")}">
-            <div class="hs-d">${d.slice(8) === "01" ? html`<b>${dateFr(d).slice(0, 5)}</b>` : dateFr(d).slice(0, 5)}${fe ? html` <span class="hs-f">férié</span>` : ""}</div>
+            <div class="hs-d"><span class="hs-js">${["lun", "mar", "mer", "jeu", "ven", "sam", "dim"][i]} </span>${d.slice(8) === "01" ? html`<b>${dateFr(d).slice(0, 5)}</b>` : dateFr(d).slice(0, 5)}${fe ? html` <span class="hs-f">férié</span>` : ""}</div>
             <input data-gh aria-label="Heures le ${dateFr(d)}" inputmode="decimal" class="montant" value="${e.h ? hFr(e.h) : ""}" ${dis}>
             <input data-gj aria-label="Motif le ${dateFr(d)}" placeholder="motif" maxlength="120" value="${e.j || ""}" ${dis}>
             ${plages ? html`<div class="hs-d doux">${plages} plage(s)</div>` : ""}</td>`;
         })}
-        <td class="num gras" data-s="t"></td><td class="num" data-s="h1"></td><td class="num" data-s="h2"></td><td class="num" data-s="h3"></td></tr>`)}
-      </tbody><tfoot><tr class="total"><td colspan="8">Total de la période</td><td class="num" id="hs-g-t"></td><td class="num" id="hs-g-h1"></td><td class="num" id="hs-g-h2"></td><td class="num" id="hs-g-h3"></td></tr></tfoot></table>`.s;
+        <td class="num gras" data-s="t" data-lib="Total"></td><td class="num" data-s="h1" data-lib="${t[0] / 100}%"></td><td class="num" data-s="h2" data-lib="${t[1] / 100}%"></td><td class="num" data-s="h3" data-lib="${t[2] / 100}%"></td></tr>`)}
+      </tbody><tfoot><tr class="total"><td colspan="8">Total de la période</td><td class="num" id="hs-g-t" data-lib="Total"></td><td class="num" id="hs-g-h1" data-lib="${t[0] / 100}%"></td><td class="num" id="hs-g-h2" data-lib="${t[1] / 100}%"></td><td class="num" id="hs-g-h3" data-lib="${t[2] / 100}%"></td></tr></tfoot></table>`.s;
     appliquerStyles(zone);
     $$("input", zone).forEach((i) => { i.oninput = majGrille; });
     majGrille();
@@ -1361,12 +1362,12 @@ function tableSemainesHS(h, doc) {
   const JF = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
   const jour = (iso) => JF[(new Date(iso + "T12:00:00").getDay() + 6) % 7] + " " + dateFr(iso).slice(0, 5);
   const t = h.taux_pdm;
-  return html`<table class="${doc ? "hs-table hs-sem" : "hs-sem"}"><thead><tr><th>Semaine</th><th>Heures par jour</th><th class="num">Total semaine</th>
+  return html`<table class="${doc ? "hs-table hs-sem" : "hs-sem"}"><thead><tr><th>Semaine</th><th class="hs-detail">Heures par jour</th><th class="num">Total semaine</th>
       <th class="num">${t[0] / 100}%</th><th class="num">${t[1] / 100}%</th><th class="num">${t[2] / 100}% (dim./férié)</th></tr></thead><tbody>
     ${h.semaines.map((w) => html`<tr><td>du ${dateFr(w.du).slice(0, 5)} au ${dateFr(w.au).slice(0, 5)}</td>
-      <td class="petit">${w.jours.map((j, i) => html`${i ? " · " : ""}${j.repos ? html`<b>${jour(j.date)} : ${hFr(j.heures)} h</b>` : html`${jour(j.date)} : ${hFr(j.heures)} h`}`)}</td>
+      <td class="petit hs-detail">${w.jours.map((j, i) => html`${i ? " · " : ""}${j.repos ? html`<b>${jour(j.date)} : ${hFr(j.heures)} h</b>` : html`${jour(j.date)} : ${hFr(j.heures)} h`}`)}</td>
       <td class="num">${hFr(w.total)}</td><td class="num">${hFr(w.h1)}</td><td class="num">${hFr(w.h2)}</td><td class="num">${hFr(w.h3)}</td></tr>`)}
-    <tr class="${doc ? "hs-tot" : "total"}"><td colspan="2">Total</td><td class="num">${hFr(h.total_heures)}</td><td class="num">${hFr(h.proposition.h1)}</td><td class="num">${hFr(h.proposition.h2)}</td><td class="num">${hFr(h.proposition.h3)}</td></tr></tbody></table>`;
+    <tr class="${doc ? "hs-tot" : "total"}"><td>Total</td><td class="hs-detail"></td><td class="num">${hFr(h.total_heures)}</td><td class="num">${hFr(h.proposition.h1)}</td><td class="num">${hFr(h.proposition.h2)}</td><td class="num">${hFr(h.proposition.h3)}</td></tr></tbody></table>`;
 }
 function blocClient(c, classe) {
   return html`<div class="${classe}">Nom du client : ${c.nom}<br>${c.adresse}<br>${c.ville}${c.telephone ? html`<br>Téléphone : ${c.telephone}` : ""}</div>`;
