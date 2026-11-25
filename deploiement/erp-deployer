@@ -40,6 +40,8 @@ recevoir_zip() {   # $1 = zip, $2 = dossier où décompresser
   if unzip -Z1 "$1" | grep -qvE '^erp-mvp/'; then echo "Zip refusé : contenu hors de erp-mvp/."; exit 4; fi
   if unzip -Z1 "$1" | grep -qE '(^|/)\.\.(/|$)'; then echo "Zip refusé : chemin avec ..";  exit 4; fi
   rm -rf "$2" && mkdir -p "$2" && unzip -q "$1" -d "$2"
+  # umask 077 ci-dessus : sans ceci le programme copié serait illisible pour les comptes erp / erp-dev
+  chmod -R u=rwX,go=rX "$2"
 }
 
 exec 9>"$BASE/verrou"

@@ -14,7 +14,8 @@ rm -rf /opt/erp-dev/erp-mvp.neuf /opt/erp-dev/erp-mvp.ancien
 mkdir -p "$NEUF"
 ( cd "$SRC" && tar cf - --exclude '.git' --exclude 'donnees' --exclude 'donnees-essai' --exclude 'node_modules' \
     --exclude 'app/prive/signature.png' --exclude 'app/prive/logo.png' . ) | ( cd "$NEUF" && tar xf - )
-chown -R root:root /opt/erp-dev && chmod -R go-w /opt/erp-dev
+# lisible par erp-dev, modifiable par root seulement (même si le zip arrive en droits 600)
+chown -R root:root /opt/erp-dev && chmod -R u=rwX,go=rX /opt/erp-dev
 [ -d /opt/erp-dev/erp-mvp ] && mv /opt/erp-dev/erp-mvp /opt/erp-dev/erp-mvp.ancien
 mv "$NEUF" /opt/erp-dev/erp-mvp
 rm -rf /opt/erp-dev/erp-mvp.ancien

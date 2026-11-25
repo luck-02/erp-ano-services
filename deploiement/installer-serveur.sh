@@ -52,7 +52,7 @@ id erp >/dev/null 2>&1 || useradd --system --home /opt/erp --shell /usr/sbin/nol
 mkdir -p "$APP" "$DONNEES"
 ( cd "$SRC" && tar cf - --exclude '.git' --exclude 'donnees' --exclude 'donnees-essai' --exclude 'node_modules' \
     --exclude 'app/prive/signature.png' --exclude 'app/prive/logo.png' . ) | ( cd "$APP" && tar xf - )
-chown -R root:root /opt/erp && chmod -R go-w /opt/erp
+chown -R root:root /opt/erp && chmod -R u=rwX,go=rX /opt/erp   # lisible par erp, jamais modifiable
 chown erp:erp "$DONNEES" && chmod 700 "$DONNEES"
 
 # 5. services : ERP, sauvegarde quotidienne, Caddy

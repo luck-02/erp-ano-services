@@ -35,6 +35,7 @@ verif "version mal écrite refusée"       "$(lancer 'deployer v1;id' "$T/v1.0.0
 verif "argument en trop refusé"          "$(lancer 'deployer v1.0.0 x' "$T/v1.0.0.zip")" 2
 verif "première version installée"       "$(lancer 'deployer v1.0.0' "$T/v1.0.0.zip")" 0
 verif "version en place notée"           "$(actuelle)" v1.0.0
+verif "programme lisible par les autres comptes" "$(stat -c %a "$ERP_DEPLOIEMENT_TEST/versions/v1.0.0/erp-mvp/VERSION" 2>/dev/null || stat -f %Lp "$ERP_DEPLOIEMENT_TEST/versions/v1.0.0/erp-mvp/VERSION")" 644
 verif "recette en échec signalée"        "$(lancer 'deployer v1.1.0' "$T/v1.1.0.zip")" 5
 verif "retour auto à la version d'avant" "$(actuelle)" v1.0.0
 verif "dernière installation = v1.0.0"   "$(tail -1 "$T/journal")" "installe v1.0.0"
