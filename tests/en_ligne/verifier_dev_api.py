@@ -129,7 +129,26 @@ def main():
     verifier(l_.req("POST", "/api/factures/paiement", {"ids": [1], "date": "2026-11-25"})[0] == 403, "Lecture n'enregistre pas de paiement")
     verifier(l_.req("GET", "/api/factures/word?ids=1")[0] == 403, "Lecture n'exporte pas en Word")
 
-    print("\n7. Isolation des entreprises et sécurité")
+    print("\n7. Recherche globale")
+    r = a.ok("GET", "/api/recherche?q=ndong")
+    verifier({"dossier", "facture", "interimaire"} <= {x["type"] for x in r["resultats"]}, "« ndong » : dossiers, factures et intérimaire", r["total"])
+    r = a.ok("GET", "/api/recherche?q=900003")
+    verifier(r["resultats"] and r["resultats"][0]["type"] == "dossier", "n° de BC : le dossier en premier")
+    r = a.ok("GET", "/api/recherche?q=11%20173%20500&type=facture")
+    verifier(r["total"] == 3, "montant tapé avec espaces (11 173 500) : 3 factures du groupe", r["total"])
+    r = a.ok("GET", "/api/recherche?q=fa%2059")
+    verifier([x["titre"] for x in r["resultats"][:2]] == ["FA 59/09/2026", "FA 59 bis/09/2026"] or
+             r["resultats"][0]["titre"].startswith("FA 59"), "« fa 59 » : la facture 59 et sa « bis » en tête", [x["titre"] for x in r["resultats"][:2]])
+    r = a.ok("GET", "/api/recherche?type=facture&statut=En%20retard")
+    verifier(r["total"] == 1, "filtre statut « En retard » : 1 facture", r["total"])
+    r = a.ok("GET", "/api/recherche?q=mouele&type=document")
+    verifier(any(x["statut"] == "DA" for x in r["resultats"]), "documents : la DA de MOUELE retrouvée", r["total"])
+    r = l_.ok("GET", "/api/recherche?q=ndong")
+    verifier(r["resultats"] and {x["type"] for x in r["resultats"]} == {"facture"}, "Lecture : factures seulement dans la recherche")
+    r = a.ok("GET", "/api/recherche?q=fictif")
+    verifier(all(x["type"] != "client" or "fictif" in x["titre"].lower() for x in r["resultats"]), "recherche limitée à l'entreprise")
+
+    print("\n8. Isolation des entreprises et sécurité")
     jeton = a.cookie.split("=", 1)[1].split(".", 1)[1]
     autre = nouveau()
     autre.cookie = a.cookie.split("=", 1)[0] + "=essai." + jeton

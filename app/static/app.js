@@ -248,6 +248,7 @@ async function demarrerApp() {
   $("#app").className = "";
   $("#app").innerHTML = html`<div class="coque">
     <nav class="menu"><div class="marque">${etat.params.parametres.raison_sociale}<small>ERP – version MVP</small></div>
+      <form class="menu-recherche" id="f-rech" role="search"><input id="rech-menu" type="search" aria-label="Rechercher partout" placeholder="Rechercher…" title="Touche / pour chercher depuis n'importe quelle page"></form>
       ${PAGES.map((p) => (p.sep ? html`<div class="sep"></div>` : p.roles.includes(etat.user.role) ? html`<a href="${p.h}">${p.t}</a>` : ""))}
       <div class="sep"></div>
       <div class="moi"><b>${etat.user.nom}</b>${ROLES[etat.user.role]}</div>
@@ -257,10 +258,24 @@ async function demarrerApp() {
     <main class="contenu" id="page"></main></div>`.s;
   $("[data-deco]").onclick = async (e) => { e.preventDefault(); try { await api("POST", "/api/deconnexion", {}); } catch (x) { /* rien */ } etat.user = null; etat.csrf = null; afficherConnexion("Vous êtes déconnecté."); };
   $("[data-mdp]").onclick = (e) => { e.preventDefault(); afficherChangerMdp(false); };
+  $("#f-rech").onsubmit = (e) => {
+    e.preventDefault();
+    const q = $("#rech-menu").value.trim();
+    location.hash = "#/recherche/" + encodeURIComponent(q);
+    $("#rech-menu").value = "";
+    $("#rech-menu").blur();
+  };
   router();
 }
 
 window.addEventListener("hashchange", () => { if (etat.user) router(); });
+// touche « / » : aller à la recherche depuis n'importe quelle page
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || !$("#rech-menu")) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+  e.preventDefault();
+  $("#r-q") ? $("#r-q").focus() : $("#rech-menu").focus();
+});
 
 // Rôles permis par page (les mêmes contrôles sont faits par le serveur)
 function rolesPage(nom, a1) {
@@ -297,6 +312,7 @@ async function router() {
     else if (nom === "parametres") await pageParametres(page);
     else if (nom === "utilisateurs") await pageUtilisateurs(page);
     else if (nom === "journal") await pageJournal(page);
+    else if (nom === "recherche") await pageRecherche(page, decodeURIComponent(a1 || ""));
     else if (nom === "imprimer") await pageImprimer(page, a1, a2);
     else page.innerHTML = html`<p>Page introuvable. <a href="#/tableau">Retour au tableau de bord</a></p>`.s;
   } catch (e) {
@@ -308,7 +324,8 @@ async function router() {
 // ---------------------------------------------------------------------------
 // Tableau de bord
 // ---------------------------------------------------------------------------
-const filtres = { mois: moisCourant(), factMois: moisCourant(), factStatut: "", dosStatut: "", dosQ: "" };
+const filtres = { mois: moisCourant(), factMois: moisCourant(), factStatut: "", dosStatut: "", dosQ: "",
+  rech: { type: "", client: "", statut: "", du: "", au: "", min: "", max: "" } };
 
 // Carte « À faire » : chaque ligne = une action, avec le lien qui y mène
 function carteAFaire(a) {
@@ -1292,6 +1309,96 @@ async function pageUtilisateurs(page) {
   };
   $("#u-plus").onclick = () => form(null);
   $$("[data-u]", page).forEach((b) => { b.onclick = () => form(r.utilisateurs.find((u) => u.id === +b.dataset.u)); });
+}
+
+// ---------------------------------------------------------------------------
+// Recherche globale : documents (factures, proformas, pièces DA/BC/PV) et données
+// ---------------------------------------------------------------------------
+const TYPES_RECH = { dossier: "Dossiers", facture: "Factures", document: "Documents", client: "Clients", interimaire: "Intérimaires" };
+async function pageRecherche(page, q) {
+  const f = filtres.rech;
+  const lecture = etat.user.role === "lecture";
+  const clients = lecture ? [] : (await api("GET", "/api/clients")).clients;
+  const types = lecture ? ["facture"] : Object.keys(TYPES_RECH);
+  const opt = (v, t, cur) => html`<option value="${v}" ${v === cur ? "selected" : ""}>${t}</option>`;
+  rendre(page, html`<div class="entete"><div><h1>Recherche</h1>
+      <p>Un ou plusieurs mots : n° de facture ou de proforma, n° de BC ou de DA, nom ou matricule d'un agent, client, service, lieu, mois (« septembre 2026 »), montant… Les accents et majuscules ne comptent pas.</p></div></div>
+    <form class="carte" id="f-r" role="search">
+      <div class="ligne-form lf2"><div class="champ"><label for="r-q">Rechercher</label><input id="r-q" type="search" value="${q}" placeholder="Ex. : FA 159, 493930, KABILA, septembre 2026" autocomplete="off"></div>
+        <div class="champ"><label for="r-type">Type</label><select id="r-type">${opt("", lecture ? "Factures" : "Tout", f.type)}${types.map((t) => opt(t, TYPES_RECH[t], f.type))}</select></div></div>
+      <details id="r-plus" ${f.client || f.statut || f.du || f.au || f.min || f.max ? "open" : ""}><summary>Filtres : client, statut, période, montant</summary>
+        <div class="ligne-form lf3">
+          ${lecture ? "" : html`<div class="champ"><label for="r-client">Client</label><select id="r-client">${opt("", "Tous", f.client)}${clients.map((c) => opt(String(c.id), c.nom, f.client))}</select></div>`}
+          <div class="champ"><label for="r-statut">Statut</label><select id="r-statut">${opt("", "Tous", f.statut)}
+            ${lecture ? "" : html`<optgroup label="Dossiers">${etat.params.statuts.map((x) => opt(x, x, f.statut))}</optgroup>`}
+            <optgroup label="Factures">${STATUTS_FACT.map((x) => opt(x, x, f.statut))}</optgroup></select></div>
+          <div class="champ"><label for="r-du">Du</label><input id="r-du" type="date" value="${f.du}"></div>
+          <div class="champ"><label for="r-au">Au</label><input id="r-au" type="date" value="${f.au}"></div>
+          <div class="champ"><label for="r-min">Montant HT mini</label><input id="r-min" type="number" min="0" step="1" value="${f.min}"></div>
+          <div class="champ"><label for="r-max">Montant HT maxi</label><input id="r-max" type="number" min="0" step="1" value="${f.max}"></div>
+        </div>
+        <p class="doux petit">Période : dates du contrat pour un dossier, date d'émission (ou mois) pour une facture, date d'ajout pour un document. Montant : HT de la facture, ou montant du BC pour un dossier.</p>
+      </details>
+      <div class="actions"><button type="submit">Rechercher</button><button type="button" class="secondaire" id="r-raz">Effacer les filtres</button></div>
+    </form>
+    <div id="r-res"></div>`);
+  const lire = () => {
+    Object.assign(f, { type: $("#r-type").value, client: $("#r-client") ? $("#r-client").value : "", statut: $("#r-statut").value,
+      du: $("#r-du").value, au: $("#r-au").value, min: $("#r-min").value, max: $("#r-max").value });
+  };
+  let num = 0;
+  const chercher = async () => {
+    if (!$("#r-q")) return;                        // page quittée entre-temps
+    lire();
+    const qq = $("#r-q").value.trim();
+    const p = new URLSearchParams({ q: qq });
+    for (const k of ["type", "client", "statut", "du", "au", "min", "max"]) if (f[k]) p.set(k, f[k]);
+    const moi = ++num;
+    let r;
+    try { r = await api("GET", "/api/recherche?" + p.toString()); } catch (e) { $("#r-res").innerHTML = html`<div class="bandeau danger">${e.message}</div>`.s; return; }
+    if (moi !== num || !$("#r-res")) return;       // frappe plus récente, ou page quittée
+    if (location.hash !== "#/recherche/" + encodeURIComponent(qq)) history.replaceState(null, "", "#/recherche/" + encodeURIComponent(qq));
+    afficherResultats(r, qq);
+  };
+  const afficherResultats = (r, qq) => {
+    const zone = $("#r-res");
+    if (!qq && !["client", "statut", "du", "au", "min", "max"].some((k) => f[k])) {
+      zone.innerHTML = html`<p class="doux">Tapez un mot ou choisissez un filtre.</p>`.s;
+      return;
+    }
+    if (!r.total) { zone.innerHTML = html`<div class="carte"><p class="doux">Aucun résultat.</p></div>`.s; return; }
+    const nb = {};
+    r.resultats.forEach((x) => { nb[x.type] = (nb[x.type] || 0) + 1; });
+    zone.innerHTML = html`<div class="carte">
+      <p class="r-total"><b>${r.total} résultat(s)</b>${r.tronque ? " (300 premiers affichés : précisez la recherche)" : ""} ·
+        ${Object.keys(nb).map((t) => html`<span class="badge">${TYPES_RECH[t]} ${nb[t]}</span> `)}</p>
+      <table class="r-table"><thead><tr><th>Type</th><th>Résultat</th><th>Statut</th><th>Date</th><th class="num">Montant HT</th><th></th></tr></thead><tbody>
+      ${r.resultats.map((x) => html`<tr>
+        <td><span class="badge">${TYPES_RECH[x.type].replace(/s$/, "")}</span></td>
+        <td>${x.type === "document" ? html`<b>${x.titre}</b>` : html`<a class="gras" href="${x.lien}">${x.titre}</a>`}
+          <div class="doux petit">${x.detail}</div>${x.agents ? html`<div class="petit">${x.agents}</div>` : ""}</td>
+        <td>${x.statut ? badge(x.statut) : ""}</td>
+        <td class="petit">${x.date ? (x.date.length === 10 && x.type === "facture" && x.date.endsWith("-01") && x.statut === "À émettre" ? x.date.slice(5, 7) + "/" + x.date.slice(0, 4) : dateFr(x.date)) : ""}${x.date_fin ? html`<br>→ ${dateFr(x.date_fin)}` : ""}</td>
+        <td class="num">${fmt(x.montant_ht)}${x.ttc ? html`<div class="doux petit">TTC ${fmt(x.ttc)}</div>` : ""}</td>
+        <td class="actions-ligne">${x.type === "document" ? html`<button class="secondaire petit" data-r-doc="${x.id}">Télécharger</button> <a class="bouton secondaire petit" href="${x.lien_dossier}">Dossier</a>`
+          : x.type === "facture" && x.dossier_id && !lecture ? html`<a class="bouton secondaire petit" href="#/dossier/${x.dossier_id}">Dossier</a>` : ""}</td></tr>`)}
+      </tbody></table></div>`.s;
+    appliquerStyles(zone);
+    $$("[data-r-doc]", zone).forEach((b) => {
+      b.onclick = async () => { try { const n = await telecharger("/api/documents/" + b.dataset.rDoc); if (n) toast("Document enregistré : " + n); } catch (e) { toast(e.message, true); } };
+    });
+  };
+  let minuterie;
+  $("#r-q").oninput = () => { clearTimeout(minuterie); minuterie = setTimeout(chercher, 300); };
+  $$("#f-r select, #f-r input:not(#r-q)").forEach((el) => { el.onchange = chercher; });
+  $("#f-r").onsubmit = (e) => { e.preventDefault(); chercher(); };
+  $("#r-raz").onclick = () => {
+    Object.assign(f, { type: "", client: "", statut: "", du: "", au: "", min: "", max: "" });
+    ["#r-type", "#r-client", "#r-statut", "#r-du", "#r-au", "#r-min", "#r-max"].forEach((sel) => { if ($(sel)) $(sel).value = ""; });
+    chercher();
+  };
+  $("#r-q").focus();
+  chercher();
 }
 
 async function pageJournal(page) {

@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import os
 import re
+import unicodedata
 
 import db
 import docx_facture
@@ -587,6 +588,184 @@ def modifier_client(ctx, g, body):
         journaliser(ctx, "client_modifie", r["code"], c["nom"])
     return {"ok": True}
 
+
+
+# ---------------------------------------------------------------------------
+# Recherche globale : dossiers, factures, documents, clients, intérimaires
+# ---------------------------------------------------------------------------
+TYPES_RECHERCHE = ("dossier", "facture", "document", "client", "interimaire")
+STATUTS_FACTURE = ["À émettre", "À envoyer", "Envoyée", "En retard", "Payée", "Remplacée"]
+LIBELLE_TYPE_FACTURE = {"MAD": "mise à disposition", "VISITE": "visite médicale", "BIS": "bis ajustée PV"}
+
+
+def _normal(t):
+    """Minuscules, sans accents, espaces des nombres retirés (6 921 000 = 6921000)."""
+    t = unicodedata.normalize("NFD", str(t or "")).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"(?<=\d)[\s.  ](?=\d{3}\b)", "", t)
+
+
+def _mots(q):
+    return [m for m in _normal(q).split() if m]
+
+
+def _trouve(mots, *champs):
+    blob = _normal(" ".join(str(c) for c in champs if c not in (None, "")))
+    blob += " " + blob.replace(" ", "")
+    return all(m in blob for m in mots)
+
+
+def _mois_lisible(m):
+    try:
+        d = dt.date.fromisoformat(m[:10])
+        return "%s %d" % (M.MOIS_FR[d.month - 1], d.year)
+    except (TypeError, ValueError):
+        return ""
+
+
+def recherche(ctx, g, body):
+    """Recherche dans toute l'entreprise connectée (une seule base : rien d'une autre
+    entreprise). Plusieurs mots = tous doivent se trouver. Filtres facultatifs :
+    type, client, statut, période (du/au), montant HT (min/max). Rôle Lecture :
+    factures seulement (pas de dossiers, documents ni intérimaires)."""
+    con, q = ctx["con"], ctx["query"]
+    texte_q = (q.get("q") or "").strip()[:120]
+    mots = _mots(texte_q)
+    type_ = q.get("type") or ""
+    if type_ and type_ not in TYPES_RECHERCHE:
+        raise ErreurAPI(400, "Type de recherche inconnu.")
+    client = q.get("client") or ""
+    if client and not client.isdigit():
+        raise ErreurAPI(400, "Client invalide.")
+    client = int(client) if client else None
+    statut = q.get("statut") or ""
+    if statut and statut not in M.STATUTS + STATUTS_FACTURE:
+        raise ErreurAPI(400, "Statut inconnu.")
+    du = date_(q, "du", requis=False)
+    au = date_(q, "au", requis=False)
+    mini = entier(q, "min", 0, 10_000_000_000, requis=False) if q.get("min") else None
+    maxi = entier(q, "max", 0, 10_000_000_000, requis=False) if q.get("max") else None
+    if not mots and not any([client, statut, du, au, mini is not None, maxi is not None]):
+        return {"resultats": [], "total": 0, "tronque": False}
+    lecture = ctx["user"]["role"] == "lecture"
+    types = ("facture",) if lecture else TYPES_RECHERCHE
+    if type_:
+        types = tuple(t for t in types if t == type_)
+    filtre_doc = statut or mini is not None or maxi is not None   # sans objet pour clients / intérimaires
+    res = []
+
+    def montant_ok(v):
+        if mini is None and maxi is None:
+            return True
+        return v is not None and (mini is None or v >= mini) and (maxi is None or v <= maxi)
+
+    def periode_ok(debut, fin=None):
+        fin = fin or debut
+        if not debut:
+            return not (du or au)
+        return (not du or fin >= du.isoformat()) and (not au or debut[:10] <= au.isoformat())
+
+    if "dossier" in types:
+        rows = con.execute(
+            "SELECT d.id, d.numero_proforma, d.num_da, d.service, d.imputation, d.lieu, d.date_debut, d.date_fin, "
+            "d.date_proforma, d.statut, d.bc_numero, d.bc_montant, d.notes, d.client_id, c.nom AS client_nom, "
+            "(SELECT GROUP_CONCAT(a.nom || ' ' || a.poste || ' ' || COALESCE(i.matricule, ''), ' | ') FROM agents a "
+            " LEFT JOIN interimaires i ON i.id = a.interimaire_id WHERE a.dossier_id = d.id) AS agents, "
+            "(SELECT GROUP_CONCAT(a.nom, ' | ') FROM agents a WHERE a.dossier_id = d.id) AS noms, "
+            "(SELECT COUNT(*) FROM agents a WHERE a.dossier_id = d.id) AS nb_agents "
+            "FROM dossiers d JOIN clients c ON c.id = d.client_id ORDER BY d.num_seq DESC").fetchall()
+        for d in rows:
+            if client and d["client_id"] != client or statut and d["statut"] != statut:
+                continue
+            if not periode_ok(d["date_debut"], d["date_fin"]) or not montant_ok(d["bc_montant"]):
+                continue
+            if mots and not _trouve(mots, d["numero_proforma"], d["num_da"], d["service"], d["imputation"], d["lieu"],
+                                    d["bc_numero"], d["client_nom"], d["agents"], d["notes"], d["statut"]):
+                continue
+            noms = (d["noms"] or "").split(" | ")
+            res.append({"type": "dossier", "id": d["id"], "titre": d["numero_proforma"], "statut": d["statut"],
+                        "detail": "%s · %s · %s · %d agent(s)%s" % (d["client_nom"], d["service"], d["lieu"], d["nb_agents"],
+                                                                    (" · BC " + d["bc_numero"]) if d["bc_numero"] else ""),
+                        "agents": ", ".join(noms[:3]) + (" …" if len(noms) > 3 else ""),
+                        "date": d["date_debut"], "date_fin": d["date_fin"], "montant_ht": d["bc_montant"],
+                        "lien": "#/dossier/%d" % d["id"]})
+
+    if "facture" in types:
+        client_de = dict(con.execute("SELECT id, client_id FROM dossiers").fetchall())
+        for f in _vue_factures(con.execute(SQL_FACTURES + ORDRE_FACTURES).fetchall(), con):
+            if client and client_de[f["dossier_id"]] != client:
+                continue
+            if statut and f["statut"] != statut:
+                continue
+            if not periode_ok(f["date_facture"] or f["mois"]) or not montant_ok(f["montant_ht"]):
+                continue
+            if mots and not _trouve(mots, f["numero"], f["agent"], f.get("matricule"), f["client_nom"], f["bc_numero"],
+                                    f["numero_proforma"], f["service"], f["lieu"], _mois_lisible(f["mois"]),
+                                    LIBELLE_TYPE_FACTURE.get(f["type"]), f["montant_ht"], f["ttc"], f["ref_paiement"],
+                                    f["remarque"], f["statut"], "facture"):
+                continue
+            res.append({"type": "facture", "id": f["id"], "titre": f["numero"] or "Facture prévue (pas encore émise)",
+                        "statut": f["statut"], "detail": "%s · %s · %s" % (f["client_nom"], LIBELLE_TYPE_FACTURE.get(f["type"], ""),
+                                                                          _mois_lisible(f["mois"])),
+                        "agents": f["agent"], "date": f["date_facture"] or f["mois"], "montant_ht": f["montant_ht"],
+                        "ttc": f["ttc"], "dossier_id": f["dossier_id"],
+                        "lien": ("#/imprimer/factures/%d" % f["id"]) if f["numero"] and f["statut"] != "Remplacée"
+                        else ("#/factures" if lecture else "#/dossier/%d" % f["dossier_id"])})
+
+    if "document" in types and not filtre_doc:
+        rows = con.execute(
+            "SELECT o.id, o.categorie, o.nom, o.ajoute_le, o.taille, o.dossier_id, d.numero_proforma, d.bc_numero, d.client_id, "
+            "c.nom AS client_nom, f.numero AS facture_numero, "
+            "(SELECT GROUP_CONCAT(a.nom, ' | ') FROM agents a WHERE a.dossier_id = d.id) AS agents "
+            "FROM documents o JOIN dossiers d ON d.id = o.dossier_id JOIN clients c ON c.id = d.client_id "
+            "LEFT JOIN factures f ON f.id = o.facture_id WHERE o.retire_le IS NULL ORDER BY o.ajoute_le DESC, o.id DESC").fetchall()
+        for o in rows:
+            if client and o["client_id"] != client or not periode_ok(o["ajoute_le"][:10]):
+                continue
+            if mots and not _trouve(mots, o["categorie"], o["nom"], o["numero_proforma"], o["bc_numero"], o["client_nom"],
+                                    o["facture_numero"], o["agents"], "document piece"):
+                continue
+            res.append({"type": "document", "id": o["id"], "titre": o["nom"], "statut": o["categorie"],
+                        "detail": "%s · %s" % (o["client_nom"], o["numero_proforma"]), "date": o["ajoute_le"][:10],
+                        "taille": o["taille"], "dossier_id": o["dossier_id"],
+                        "lien": "/api/documents/%d" % o["id"], "lien_dossier": "#/dossier/%d" % o["dossier_id"]})
+
+    if "client" in types and not filtre_doc and not (du or au):
+        for c in con.execute("SELECT * FROM clients ORDER BY nom").fetchall():
+            if client and c["id"] != client:
+                continue
+            if mots and not _trouve(mots, c["code"], c["nom"], c["ville"], c["adresse"], c["contact"], c["email"], c["telephone"]):
+                continue
+            if not mots and not client:
+                continue
+            res.append({"type": "client", "id": c["id"], "titre": c["nom"], "statut": "Actif" if c["actif"] else "Inactif",
+                        "detail": " · ".join(x for x in (c["ville"], c["contact"], c["telephone"], c["email"]) if x),
+                        "lien": "#/clients"})
+
+    if "interimaire" in types and not filtre_doc and not (du or au) and not client and mots:
+        for i in con.execute(
+                "SELECT i.id, i.matricule, i.nom, (SELECT GROUP_CONCAT(DISTINCT a.poste) FROM agents a WHERE a.interimaire_id = i.id) "
+                "AS postes, (SELECT MAX(a.dossier_id) FROM agents a WHERE a.interimaire_id = i.id) AS dernier, "
+                "(SELECT COUNT(DISTINCT a.dossier_id) FROM agents a WHERE a.interimaire_id = i.id) AS nb "
+                "FROM interimaires i ORDER BY i.nom").fetchall():
+            if not _trouve(mots, i["matricule"], i["nom"], i["postes"]):
+                continue
+            res.append({"type": "interimaire", "id": i["id"], "titre": i["nom"], "statut": i["matricule"],
+                        "detail": "%s · %d dossier(s)" % (i["postes"] or "", i["nb"]),
+                        "lien": ("#/dossier/%d" % i["dernier"]) if i["dernier"] else "#/interimaires"})
+
+    # le plus pertinent d'abord : n° / nom qui contient toute la recherche, puis tous les mots dans le titre
+    if mots:
+        entier_q = "".join(mots)
+
+        def rang(r):
+            t = _normal(r["titre"])
+            if entier_q in t.replace(" ", ""):
+                return 0
+            t += " " + _normal("%s %s" % (r.get("detail", ""), r.get("agents", "")))
+            return 1 if all(m in t for m in mots) else 2
+        res.sort(key=rang)      # tri stable : à pertinence égale, dossiers, factures, documents, clients, intérimaires
+    total = len(res)
+    return {"resultats": res[:300], "total": total, "tronque": total > 300}
 
 # ---------------------------------------------------------------------------
 # Dossiers (DA -> proforma -> BC)

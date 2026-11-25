@@ -183,6 +183,10 @@ class TestsMultiEntreprises(unittest.TestCase):
         self.assertEqual(t["personnes_en_contrat"], 0)
         st, j = b.req("GET", "/api/journal")
         self.assertNotIn("ALPHA", json.dumps(j).upper())     # aucune action d'Alpha dans le journal de Beta
+        st, j = b.req("GET", "/api/recherche?q=alpha")
+        self.assertEqual((st, j["total"]), (200, 0))         # la recherche ne sort jamais de l'entreprise
+        st, j = a.req("GET", "/api/recherche?q=alpha")
+        self.assertGreater(j["total"], 0)
         # et les n° de Beta ne bougent pas avec ceux d'Alpha
         st, cl = b.req("POST", "/api/clients", {"code": "CLB", "nom": "Client de Beta"})
         st, cl = b.req("GET", "/api/clients")

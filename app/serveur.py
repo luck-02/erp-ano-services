@@ -95,6 +95,7 @@ ROUTES = [
     ("PUT", r"/api/factures/(\d+)/remarque", api.remarque_facture, EQUIPE),
     ("PUT", r"/api/factures/(\d+)", api.modifier_facture, EQUIPE),
     ("GET", r"/api/tableau-de-bord", api.tableau_de_bord, TOUS),
+    ("GET", r"/api/recherche", api.recherche, TOUS),
     ("GET", r"/api/signature", api.signature, TOUS),
     ("GET", r"/api/logo", api.logo, TOUS),
     ("PUT", r"/api/images/(logo|signature)", api.televerser_image, (A,)),

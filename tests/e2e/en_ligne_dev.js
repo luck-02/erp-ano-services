@@ -48,7 +48,7 @@ async function connexion(page) {
 
 const PAGES = [['#/tableau', '.kpi'], ['#/dossiers', 'table'], ['#/dossier/2', '#ds-docs table'], ['#/dossier/4', '#ds-docs table'],
   ['#/factures', '#fa-m'], ['#/nouvelle-da', '#f-da'], ['#/clients', '#cl-plus'], ['#/interimaires', '.entete'],
-  ['#/journal', '.entete'], ['#/parametres', 'form'], ['#/utilisateurs', '.entete']];
+  ['#/journal', '.entete'], ['#/parametres', 'form'], ['#/utilisateurs', '.entete'], ['#/recherche/ndong', '.r-table']];
 
 (async () => {
   const navigateur = await chromium.launch(process.env.CHROMIUM_ARGS ? { args: [process.env.CHROMIUM_ARGS] } : {});
@@ -111,6 +111,24 @@ const PAGES = [['#/tableau', '.kpi'], ['#/dossiers', 'table'], ['#/dossier/2', '
     const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#imp-word')]);
     const w = path.join(OUT, dl.suggestedFilename()); await dl.saveAs(w);
     verifier(fs.readFileSync(w).slice(0, 2).toString() === 'PK', 'export Word des factures du groupe (' + dl.suggestedFilename() + ')');
+
+    // recherche globale : touche « / », plusieurs mots, filtres
+    await page.goto(SITE + '/#/tableau'); await page.waitForSelector('.kpi');
+    await page.keyboard.press('/'); await page.keyboard.type('nguema septembre'); await page.keyboard.press('Enter');
+    await page.waitForSelector('.r-table'); await page.waitForTimeout(400);
+    const rt = await page.textContent('#r-res');
+    verifier(/FA 59\/09\/2026/.test(rt) && /FA 59 bis\/09\/2026/.test(rt), 'recherche « nguema septembre » (touche /) : facture et « bis » trouvées');
+    await page.fill('#r-q', ''); await page.click('#r-plus summary'); await page.selectOption('#r-statut', 'En retard');
+    await page.locator('.r-total', { hasText: '1 résultat' }).waitFor();
+    verifier(/FA 51\/09\/2026/.test(await page.textContent('#r-res')), 'filtre « En retard » : la facture en retard seule');
+    await page.click('#r-raz');
+    await page.fill('#r-q', 'DA fictive'); await page.selectOption('#r-type', 'document');
+    await page.waitForSelector('[data-r-doc]');
+    const [dd] = await Promise.all([page.waitForEvent('download'), page.click('[data-r-doc]')]);
+    const pd = path.join(OUT, dd.suggestedFilename()); await dd.saveAs(pd);
+    verifier(fs.readFileSync(pd).slice(0, 5).toString() === '%PDF-', 'document trouvé et téléchargé depuis la recherche (' + dd.suggestedFilename() + ')');
+    await page.selectOption('#r-type', '');
+    await page.screenshot({ path: path.join(OUT, '15-recherche.png'), fullPage: true });
 
     // facture « bis » et facture corrigée
     await page.goto(SITE + '/#/dossier/4'); await page.waitForSelector('#ds-docs table'); await page.waitForTimeout(400);

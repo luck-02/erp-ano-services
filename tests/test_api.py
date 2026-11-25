@@ -763,6 +763,43 @@ class TestsAPI(unittest.TestCase):
         nums = sorted(x["numero"] for x in f["factures"])
         self.assertEqual(nums, sorted(["FA %d/Visite médicale/2027" % (n0 + 2), "FA %d/06/2027" % (n0 + 3)]))
 
+    def test_21_recherche(self):
+        """Recherche globale : plusieurs mots, accents, n° avec espaces, filtres, rôles."""
+        a = self.admin
+        st, j = a.req("GET", "/api/recherche?q=")
+        self.assertEqual((st, j["total"]), (200, 0))                 # rien à chercher
+        st, j = a.req("GET", "/api/recherche?q=testeur%20r%C3%A9f%C3%A9rence")
+        self.assertEqual(st, 200, j)
+        types = {r["type"] for r in j["resultats"]}
+        self.assertIn("dossier", types)
+        self.assertIn("facture", types)
+        self.assertIn("interimaire", types)
+        self.assertTrue(all("salaire" not in r and "576300" not in str(r) for r in j["resultats"]))
+        st, j = a.req("GET", "/api/recherche?q=testeur&type=facture")
+        self.assertTrue(j["resultats"] and all(r["type"] == "facture" for r in j["resultats"]))
+        num = [r for r in j["resultats"] if r["titre"].startswith("FA ")][0]["titre"]
+        st, j = a.req("GET", "/api/recherche?q=" + urllib.parse.quote(num, safe=""))
+        self.assertEqual(j["resultats"][0]["titre"], num)            # le n° exact arrive en tête
+        st, j = a.req("GET", "/api/recherche?type=facture&statut=Pay%C3%A9e&min=1&max=999999999")
+        self.assertTrue(all(r["statut"] == "Payée" for r in j["resultats"]))
+        st, j = a.req("GET", "/api/recherche?q=testeur&du=2040-01-01")
+        self.assertEqual(j["total"], 0)
+        st, j = a.req("GET", "/api/recherche?type=pirate")
+        self.assertEqual(st, 400)
+        st, j = a.req("GET", "/api/recherche?q=x&min=abc")
+        self.assertEqual(st, 400)
+        # rôle Lecture : factures seulement
+        l = Client()
+        st, j = a.req("POST", "/api/utilisateurs", {"identifiant": "lecteur-rech", "nom": "L", "role": "lecture",
+                                                     "mot_de_passe": "Temporaire-Lecture-77"})
+        l.connexion("lecteur-rech", "Temporaire-Lecture-77")
+        l.req("POST", "/api/moi/mot-de-passe", {"actuel": "Temporaire-Lecture-77", "nouveau": "Lecture-Recherche-2027!"})
+        st, j = l.req("GET", "/api/recherche?q=testeur")
+        self.assertEqual(st, 200, j)
+        self.assertTrue(j["resultats"] and {r["type"] for r in j["resultats"]} == {"facture"})
+        st, j = l.req("GET", "/api/recherche?q=testeur&type=document")
+        self.assertEqual(j["total"], 0)
+
     def test_99_parametres_entreprise(self):
         """V1 B2B : codes de n°, TVA visite et images réglables ; ANO inchangé par défaut."""
         a = self.admin

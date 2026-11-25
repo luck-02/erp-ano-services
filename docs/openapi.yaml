@@ -552,6 +552,20 @@ paths:
       summary: Personnes en contrat, facturé, payé, en retard, alertes visites médicales
       parameters: [{name: mois, in: query, schema: {type: string, example: 2026-11}}]
       responses: {"200": {description: OK, content: {application/json: {example: {mois: 2026-11, libelle: Novembre 2026, personnes_en_contrat: 12, personnes_en_attente: 2, a_facturer_ht: 9500000, facture_ttc: 11210000, paye: 4200000, reste_a_encaisser: 7010000, factures_en_retard: 3, alertes_visite: [], a_faire: {a_emettre: 4, a_envoyer: 2, en_retard: 3, brouillons: 1, sans_bc: 0}}}}}}
+  /api/recherche:
+    get:
+      tags: [Tableau de bord]
+      summary: Recherche globale (dossiers, factures, documents, clients, intérimaires) dans l'entreprise connectée ; Lecture = factures seulement
+      parameters:
+        - {name: q, in: query, description: "Mots cherchés (tous doivent se trouver ; accents et majuscules ignorés)", schema: {type: string, example: "nguema septembre"}}
+        - {name: type, in: query, schema: {type: string, enum: [dossier, facture, document, client, interimaire]}}
+        - {name: client, in: query, schema: {type: integer}}
+        - {name: statut, in: query, description: "Statut de dossier ou de facture", schema: {type: string, example: En retard}}
+        - {name: du, in: query, schema: {type: string, format: date}}
+        - {name: au, in: query, schema: {type: string, format: date}}
+        - {name: min, in: query, description: "Montant HT minimum", schema: {type: integer}}
+        - {name: max, in: query, description: "Montant HT maximum", schema: {type: integer}}
+      responses: {"200": {description: OK, content: {application/json: {example: {total: 1, tronque: false, resultats: [{type: facture, id: 12, titre: FA 59/09/2026, statut: Remplacée, detail: "CLIENT FICTIF · mise à disposition · Septembre 2026", agents: AGENT Fictif, date: "2026-09-30", montant_ht: 859500, ttc: 1014210, dossier_id: 4, lien: "#/imprimer/factures/12"}]}}}}, "400": {description: Filtre invalide}}
   /api/logo:
     get:
       tags: [Paramètres]

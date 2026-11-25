@@ -1,0 +1,21 @@
+const { chromium } = require('playwright');
+(async () => {
+  const b = await chromium.launch({ args: ['--host-resolver-rules=MAP dev.local 127.0.0.1'] });
+  const c = await b.newContext({ viewport: { width: 1360, height: 900 } });
+  const p = await c.newPage(); const err = []; p.on('pageerror', (e) => err.push(e.message)); p.on('console', (m) => { if (m.type() === 'error' && !/Cross-Origin/.test(m.text())) err.push(m.text()); });
+  await p.goto('http://dev.local:8799/'); await p.waitForSelector('#f-cnx');
+  await p.fill('#c-ent','verif'); await p.fill('#c-id','direction'); await p.fill('#c-mdp', process.argv[2]);
+  await p.click('#f-cnx button'); await p.waitForSelector('.kpi');
+  await p.keyboard.press('/'); await p.keyboard.type('nguema septembre'); await p.keyboard.press('Enter');
+  await p.waitForSelector('.r-table'); await p.waitForTimeout(300);
+  console.log(p.url(), await p.textContent('.r-total'));
+  await p.screenshot({ path: '/mnt/project-files/erp-mvp-captures/recherche-pc.png', fullPage: true });
+  await p.click('#r-plus summary'); await p.selectOption('#r-statut', 'En retard'); await p.fill('#r-q', ''); await p.waitForTimeout(800);
+  console.log(await p.textContent('#r-res'));
+  await p.setViewportSize({ width: 390, height: 844 });
+  await p.fill('#r-q', 'fa 59'); await p.selectOption('#r-statut', ''); await p.waitForTimeout(800);
+  await p.screenshot({ path: '/mnt/project-files/erp-mvp-captures/recherche-tel.png', fullPage: true });
+  console.log('scroll', await p.evaluate(() => document.documentElement.scrollWidth));
+  console.log('err', err);
+  await b.close();
+})();

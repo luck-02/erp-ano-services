@@ -9,6 +9,8 @@ Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git
 
 ## En cours (branche dev)
 
+- Recherche globale (case en haut du menu, touche « / ») : dossiers, factures, documents, clients, intérimaires ; plusieurs mots, accents ignorés, n° et montants avec espaces ; filtres type, client, statut, période, montant HT ; Lecture = factures seulement ; jamais hors de l'entreprise connectée.
+
 - Mise en page : la page ne défile plus jamais de côté, quelles que soient la largeur et le zoom (le menu restait coupé sur la page dossier) ; un tableau trop large défile dans son cadre.
 
 - Site de test : jeu de données fictives (`outils/donnees_fictives.py` : agent seul, groupe de 9, prolongation, prorata, « bis », facture corrigée, visite à l'anniversaire, trop-perçu, DA annulée). L'entreprise « essai » est remplie une fois ; l'entreprise « verif » est recréée à chaque mise à jour pour les tests en ligne (`tests/en_ligne/verifier_dev_api.py`, `tests/e2e/en_ligne_dev.js`).
