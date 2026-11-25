@@ -616,7 +616,8 @@ def modifier_client(ctx, g, body):
 # ---------------------------------------------------------------------------
 TYPES_RECHERCHE = ("dossier", "facture", "document", "client", "interimaire")
 STATUTS_FACTURE = ["À émettre", "À envoyer", "Envoyée", "En retard", "Payée", "Remplacée"]
-LIBELLE_TYPE_FACTURE = {"MAD": "mise à disposition", "VISITE": "visite médicale", "BIS": "bis ajustée PV"}
+LIBELLE_TYPE_FACTURE = {"MAD": "mise à disposition", "VISITE": "visite médicale", "BIS": "bis ajustée PV",
+                        "HS": "heures supplémentaires"}
 
 
 def _normal(t):
@@ -731,6 +732,21 @@ def recherche(ctx, g, body):
                         "ttc": f["ttc"], "dossier_id": f["dossier_id"],
                         "lien": ("#/imprimer/factures/%d" % f["id"]) if f["numero"] and f["statut"] != "Remplacée"
                         else ("#/factures" if lecture else "#/dossier/%d" % f["dossier_id"])})
+        for f in factures_hs(con):
+            if client and f["client_id"] != client or statut and f["statut"] != statut:
+                continue
+            if not periode_ok(f["date_facture"]) or not montant_ok(f["montant_ht"]):
+                continue
+            if mots and not _trouve(mots, f["numero"], f["agent"], f.get("matricule"), f["client_nom"], f["bc_numero"],
+                                    f["numero_proforma"], f["service"], f["lieu"], _mois_lisible(f["mois"]),
+                                    "heures supplementaires sup HS", f["montant_ht"], f["ttc"], f["ref_paiement"],
+                                    f["statut"], "facture"):
+                continue
+            res.append({"type": "facture", "id": f["id"], "titre": f["numero"], "statut": f["statut"],
+                        "detail": "%s · heures supplémentaires · %s" % (f["client_nom"], _mois_lisible(f["mois"])),
+                        "agents": f["agent"], "date": f["date_facture"], "montant_ht": f["montant_ht"], "ttc": f["ttc"],
+                        "dossier_id": f["dossier_id"], "hs_id": f["id"],
+                        "lien": "#/factures" if lecture else "#/hs/%d" % f["id"]})
 
     if "document" in types and not filtre_doc:
         rows = con.execute(
@@ -1245,6 +1261,37 @@ def _vue_factures(rows, con=None):
     return res
 
 
+def factures_hs(con, mois=None, dossier=None):
+    """Factures FA H émises (heures supplémentaires), au même format que les
+    factures mensuelles pour les listes, l'export, la recherche et les relances.
+    Le mois retenu est celui de la date de facture."""
+    sql = ("SELECT h.id, h.dossier_id, h.facture_numero AS numero, h.facture_date AS date_facture, h.echeance, "
+           "h.montant_ht, h.tva, h.ttc, h.envoyee_le, h.paye_le, h.montant_paye, h.ref_paiement, h.bc_numero, "
+           "a.nom AS agent, a.poste, i.matricule, d.numero_proforma, d.service, d.lieu, d.client_id, c.nom AS client_nom "
+           "FROM heures_sup h JOIN agents a ON a.id = h.agent_id JOIN dossiers d ON d.id = h.dossier_id "
+           "JOIN clients c ON c.id = d.client_id LEFT JOIN interimaires i ON i.id = a.interimaire_id "
+           "WHERE h.facture_numero IS NOT NULL")
+    args = []
+    if mois:
+        sql += " AND substr(h.facture_date, 1, 7) = ?"
+        args.append(mois.isoformat()[:7])
+    if dossier:
+        sql += " AND h.dossier_id = ?"
+        args.append(dossier)
+    auj = aujourdhui()
+    res = []
+    for r in con.execute(sql + " ORDER BY h.facture_date, h.facture_num_seq, h.id", args).fetchall():
+        x = dict(r)
+        x.update(type="HS", hs_id=x["id"], mois=x["date_facture"][:7] + "-01", remarque="", remplacee_par_id=None)
+        x["statut"] = M.statut_facture(x, auj)
+        x["retard_jours"] = None
+        if x["echeance"]:
+            fin = dt.date.fromisoformat(x["paye_le"]) if x["paye_le"] else auj
+            x["retard_jours"] = max(0, (fin - dt.date.fromisoformat(x["echeance"])).days)
+        res.append(x)
+    return res
+
+
 def liste_factures(ctx, g, body):
     con, q = ctx["con"], ctx["query"]
     cond, args = [], []
@@ -1264,10 +1311,13 @@ def liste_factures(ctx, g, body):
         args += ids
     sql = SQL_FACTURES + (" WHERE " + " AND ".join(cond) if cond else "") + ORDRE_FACTURES
     res = _vue_factures(con.execute(sql, args).fetchall(), con)
+    hs = [] if q.get("ids") else factures_hs(con, mois_(q["mois"]) if q.get("mois") else None,
+                                              int(q["dossier"]) if q.get("dossier") else None)
     st = q.get("statut", "")
     if st:
         res = [x for x in res if x["statut"] == st]
-    return {"factures": res}
+        hs = [x for x in hs if x["statut"] == st]
+    return {"factures": res, "factures_hs": hs}
 
 
 def _dernier_num_facture(con):
@@ -1831,10 +1881,11 @@ def _cellule_csv(v):
 def factures_csv(ctx, g, body):
     """Liste des factures (mêmes filtres que l'écran) en CSV lisible par
     Excel et Numbers. Aucun salaire : seulement les montants facturés."""
-    res = liste_factures(ctx, g, body)["factures"]
+    lf = liste_factures(ctx, g, body)
+    res = lf["factures"] + lf["factures_hs"]
     entetes = ["N° facture", "Mois", "Type", "Agent", "Poste", "Client", "BC", "Montant HT", "TVA", "TTC",
                "Date facture", "Échéance", "Statut", "Envoyée le", "Payée le", "Réf. paiement", "Remarque"]
-    types = {"MAD": "Mise à disposition", "VISITE": "Visite médicale", "BIS": "Facture bis (PV)"}
+    types = {"MAD": "Mise à disposition", "VISITE": "Visite médicale", "BIS": "Facture bis (PV)", "HS": "Heures supplémentaires"}
     lignes = [";".join(entetes)]
     for f in res:
         lignes.append(";".join(_cellule_csv(v) for v in (

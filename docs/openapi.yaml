@@ -455,7 +455,7 @@ paths:
   /api/factures:
     get:
       tags: [Factures]
-      summary: Liste des factures (tous rôles ; jamais de salaire de base)
+      summary: "Liste des factures (tous rôles ; jamais de salaire de base). factures_hs : factures FA H émises, mêmes filtres (mois = mois de la date de facture)"
       parameters:
         - {name: mois, in: query, schema: {type: string, example: 2026-11}}
         - {name: statut, in: query, schema: {type: string}}

@@ -156,6 +156,11 @@ const PAGES = [['#/tableau', '.kpi'], ['#/dossiers', 'table'], ['#/dossier/2', '
     verifier(fs.readFileSync(wf).slice(0, 2).toString() === 'PK' && /Fiche/.test(dlf.suggestedFilename()), 'fiche d\'attachement en Word (' + dlf.suggestedFilename() + ')');
     await page.screenshot({ path: path.join(OUT, 'hs-signatures.png'), fullPage: true });
 
+    // les factures FA H apparaissent dans la page Factures
+    await page.goto(SITE + '/#/factures'); await page.waitForSelector('#t-fact');
+    await page.click('#fa-tous'); await page.waitForSelector('#fa-hs tr[data-hs]');
+    verifier(/FA H \d+\/11\/2026/.test(await page.textContent('#fa-hs')), 'page Factures : les factures FA H sont listées avec leur statut');
+
     // heures supplémentaires : fiche d'attachement, Proforma H et facture FA H, chacune sur 1 page
     for (const [t, motif, lib] of [['fiche-hs', /Fiche d'attachement/, 'fiche d\'attachement'], ['devis-hs', /Proforma H[\s\S]*Montant Total/, 'Proforma H'],
       ['facture-hs', /Facture N° FA H [\s\S]*Heures supplémentaires de/, 'facture FA H']]) {

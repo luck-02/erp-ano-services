@@ -1037,6 +1037,19 @@ class TestsAPI(unittest.TestCase):
         st, d2 = a.req("GET", "/api/dossiers/%d" % dos["id"])
         self.assertEqual(len(d2["heures_sup"]), 2)
         self.assertNotIn("FA H", "".join(x["numero"] or "" for x in d2["factures"]))   # séries séparées
+        # les FA H suivent les autres factures : page Factures, statut (payée / à envoyer), export, recherche
+        st, lf = a.req("GET", "/api/factures?mois=2026-11")
+        fh = {x["numero"]: x for x in lf["factures_hs"]}
+        self.assertEqual(set(fh), {"FA H 110/11/2026", "FA H 111/11/2026"})
+        self.assertEqual((fh["FA H 110/11/2026"]["statut"], fh["FA H 111/11/2026"]["statut"]), ("Payée", "À envoyer"))
+        st, lf = a.req("GET", "/api/factures?statut=" + urllib.parse.quote("À envoyer"))
+        self.assertEqual([x["numero"] for x in lf["factures_hs"]], ["FA H 111/11/2026"])
+        self.assertEqual(a.req("GET", "/api/factures?mois=2026-10")[1]["factures_hs"], [])
+        st, csv = a.req("GET", "/api/factures/export.csv?mois=2026-11")
+        self.assertIn("FA H 111/11/2026;", csv.decode("utf-8"))
+        self.assertIn("Heures supplémentaires", csv.decode("utf-8"))
+        st, rq = a.req("GET", "/api/recherche?q=" + urllib.parse.quote("FA H 111"))
+        self.assertEqual([(x["titre"], x["lien"]) for x in rq["resultats"]], [("FA H 111/11/2026", "#/hs/%d" % h2)])
         # lignes invalides
         for mauvais in ([{"date": "2026-10-12"}], [{"date": "2026-10-12", "heures": "30"}], [{"date": "x", "heures": 2}],
                         [{"date": "2026-10-12", "debut": "25:00", "fin": "26:00"}]):
