@@ -7,3 +7,6 @@ erp.exemple.com {
 		max_size 12MB
 	}
 }
+
+# Autres sites sur ce serveur (ex. site de test dev.…, ajouté par installer-dev.sh)
+import /etc/caddy/autres/*.caddy

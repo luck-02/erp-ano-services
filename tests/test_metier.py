@@ -3,6 +3,7 @@ import datetime as dt
 import os
 import sys
 import unittest
+from fractions import Fraction
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app"))
 import db  # noqa: E402
@@ -75,6 +76,42 @@ class TestsMetier(unittest.TestCase):
     def test_arrondi(self):
         self.assertEqual(M.arrondi(2.5), 3)
         self.assertEqual(M.tva(1064042, 1800), 191528)
+
+    def test_heures_supplementaires(self):
+        # devis H d'exemple : coût mensuel 1 287 760, 27 h à 28 %, 28 h à 56 %, 15 h à 75 % -> 776 311
+        r = M.hs_lignes_montants(1287760, [27, 28, 15], [2800, 5600, 7500])
+        self.assertEqual(r["taux_horaire"], 7430)
+        self.assertEqual([x["taux_horaire"] for x in r["lignes"]], [9510, 11590, 13002])
+        self.assertEqual([x["total"] for x in r["lignes"]], [256764, 324522, 195025])
+        self.assertEqual(r["total"], 776311)
+        d = dt.date
+        # fiche d'exemple (70 h) : semaines du calendrier, 8 premières h à 28 %, reste à 56 %, dimanche à 75 % -> 27 / 28 / 15
+        fiche = [(d(2026, 9, 26), 8), (d(2026, 9, 26), 4), (d(2026, 9, 26), 4), (d(2026, 9, 26), 3), (d(2026, 10, 2), 6),
+                 (d(2026, 10, 2), 4), (d(2026, 10, 13), 4), (d(2026, 10, 13), 3), (d(2026, 10, 13), 4), (d(2026, 10, 13), 4),
+                 (d(2026, 10, 14), 4), (d(2026, 10, 15), 4), (d(2026, 10, 18), 8), (d(2026, 10, 18), 4), (d(2026, 10, 18), 3),
+                 (d(2026, 10, 19), 3)]
+        tot, sem = M.hs_classer([{"date": x, "heures": h} for x, h in fiche])
+        self.assertEqual(tot, {"h1": 27, "h2": 28, "h3": 15})
+        self.assertEqual([(w["du"], w["total"], w["h1"], w["h2"], w["h3"]) for w in sem],
+                         [(d(2026, 9, 21), 19, 8, 11, 0), (d(2026, 9, 28), 10, 8, 2, 0),
+                          (d(2026, 10, 12), 38, 8, 15, 15), (d(2026, 10, 19), 3, 3, 0, 0)])
+        self.assertEqual(M.hs_lignes_montants(1287760, [tot["h1"], tot["h2"], tot["h3"]], [2800, 5600, 7500])["total"], 776311)
+        # jour férié (17 août, chaque année) et férié ponctuel (lundi de Pâques 2026)
+        tot, _ = M.hs_classer([{"date": d(2026, 8, 17), "heures": 5}, {"date": d(2026, 4, 6), "heures": 2},
+                               {"date": d(2026, 8, 18), "heures": 10}], feries={"08-17", "2026-04-06"})
+        self.assertEqual(tot, {"h1": 8, "h2": 2, "h3": 7})
+        self.assertEqual(M.numero_proforma_h(124, d(2026, 10, 21)), "124-10-ANO-MAD/2026")
+        self.assertEqual(M.numero_facture_h(110, d(2026, 11, 7)), "FA H 110/11/2026")
+        # lot 1 : formats écrits avec des repères, mêmes n° qu'avant pour ANO
+        self.assertEqual(M.formater_numero("{N}-{MM}-{CODE}-{NOM}/{AAAA}", 348, d(2026, 10, 30), "ano", "Dupont Mbïna"),
+                         M.numero_proforma(348, d(2026, 10, 30), "Dupont Mbïna"))
+        self.assertEqual(M.formater_numero("{PREFIXE} {N}/{MM}/{AAAA}", 159, d(2026, 11, 19), prefixe="FA"), "FA 159/11/2026")
+        self.assertEqual(M.formater_numero("{PREFIXE} H {N}/{MM}/{AAAA}", 110, d(2026, 11, 7), prefixe="FA"),
+                         M.numero_facture_h(110, d(2026, 11, 7)))
+        self.assertEqual(M.formater_numero("{PREFIXE} {N}/{AA}", 7, d(2027, 2, 1)), "7/27")   # préfixe vide : pas d'espace en trop
+        self.assertIsNone(M.verifier_format_numero("{PREFIXE} {N}/Visite médicale/{AAAA}"))
+        self.assertIn("{N}", M.verifier_format_numero("FA {MM}/{AAAA}"))
+        self.assertIn("inconnu", M.verifier_format_numero("{N}/{ANNEE}"))
 
 
 if __name__ == "__main__":

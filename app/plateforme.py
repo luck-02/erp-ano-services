@@ -12,6 +12,7 @@ emplacements : aucune donnée métier, aucun salaire.
 Ligne de commande (administration de la plateforme, sur le serveur) :
     python3 app/plateforme.py liste
     python3 app/plateforme.py creer CODE "Nom de l'entreprise" IDENTIFIANT_ADMIN
+    python3 app/plateforme.py mdp CODE IDENTIFIANT     (mot de passe oublié : nouveau provisoire)
     python3 app/plateforme.py desactiver CODE
     python3 app/plateforme.py activer CODE
 """
@@ -190,6 +191,29 @@ def _main(argv):
         print("Entreprise « %s » créée (code %s). Le compte %s devra changer son mot de passe "
               "à la première connexion." % (e["nom"], e["code"], argv[3]))
         return 0
+    if len(argv) == 3 and argv[0] == "mdp":
+        # mot de passe oublié : nouveau mot de passe provisoire (à changer à la connexion suivante)
+        e = reg.trouver(argv[1])
+        if not e:
+            print("Entreprise inconnue.")
+            return 1
+        mdp = getpass.getpass("Nouveau mot de passe provisoire de %s (12 caractères min.) : " % argv[2])
+        if getpass.getpass("Confirmez : ") != mdp:
+            print("Les deux saisies diffèrent.")
+            return 1
+        p = S.probleme_mdp(mdp, argv[2])
+        if p:
+            print("Refusé : %s" % p)
+            return 1
+        con = db.connecter(e["chemin_db_abs"])
+        try:
+            n = con.execute("UPDATE utilisateurs SET mdp_hash = ?, doit_changer_mdp = 1, echecs = 0, bloque_jusqu = NULL, "
+                            "actif = 1 WHERE identifiant = ?", (S.hacher_mdp(mdp), argv[2])).rowcount
+            con.execute("DELETE FROM sessions WHERE user_id IN (SELECT id FROM utilisateurs WHERE identifiant = ?)", (argv[2],))
+        finally:
+            con.close()
+        print("Mot de passe provisoire enregistré (à changer à la connexion)." if n else "Identifiant inconnu dans cette entreprise.")
+        return 0 if n else 1
     if len(argv) == 2 and argv[0] in ("activer", "desactiver"):
         try:
             reg.activer(argv[1], argv[0] == "activer")

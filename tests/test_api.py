@@ -7,6 +7,7 @@ Lancer : python3 tests/test_api.py
 """
 import http.client
 import json
+import re
 import urllib.parse
 import os
 import socket
@@ -144,9 +145,13 @@ class TestsAPI(unittest.TestCase):
         # BC 493930 au montant exact
         st, j = a.req("POST", "/api/dossiers/%d/bc" % did, {"bc_numero": "493930", "bc_montant": 6648214})
         self.assertEqual((st, j["ecart"]), (200, 0))
+        # lot 1 : BC conforme -> les 8 factures prévues sont créées tout de suite, dossier « En cours »
+        self.assertEqual(j["factures_creees"], 8)
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        self.assertEqual(d["dossier"]["statut"], "En cours")
         st, j = a.req("POST", "/api/dossiers/%d/generer-factures" % did, {})
         self.assertEqual(st, 200, j)
-        self.assertEqual(j["ajoutees"], 8)
+        self.assertEqual(j["ajoutees"], 0)
         # Relancer ne duplique rien
         st, j = a.req("POST", "/api/dossiers/%d/generer-factures" % did, {})
         self.assertEqual((j["ajoutees"], j["total"]), (0, 8))
@@ -245,7 +250,7 @@ class TestsAPI(unittest.TestCase):
         # tableau de bord : liste « À faire »
         st, t = a.req("GET", "/api/tableau-de-bord")
         self.assertIn("a_faire", t)
-        self.assertEqual(set(t["a_faire"]), {"a_emettre", "a_envoyer", "en_retard", "brouillons", "sans_bc"})
+        self.assertEqual(set(t["a_faire"]), {"a_emettre", "a_envoyer", "en_retard", "brouillons", "sans_bc", "imputations", "visites"})
         self.assertEqual(t["a_faire"]["a_emettre"], 0)       # novembre et décembre déjà émis, rien d'échu
         # tableau de bord de novembre
         st, t = a.req("GET", "/api/tableau-de-bord?mois=2026-11")
@@ -672,7 +677,7 @@ class TestsAPI(unittest.TestCase):
 
     def test_20_retours_v350(self):
         """v3.5.0 : facture modifiable après émission, paiement plafonné au TTC,
-        facture groupée (ex. 9 infirmiers), visite émise seule = n° à elle."""
+        facture groupée (ex. 9 infirmiers), visite émise seule puis son mois = même n°."""
         import io
         import zipfile
         a = self.admin
@@ -761,7 +766,379 @@ class TestsAPI(unittest.TestCase):
         st, j = a.req("POST", "/api/factures/emettre", {"ids": [mad["id"]], "date_facture": "2027-06-06"})
         st, f = a.req("GET", "/api/factures?ids=%d,%d" % (vis["id"], mad["id"]))
         nums = sorted(x["numero"] for x in f["factures"])
-        self.assertEqual(nums, sorted(["FA %d/Visite médicale/2027" % (n0 + 2), "FA %d/06/2027" % (n0 + 3)]))
+        # émise après sa visite, la facture du même mois reprend le n° de la visite (lié à l'agent)
+        self.assertEqual(nums, sorted(["FA %d/Visite médicale/2027" % (n0 + 2), "FA %d/06/2027" % (n0 + 2)]))
+
+    def test_21_recherche(self):
+        """Recherche globale : plusieurs mots, accents, n° avec espaces, filtres, rôles."""
+        a = self.admin
+        st, j = a.req("GET", "/api/recherche?q=")
+        self.assertEqual((st, j["total"]), (200, 0))                 # rien à chercher
+        st, j = a.req("GET", "/api/recherche?q=testeur%20r%C3%A9f%C3%A9rence")
+        self.assertEqual(st, 200, j)
+        types = {r["type"] for r in j["resultats"]}
+        self.assertIn("dossier", types)
+        self.assertIn("facture", types)
+        self.assertIn("interimaire", types)
+        self.assertTrue(all("salaire" not in r and "576300" not in str(r) for r in j["resultats"]))
+        st, j = a.req("GET", "/api/recherche?q=testeur&type=facture")
+        self.assertTrue(j["resultats"] and all(r["type"] == "facture" for r in j["resultats"]))
+        num = [r for r in j["resultats"] if r["titre"].startswith("FA ")][0]["titre"]
+        st, j = a.req("GET", "/api/recherche?q=" + urllib.parse.quote(num, safe=""))
+        self.assertEqual(j["resultats"][0]["titre"], num)            # le n° exact arrive en tête
+        st, j = a.req("GET", "/api/recherche?type=facture&statut=Pay%C3%A9e&min=1&max=999999999")
+        self.assertTrue(all(r["statut"] == "Payée" for r in j["resultats"]))
+        st, j = a.req("GET", "/api/recherche?q=testeur&du=2040-01-01")
+        self.assertEqual(j["total"], 0)
+        st, j = a.req("GET", "/api/recherche?type=pirate")
+        self.assertEqual(st, 400)
+        st, j = a.req("GET", "/api/recherche?q=x&min=abc")
+        self.assertEqual(st, 400)
+        # rôle Lecture : factures seulement
+        l = Client()
+        st, j = a.req("POST", "/api/utilisateurs", {"identifiant": "lecteur-rech", "nom": "L", "role": "lecture",
+                                                     "mot_de_passe": "Temporaire-Lecture-77"})
+        l.connexion("lecteur-rech", "Temporaire-Lecture-77")
+        l.req("POST", "/api/moi/mot-de-passe", {"actuel": "Temporaire-Lecture-77", "nouveau": "Lecture-Recherche-2027!"})
+        st, j = l.req("GET", "/api/recherche?q=testeur")
+        self.assertEqual(st, 200, j)
+        self.assertTrue(j["resultats"] and {r["type"] for r in j["resultats"]} == {"facture"})
+        st, j = l.req("GET", "/api/recherche?q=testeur&type=document")
+        self.assertEqual(j["total"], 0)
+
+    def test_22_numero_lie_a_l_agent(self):
+        """Un n° de facture émis reste lié à son agent (Luc, 25/11/2026) : visite émise seule,
+        puis le mois suivant, puis le mois de la visite -> il reprend le n° de la visite.
+        Modifier la DA (ordre des agents, dates) ne change ni le n° ni l'agent d'une facture émise."""
+        a = self.admin
+        corps = {"client_id": 1, "service": "DAF", "lieu": "Moanda", "date_debut": "2028-11-01", "date_fin": "2029-01-31",
+                 "visite_mode": "Auto", "agents": [
+                     {"nom": "PREMIER Agent Fictif", "poste": "p", "salaire_base": 600000},
+                     {"nom": "SECOND Agent Fictif", "poste": "p", "salaire_base": 600000}]}
+        st, j = a.req("POST", "/api/dossiers", corps)
+        self.assertEqual(st, 200, j)
+        did = j["id"]
+        a.req("POST", "/api/dossiers/%d/generer-factures" % did, {"forcer": True})
+        fs = a.req("GET", "/api/factures?dossier=%d" % did)[1]["factures"]
+        def f_(agent, type_, mois):
+            return [x for x in fs if x["agent"].startswith(agent) and x["type"] == type_ and x["mois"].startswith(mois)][0]
+        vis, nov, dec = f_("PREMIER", "VISITE", "2028-11"), f_("PREMIER", "MAD", "2028-11"), f_("PREMIER", "MAD", "2028-12")
+        n0 = a.req("GET", "/api/parametres")[1]["parametres"]["dernier_num_facture"]
+        a.req("POST", "/api/factures/emettre", {"ids": [vis["id"]], "date_facture": "2028-11-25"})
+        a.req("POST", "/api/factures/emettre", {"ids": [dec["id"]], "date_facture": "2028-11-26"})
+        a.req("POST", "/api/factures/emettre", {"ids": [nov["id"]], "date_facture": "2028-12-01"})
+        par = {x["id"]: x for x in a.req("GET", "/api/factures?dossier=%d" % did)[1]["factures"]}
+        self.assertEqual(par[vis["id"]]["numero"], "FA %d/Visite médicale/2028" % (n0 + 1))
+        self.assertEqual(par[dec["id"]]["numero"], "FA %d/11/2028" % (n0 + 2))
+        self.assertEqual(par[nov["id"]]["numero"], "FA %d/12/2028" % (n0 + 1))     # reprend le n° de la visite
+        self.assertEqual(a.req("GET", "/api/parametres")[1]["parametres"]["dernier_num_facture"], n0 + 2)
+        # DA modifiée : agents inversés, dates prolongées -> les factures émises gardent n° et agent
+        corps2 = dict(corps, date_fin="2029-03-31", agents=list(reversed(corps["agents"])))
+        st, j = a.req("PUT", "/api/dossiers/%d" % did, corps2)
+        self.assertEqual(st, 200, j)
+        a.req("POST", "/api/dossiers/%d/generer-factures" % did, {"forcer": True})
+        apres = {x["id"]: x for x in a.req("GET", "/api/factures?dossier=%d" % did)[1]["factures"]}
+        for fid in (vis["id"], nov["id"], dec["id"]):
+            self.assertEqual((apres[fid]["numero"], apres[fid]["agent"], apres[fid]["montant_ht"]),
+                             (par[fid]["numero"], par[fid]["agent"], par[fid]["montant_ht"]))
+        self.assertTrue(apres[vis["id"]]["agent"].startswith("PREMIER"))
+        # accents / majuscules corrigés : même agent, permis
+        corps3 = dict(corps2, agents=[dict(corps["agents"][1]), dict(corps["agents"][0], nom="Premier Agent FICTIF")])
+        st, j = a.req("PUT", "/api/dossiers/%d" % did, corps3)
+        self.assertEqual(st, 200, j)
+        # remplacer l'agent qui a des factures émises par une autre personne : refusé
+        corps4 = dict(corps2, agents=[dict(corps["agents"][1]), dict(corps["agents"][0], nom="AUTRE Personne Fictive")])
+        st, j = a.req("PUT", "/api/dossiers/%d" % did, corps4)
+        self.assertEqual(st, 409, j)
+        self.assertIn("FA %d/" % (n0 + 1), j["erreur"])
+        # le second agent (sans facture émise) peut être retiré
+        corps5 = dict(corps2, agents=[dict(corps["agents"][0])])
+        st, j = a.req("PUT", "/api/dossiers/%d" % did, corps5)
+        self.assertEqual(st, 200, j)
+        fin = {x["id"]: x for x in a.req("GET", "/api/factures?dossier=%d" % did)[1]["factures"]}
+        self.assertTrue(all(x["agent"].startswith("PREMIER") or x["agent"].startswith("Premier") for x in fin.values()))
+        self.assertEqual(fin[nov["id"]]["numero"], par[nov["id"]]["numero"])
+
+    def test_23_mention_designation(self):
+        """« ANO SERVICE » sous la 1re ligne de la désignation (comme les factures d'ANO), réglable."""
+        import io
+        import zipfile
+        a = self.admin
+        fa = [x for x in a.req("GET", "/api/factures")[1]["factures"] if x["numero"] and x["type"] == "MAD"][0]
+        def texte_word():
+            st, doc = a.req("GET", "/api/factures/word?ids=%d" % fa["id"])
+            self.assertEqual(st, 200)
+            z = zipfile.ZipFile(io.BytesIO(doc))
+            nom = [n for n in z.namelist() if n.endswith(".docx")]
+            if nom:
+                z = zipfile.ZipFile(io.BytesIO(z.read(nom[0])))
+            return re.sub(r"<[^>]+>", "|", z.read("word/document.xml").decode())
+        p = a.req("GET", "/api/parametres")[1]["parametres"]
+        self.assertEqual(p["mention_designation"], "ANO SERVICE")     # rempli d'office pour ANO Services
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"mention_designation": ""}})
+        self.assertEqual(st, 200, j)
+        self.assertIn("|" + p["raison_sociale"].upper() + "|", texte_word())   # vide : raison sociale en majuscules
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"mention_designation": "ANO SERVICE"}})
+        self.assertEqual(st, 200, j)
+        t = texte_word()
+        self.assertIn("|ANO SERVICE|", t)
+        self.assertLess(t.index("MAD d"), t.index("ANO SERVICE|"))
+        self.assertLess(t.index("ANO SERVICE|"), t.index(fa["agent"]))
+
+    def test_24_mise_en_conformite_donnees_existantes(self):
+        """Base d'avant : « ANO SERVICE » ajouté une fois, aucun n° émis ni montant modifié, relançable."""
+        import glob
+        import sqlite3
+        chemins = [c for c in glob.glob(os.path.join(TMP, "**", "*.db"), recursive=True)
+                   if os.path.basename(c) != "plateforme.db" and "ancienne" not in c]
+        chemin = max(chemins, key=os.path.getsize)
+        def etat():
+            con = sqlite3.connect(chemin)
+            try:
+                return con.execute("SELECT * "
+                                   "FROM factures ORDER BY id").fetchall()
+            finally:
+                con.close()
+        avant = etat()
+        self.assertTrue([f for f in avant if f[1]])                   # il y a bien des n° émis
+        con = sqlite3.connect(chemin)
+        con.execute("DELETE FROM parametres WHERE cle IN ('maj_mention_20261125', 'mention_designation')")
+        con.commit()
+        con.close()
+        serveur.db.initialiser(chemin)
+        serveur.db.initialiser(chemin)
+        self.assertEqual(etat(), avant)
+        self.assertEqual(self.admin.req("GET", "/api/parametres")[1]["parametres"]["mention_designation"], "ANO SERVICE")
+        # une entreprise qui a vidé ou changé le champ ensuite n'est plus touchée
+        self.admin.req("PUT", "/api/parametres", {"parametres": {"mention_designation": ""}})
+        serveur.db.initialiser(chemin)
+        self.assertEqual(self.admin.req("GET", "/api/parametres")[1]["parametres"]["mention_designation"], "")
+        self.admin.req("PUT", "/api/parametres", {"parametres": {"mention_designation": "ANO SERVICE"}})
+
+    def test_25_heures_supplementaires(self):
+        """Relevé -> fiche -> classement -> Proforma H -> FA H (circuit de Lola), n° à part, montant du devis par défaut."""
+        import base64
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
+        import metier as M
+        a = self.admin
+        dos = [x for x in a.req("GET", "/api/dossiers")[1]["dossiers"] if x["statut"] != "Annulé"][0]
+        st, d = a.req("GET", "/api/dossiers/%d" % dos["id"])
+        ag = d["agents"][0]
+        st, j = a.req("POST", "/api/dossiers/%d/heures-sup" % dos["id"], {"agent_id": 999999})
+        self.assertEqual(st, 400)
+        st, j = a.req("POST", "/api/dossiers/%d/heures-sup" % dos["id"], {"agent_id": ag["id"], "direction": "DRHST"})
+        self.assertEqual(st, 200, j)
+        hid = j["id"]
+        pdf = b"%PDF-1.4\n% releve fictif\n%%EOF\n"
+        st, j = a.req("POST", "/api/heures-sup/%d/releve" % hid, {"nom": "releve.pdf", "contenu": base64.b64encode(pdf).decode()})
+        self.assertEqual(st, 200, j)
+        st, j = a.req("POST", "/api/heures-sup/%d/devis" % hid, {})
+        self.assertEqual(st, 400)                                     # pas encore d'heures
+        lignes = [{"date": "2026-10-12", "debut": "15:00", "fin": "21:00", "justification": "Bilans des urgences"},
+                  {"date": "2026-10-13", "debut": "15:00", "fin": "19:00", "heures": "4"},
+                  {"date": "2026-10-18", "debut": "08:00", "fin": "12:00", "heures": 4},
+                  {"date": "2026-10-19", "debut": "22:00", "fin": "02:00", "heures": "4 H"}]
+        corps = {"direction": "DRHST", "service": "Laboratoire", "section": "1256", "matricule_client": "MAD",
+                 "categorie": "C08A", "lignes": lignes, "heures": None}
+        st, j = a.req("PUT", "/api/heures-sup/%d" % hid, corps)
+        self.assertEqual(st, 200, j)
+        h = j["heures_sup"]
+        self.assertEqual(h["total_heures"], 18)
+        self.assertEqual(h["lignes"][0]["heures"], 6)                 # calculée depuis début / fin
+        self.assertEqual(h["heures"], {"h1": 12, "h2": 2, "h3": 4})   # proposition : 8 h/semaine, reste, dimanche
+        self.assertEqual([(w["du"], w["total"]) for w in h["semaines"]], [("2026-10-12", 14), ("2026-10-19", 4)])
+        # jours fériés réglables (avec leur nom) : un férié passe au taux des dimanches
+        p0 = a.req("GET", "/api/parametres")[1]["parametres"]["hs_jours_feries"]
+        self.assertIn("08-17 Fête de l'indépendance", p0)
+        self.assertEqual(a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": ["13-45 Faux"]}})[0], 400)
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": ["2026-10-13  Férié  fictif", "01-01"]}})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["parametres"]["hs_jours_feries"], ["01-01", "2026-10-13 Férié fictif"])
+        hf = a.req("GET", "/api/heures-sup/%d" % hid)[1]["heures_sup"]
+        self.assertEqual(hf["heures"], {"h1": 10, "h2": 0, "h3": 8})
+        self.assertTrue([x for x in hf["semaines"][0]["jours"] if x["date"] == "2026-10-13"][0]["repos"])
+        # férié « à confirmer » (Aïd, Tabaski) : pas appliqué, le devis attend la confirmation
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": ["2026-10-13 Aïd fictif (à confirmer)"]}})
+        self.assertEqual(st, 200, j)
+        hf = a.req("GET", "/api/heures-sup/%d" % hid)[1]["heures_sup"]
+        self.assertEqual(hf["feries_a_confirmer"], [{"date": "2026-10-13", "libelle": "Aïd fictif"}])
+        self.assertEqual(hf["proposition"], {"h1": 12, "h2": 2, "h3": 4})          # pas encore appliqué
+        st, j = a.req("POST", "/api/heures-sup/%d/devis" % hid, {"date": "2026-10-21"})
+        self.assertEqual((st, j.get("code")), (409, "FERIE_A_CONFIRMER"))
+        st, j = a.req("POST", "/api/feries/confirmer", {"jour": "2026-10-13", "ferie": True})
+        self.assertEqual(j["hs_jours_feries"], ["2026-10-13 Aïd fictif"])
+        hf = a.req("GET", "/api/heures-sup/%d" % hid)[1]["heures_sup"]
+        self.assertEqual((hf["feries_a_confirmer"], hf["proposition"]["h3"]), ([], 8))
+        a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": ["2026-10-13 Aïd fictif (à confirmer)"]}})
+        st, j = a.req("POST", "/api/feries/confirmer", {"jour": "2026-10-13", "ferie": False})
+        self.assertEqual(j["hs_jours_feries"], [])                                 # pas férié : retiré
+        a.req("PUT", "/api/parametres", {"parametres": {"hs_jours_feries": p0}})
+        self.assertIn("08-30 Journée nationale de la Libération", p0)
+        self.assertIn("2027-05-16 Aïd el-Kébir / Tabaski (à confirmer)", p0)
+        # signatures de l'agent à chaque étape, scan signé joint ; fiche en Word, archivée, envoyée
+        pdf2 = b"%PDF-1.4\n% fiche signee fictive\n%%EOF\n"
+        st, j = a.req("POST", "/api/heures-sup/%d/etape" % hid, {"etape": "avant", "date": "2026-10-10", "nom": "avant.pdf",
+                                                                 "contenu": base64.b64encode(pdf2).decode()})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["heures_sup"]["etapes"]["avant"]["date"], "2026-10-10")
+        self.assertTrue(any(d["nom"].startswith("Fiche signée (avant)") for d in j["heures_sup"]["releves"]))
+        self.assertEqual(a.req("POST", "/api/heures-sup/%d/etape" % hid, {"etape": "pendant", "date": "2026-10-10"})[0], 400)
+        st, doc = a.req("GET", "/api/heures-sup/%d/fiche.docx" % hid)
+        self.assertEqual((st, doc[:2]), (200, b"PK"))
+        import io
+        import zipfile
+        xml = zipfile.ZipFile(io.BytesIO(doc)).read("word/document.xml").decode()
+        for mot in ("Fiche d'attachement", "Avant :  signé le 10/10/2026", "Après :", "Payées :", "Récupérées :", "Bilans des urgences"):
+            self.assertIn(mot, xml)
+        st, j = a.req("POST", "/api/heures-sup/%d/fiche-archiver" % hid, {})
+        self.assertEqual(st, 200, j)
+        st, j = a.req("POST", "/api/heures-sup/%d/suivi" % hid, {"fiche_envoyee_le": "2026-10-20"})
+        self.assertEqual((st, j["heures_sup"]["fiche_envoyee_le"]), (200, "2026-10-20"))
+        self.assertTrue(any(d["nom"].startswith("Fiche d'attachement") for d in j["heures_sup"]["releves"]))
+        self.assertEqual(len(h["releves"]), 1)
+        cout = h["cout_mensuel"]
+        self.assertEqual(cout, d["proforma"]["agents"][0]["cout_mensuel"])
+        # classement à la main
+        st, j = a.req("PUT", "/api/heures-sup/%d" % hid, dict(corps, heures={"h1": 7, "h2": "7,5", "h3": 3.5}))
+        self.assertEqual(st, 200, j)
+        h = j["heures_sup"]
+        attendu = M.hs_lignes_montants(cout, [7, 7.5, 3.5], [2800, 5600, 7500])["total"]
+        self.assertEqual(h["calcul"]["total"], attendu)
+        self.assertEqual(h["ecart_heures"], 0)
+        # dernier n° pas renseigné : refus clair
+        st, j = a.req("POST", "/api/heures-sup/%d/devis" % hid, {"date": "2026-10-21"})
+        self.assertEqual((st, j.get("code")), (409, "NUM_DERNIER_NUM_PROFORMA_H"), j)
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"dernier_num_proforma_h": "123", "dernier_num_facture_h": 109}})
+        self.assertEqual(st, 200, j)
+        st, j = a.req("POST", "/api/heures-sup/%d/devis" % hid, {"date": "2026-10-21"})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["heures_sup"]["devis_numero"], "124-10-ANO-MAD/2026")
+        st, j = a.req("POST", "/api/heures-sup/%d/devis" % hid, {"date": "2026-10-22"})
+        self.assertEqual(j["heures_sup"]["devis_numero"], "124-10-ANO-MAD/2026")   # n° gardé
+        self.assertEqual(a.req("GET", "/api/parametres")[1]["parametres"]["dernier_num_proforma_h"], 124)
+        st, j = a.req("POST", "/api/heures-sup/%d/supprimer" % hid, {})
+        self.assertEqual(st, 409)
+        # facture FA H : montant du devis par défaut, TVA 18 %
+        st, j = a.req("POST", "/api/heures-sup/%d/facture" % hid, {"date_facture": "2026-11-07", "bc_numero": "493349"})
+        self.assertEqual(st, 200, j)
+        f = j["heures_sup"]
+        self.assertEqual(f["facture_numero"], "FA H 110/11/2026")
+        self.assertEqual((f["montant_ht"], f["tva"], f["ttc"]), (attendu, M.tva(attendu, 1800), attendu + M.tva(attendu, 1800)))
+        self.assertEqual(f["statut"], "Facturée")
+        st, j = a.req("PUT", "/api/heures-sup/%d" % hid, corps)
+        self.assertEqual(st, 409)                                     # figé après émission
+        st, j = a.req("POST", "/api/heures-sup/%d/facture" % hid, {})
+        self.assertEqual(st, 409)
+        st, j = a.req("POST", "/api/heures-sup/%d/suivi" % hid, {"envoyee_le": "2026-11-08", "paye_le": "2026-12-20", "reference": "VIR 1"})
+        self.assertEqual((st, j["heures_sup"]["statut"], j["heures_sup"]["montant_paye"]), (200, "Payée", f["ttc"]))
+        # 2e relevé : montant saisi (BC différent), n° suivants ; le dossier les liste
+        st, j = a.req("POST", "/api/dossiers/%d/heures-sup" % dos["id"], {"agent_id": ag["id"], "lignes": lignes[:1]})
+        h2 = j["id"]
+        a.req("POST", "/api/heures-sup/%d/devis" % h2, {"date": "2026-11-02"})
+        st, j = a.req("POST", "/api/heures-sup/%d/facture" % h2, {"date_facture": "2026-11-30", "montant_ht": 50000})
+        self.assertEqual((j["heures_sup"]["facture_numero"], j["heures_sup"]["montant_ht"]), ("FA H 111/11/2026", 50000), j)
+        self.assertEqual(j["heures_sup"]["devis_numero"], "125-11-ANO-MAD/2026")
+        st, d2 = a.req("GET", "/api/dossiers/%d" % dos["id"])
+        self.assertEqual(len(d2["heures_sup"]), 2)
+        self.assertNotIn("FA H", "".join(x["numero"] or "" for x in d2["factures"]))   # séries séparées
+        # les FA H suivent les autres factures : page Factures, statut (payée / à envoyer), export, recherche
+        st, lf = a.req("GET", "/api/factures?mois=2026-11")
+        fh = {x["numero"]: x for x in lf["factures_hs"]}
+        self.assertEqual(set(fh), {"FA H 110/11/2026", "FA H 111/11/2026"})
+        self.assertEqual((fh["FA H 110/11/2026"]["statut"], fh["FA H 111/11/2026"]["statut"]), ("Payée", "À envoyer"))
+        st, lf = a.req("GET", "/api/factures?statut=" + urllib.parse.quote("À envoyer"))
+        self.assertEqual([x["numero"] for x in lf["factures_hs"]], ["FA H 111/11/2026"])
+        self.assertEqual(a.req("GET", "/api/factures?mois=2026-10")[1]["factures_hs"], [])
+        st, csv = a.req("GET", "/api/factures/export.csv?mois=2026-11")
+        self.assertIn("FA H 111/11/2026;", csv.decode("utf-8"))
+        self.assertIn("Heures supplémentaires", csv.decode("utf-8"))
+        st, rq = a.req("GET", "/api/recherche?q=" + urllib.parse.quote("FA H 111"))
+        self.assertEqual([(x["titre"], x["lien"]) for x in rq["resultats"]], [("FA H 111/11/2026", "#/hs/%d" % h2)])
+        # tableau de bord : la FA H compte dans « À faire » et dans le facturé
+        tb1 = a.req("GET", "/api/tableau-de-bord?mois=2026-11")[1]
+        a.req("POST", "/api/heures-sup/%d/suivi" % h2, {"envoyee_le": "2026-12-01"})
+        tb2 = a.req("GET", "/api/tableau-de-bord?mois=2026-11")[1]
+        self.assertEqual(tb1["a_faire"]["a_envoyer"] - tb2["a_faire"]["a_envoyer"], 1)
+        self.assertGreaterEqual(tb2["facture_ht"], 50000 + attendu)
+        # lignes invalides
+        for mauvais in ([{"date": "2026-10-12"}], [{"date": "2026-10-12", "heures": "30"}], [{"date": "x", "heures": 2}],
+                        [{"date": "2026-10-12", "debut": "25:00", "fin": "26:00"}]):
+            st, j = a.req("POST", "/api/dossiers/%d/heures-sup" % dos["id"], {"agent_id": ag["id"], "lignes": mauvais})
+            self.assertEqual(st, 400, (mauvais, j))
+
+    def test_26_lot1_moins_d_oublis(self):
+        """Lot 1 (25/11/2026) : statuts automatiques, factures dès le BC, À faire détaillé,
+        visite faite le…, numérotation par formats."""
+        import datetime as dt
+        a = self.admin
+        auj = dt.date.today()
+        # --- dossier sans imputation, contrat déjà fini : Brouillon -> Envoyé à l'impression
+        da = da_reference(nom="LOTUN Passé")
+        da.update({"num_da": "", "imputation": "", "nom_numero": "LOTUN",
+                   "date_debut": (auj - dt.timedelta(days=90)).isoformat(),
+                   "date_fin": (auj - dt.timedelta(days=2)).isoformat(),
+                   "date_proforma": (auj - dt.timedelta(days=95)).isoformat()})
+        st, j = a.req("POST", "/api/dossiers", da)
+        self.assertEqual(st, 200, j)
+        did = j["id"]
+        st, j = a.req("POST", "/api/dossiers/%d/proforma-envoyee" % did, {})
+        self.assertEqual((st, j["statut"], j["change"]), (200, "Envoyé", True))
+        st, j = a.req("POST", "/api/dossiers/%d/proforma-envoyee" % did, {})
+        self.assertEqual(j["change"], False)                       # ne recule ni ne répète jamais
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        self.assertEqual(d["dossier"]["envoye_le"], auj.isoformat())
+        st, t = a.req("GET", "/api/tableau-de-bord")
+        self.assertIn(did, [x["id"] for x in t["a_faire_dossiers"]["imputations"]])
+        self.assertIn(did, [x["id"] for x in t["a_faire_dossiers"]["sans_bc"]])
+        # --- BC avec un écart : pas de factures créées, le dossier reste « BC reçu »
+        pro = d["proforma"]["cumul_ht"]
+        st, j = a.req("POST", "/api/dossiers/%d/bc" % did, {"bc_numero": "810001", "bc_montant": pro + 500})
+        self.assertEqual((st, j["factures_creees"]), (200, 0))
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        self.assertEqual((d["dossier"]["statut"], len(d["factures"])), ("BC reçu", 0))
+        # --- BC corrigé : factures créées, puis « Terminé » tout seul (date de fin passée)
+        st, j = a.req("POST", "/api/dossiers/%d/bc" % did, {"bc_numero": "810001", "bc_montant": pro})
+        self.assertGreater(j["factures_creees"], 0)
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        self.assertEqual(d["dossier"]["statut"], "Terminé")
+        st, jr = a.req("GET", "/api/journal")
+        self.assertTrue(any("Terminé (date de fin passée)" in (x["details"] or "") for x in jr["journal"]))
+        # --- visite faite le… : date future refusée, sinon enregistrée et reprise pour l'intérimaire
+        aid = d["agents"][0]["id"]
+        st, j = a.req("POST", "/api/agents/%d/visite-faite" % aid,
+                      {"prevue": da["date_debut"], "faite": (auj + dt.timedelta(days=3)).isoformat()})
+        self.assertEqual(st, 400)
+        faite = (auj - dt.timedelta(days=80)).isoformat()
+        st, j = a.req("POST", "/api/agents/%d/visite-faite" % aid, {"prevue": da["date_debut"], "faite": faite})
+        self.assertEqual(st, 200, j)
+        st, d = a.req("GET", "/api/dossiers/%d" % did)
+        self.assertEqual(json.loads(d["agents"][0]["visites_faites"]), [{"prevue": da["date_debut"], "faite": faite}])
+        # renouvellement : la visite réellement faite est reprise comme dernière visite connue
+        suite = dict(da, date_debut=auj.isoformat(), date_fin=(auj + dt.timedelta(days=60)).isoformat(),
+                     date_proforma=auj.isoformat())
+        st, ap = a.req("POST", "/api/dossiers/apercu", suite)
+        self.assertEqual(ap["dernieres_visites"], [faite])
+        self.assertEqual(self.lecteur_refuse("POST", "/api/agents/%d/visite-faite" % aid), True)
+        # --- numérotation par formats : contrôles, puis même résultat qu'avant quand le format est vide
+        for mauvais in ("{X} {N}", "FA {MM}/{AAAA}", "FA {N"):
+            st, j = a.req("PUT", "/api/parametres", {"parametres": {"format_facture": mauvais}})
+            self.assertEqual(st, 400, mauvais)
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"format_proforma": "DEV-{AA}{MM}-{N} {NOM}"}})
+        self.assertEqual(st, 200, j)
+        st, ap = a.req("POST", "/api/dossiers/apercu", da_reference())
+        self.assertRegex(ap["numero_propose"], r"^DEV-2610-\d+ TESTEUR REFERENCE$")
+        st, j = a.req("PUT", "/api/parametres", {"parametres": {"format_proforma": ""}})
+        st, ap = a.req("POST", "/api/dossiers/apercu", da_reference())
+        self.assertRegex(ap["numero_propose"], r"^\d+-10-ANO-TESTEUR REFERENCE/2026$")
+
+    def lecteur_refuse(self, methode, chemin):
+        """Un compte « lecture » ne peut pas faire cette action."""
+        st, j = self.admin.req("POST", "/api/utilisateurs", {"identifiant": "lect-lot1", "nom": "Lecture",
+                                                              "role": "lecture", "mot_de_passe": "Lecture-Lot1-2026!"})
+        c = Client()
+        c.connexion("lect-lot1", "Lecture-Lot1-2026!")
+        st, j = c.req(methode, chemin, {})
+        return st == 403
 
     def test_99_parametres_entreprise(self):
         """V1 B2B : codes de n°, TVA visite et images réglables ; ANO inchangé par défaut."""

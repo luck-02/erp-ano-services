@@ -1,0 +1,84 @@
+#!/bin/bash
+# Met à jour le site de test avec un dossier erp-mvp déjà décompressé.
+# Installé dans /usr/local/sbin/erp-installer-dev par installer-dev.sh ; appelé par
+# erp-deployer (« deployer-dev ») : le code de la branche dev est seulement COPIÉ,
+# jamais exécuté en root. Ne touche ni à /opt/erp ni à /var/lib/erp (production).
+#   erp-installer-dev <dossier erp-mvp> <domaine du site de test>
+set -euo pipefail
+SRC="${1:?dossier erp-mvp}"; DOMAINE_DEV="${2:?domaine}"
+[[ "$DOMAINE_DEV" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "Domaine invalide."; exit 1; }
+[ -f "$SRC/app/serveur.py" ] || { echo "Programme introuvable dans $SRC."; exit 1; }
+[ "$(id -u)" -eq 0 ] || { echo "À lancer en root."; exit 1; }
+# mot de passe de l'entreprise « verif » (tests en ligne), tiré au hasard par GitHub : lu puis effacé
+MDP_VERIF=""
+if [ -f "$SRC/.mdp-verif" ]; then MDP_VERIF="$(head -c 200 "$SRC/.mdp-verif")"; rm -f "$SRC/.mdp-verif"; fi
+NEUF=/opt/erp-dev/erp-mvp.neuf
+rm -rf /opt/erp-dev/erp-mvp.neuf /opt/erp-dev/erp-mvp.ancien
+mkdir -p "$NEUF"
+( cd "$SRC" && tar cf - --exclude '.git' --exclude 'donnees' --exclude 'donnees-essai' --exclude 'node_modules' --exclude '.mdp-verif' \
+    --exclude 'app/prive/signature.png' --exclude 'app/prive/logo.png' . ) | ( cd "$NEUF" && tar xf - )
+# lisible par erp-dev, modifiable par root seulement (même si le zip arrive en droits 600)
+chown -R root:root /opt/erp-dev && chmod -R u=rwX,go=rX /opt/erp-dev
+[ -d /opt/erp-dev/erp-mvp ] && mv /opt/erp-dev/erp-mvp /opt/erp-dev/erp-mvp.ancien
+mv "$NEUF" /opt/erp-dev/erp-mvp
+rm -rf /opt/erp-dev/erp-mvp.ancien
+# service écrit ici (jamais repris du zip) : un envoi sur dev ne peut changer ni le compte,
+# ni le port, ni les droits
+cat > /etc/systemd/system/erp-ano-dev.service <<FIN
+[Unit]
+Description=ERP - site de test (branche dev, donnees fictives)
+After=network.target
+
+[Service]
+User=erp-dev
+Group=erp-dev
+WorkingDirectory=/opt/erp-dev/erp-mvp
+Environment=ANO_EN_LIGNE=1
+Environment=ANO_HTTPS=1
+Environment=ANO_PROXY=1
+Environment=ANO_HOTES=$DOMAINE_DEV
+Environment=ANO_PORT=8766
+Environment=ANO_DONNEES=/var/lib/erp-dev
+Environment=HOME=/tmp
+ExecStart=/usr/bin/python3 app/serveur.py
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/erp-dev
+# la production reste invisible pour le site de test
+InaccessiblePaths=-/var/lib/erp -/var/lib/erp-deploiement -/etc/erp-deploiement.conf
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+FIN
+# une mise en production réécrit /etc/caddy/Caddyfile : on remet la ligne « import » si elle manque
+if [ -f /etc/caddy/autres/dev.caddy ] && ! grep -q '^import /etc/caddy/autres/' /etc/caddy/Caddyfile; then
+  cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.avant-dev
+  printf '\n# Autres sites sur ce serveur (site de test dev.…)\nimport /etc/caddy/autres/*.caddy\n' >> /etc/caddy/Caddyfile
+  if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then systemctl reload caddy
+  else cp /etc/caddy/Caddyfile.avant-dev /etc/caddy/Caddyfile; echo "Ligne import refusée par Caddy : production inchangée."; fi
+fi
+systemctl daemon-reload
+systemctl enable erp-ano-dev >/dev/null 2>&1
+systemctl restart erp-ano-dev
+demarre=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  curl -fsS http://127.0.0.1:8766/api/sante >/dev/null 2>&1 && { demarre=1; break; }
+  sleep 1
+done
+[ -n "$demarre" ] || { echo "Le site de test ne répond pas : journalctl -u erp-ano-dev -n 50"; exit 1; }
+echo "site de test démarré ($(cat /opt/erp-dev/erp-mvp/VERSION 2>/dev/null))"
+# données fictives : lancé sous erp-dev avec les mêmes protections que le site de test
+if [ -f /opt/erp-dev/erp-mvp/deploiement/dev-apres-installation.py ]; then
+  printf '%s\n' "$MDP_VERIF" | systemd-run --quiet --wait --pipe --collect --uid=erp-dev --gid=erp-dev \
+      --working-directory=/opt/erp-dev/erp-mvp -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes \
+      -p ReadWritePaths=/var/lib/erp-dev -p PrivateTmp=yes -p UMask=0077 \
+      -p "InaccessiblePaths=-/var/lib/erp -/var/lib/erp-deploiement -/etc/erp-deploiement.conf" \
+      -E ANO_HTTPS=1 -E ANO_PORT=8766 -E HOME=/tmp \
+      /usr/bin/python3 -I deploiement/dev-apres-installation.py /var/lib/erp-dev "$DOMAINE_DEV" \
+    || { echo "Données fictives : échec (voir ci-dessus)."; exit 1; }
+fi
+exit 0

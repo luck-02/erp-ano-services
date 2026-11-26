@@ -49,7 +49,7 @@ STATIQUES = {
 }
 
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-       "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+       "frame-src blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 
 A, G, L = "admin", "gestion", "lecture"
 TOUS = (A, G, L)
@@ -79,10 +79,25 @@ ROUTES = [
     ("PUT", r"/api/dossiers/(\d+)", api.modifier_dossier, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/statut", api.statut_dossier, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/bc", api.bc_dossier, EQUIPE),
+    ("POST", r"/api/dossiers/(\d+)/proforma-envoyee", api.proforma_envoyee, EQUIPE),
+    ("POST", r"/api/agents/(\d+)/visite-faite", api.visite_faite, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/generer-factures", api.generer_factures, EQUIPE),
     ("GET", r"/api/dossiers/(\d+)/documents", api.documents_dossier, EQUIPE),
     ("POST", r"/api/dossiers/(\d+)/pieces", api.ajouter_piece, EQUIPE),
     ("GET", r"/api/documents/(\d+)", api.telecharger_document, EQUIPE),
+    ("GET", r"/api/dossiers/(\d+)/heures-sup", api.liste_hs, EQUIPE),
+    ("POST", r"/api/dossiers/(\d+)/heures-sup", api.creer_hs, EQUIPE),
+    ("GET", r"/api/heures-sup/(\d+)", api.detail_hs, EQUIPE),
+    ("PUT", r"/api/heures-sup/(\d+)", api.modifier_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/devis", api.devis_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/facture", api.facture_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/suivi", api.suivi_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/releve", api.releve_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/supprimer", api.supprimer_hs, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/etape", api.etape_hs, EQUIPE),
+    ("GET", r"/api/heures-sup/(\d+)/fiche\.docx", api.fiche_hs_word, EQUIPE),
+    ("POST", r"/api/heures-sup/(\d+)/fiche-archiver", api.archiver_fiche_hs, EQUIPE),
+    ("POST", r"/api/feries/confirmer", api.confirmer_ferie, EQUIPE),
     ("POST", r"/api/documents/(\d+)/retirer", api.retirer_piece, (A,)),
     ("GET", r"/api/factures", api.liste_factures, TOUS),
     ("GET", r"/api/factures/word", api.factures_word, EQUIPE),
@@ -95,6 +110,7 @@ ROUTES = [
     ("PUT", r"/api/factures/(\d+)/remarque", api.remarque_facture, EQUIPE),
     ("PUT", r"/api/factures/(\d+)", api.modifier_facture, EQUIPE),
     ("GET", r"/api/tableau-de-bord", api.tableau_de_bord, TOUS),
+    ("GET", r"/api/recherche", api.recherche, TOUS),
     ("GET", r"/api/signature", api.signature, TOUS),
     ("GET", r"/api/logo", api.logo, TOUS),
     ("PUT", r"/api/images/(logo|signature)", api.televerser_image, (A,)),
@@ -286,7 +302,7 @@ class Gestionnaire(BaseHTTPRequestHandler):
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 return self._erreur(400, "Requête invalide.")
-            if n > (TAILLE_MAX_PIECE if fonction is api.ajouter_piece else TAILLE_MAX):
+            if n > (TAILLE_MAX_PIECE if fonction in (api.ajouter_piece, api.releve_hs, api.etape_hs) else TAILLE_MAX):
                 return self._erreur(413, "Requête trop volumineuse.")
             brut = self.rfile.read(n) if n > 0 else b"{}"
             self._corps_lu = True

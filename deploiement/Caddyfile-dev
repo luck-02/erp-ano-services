@@ -1,0 +1,9 @@
+# Site de test (branche dev) : copié dans /etc/caddy/autres/dev.caddy par installer-dev.sh
+dev.exemple.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8766
+	request_body {
+		max_size 12MB
+	}
+	header X-Robots-Tag "noindex, nofollow"
+}

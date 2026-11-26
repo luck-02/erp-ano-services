@@ -7,6 +7,40 @@ Numérotation : `vMAJEUR.MINEUR.CORRECTIF`.
 
 Chaque version est une étiquette Git (`git tag`). Revenir à une version : `git checkout v3.1.0`.
 
+## En cours (branche dev)
+
+- Lot 1 « moins d'oublis » : en haut de chaque dossier, une « Prochaine étape » en une phrase avec son bouton (imprimer la proforma, saisir le BC, émettre, envoyer, relancer). Le dossier passe « Envoyé » tout seul quand la proforma est imprimée ou enregistrée en PDF, et « Terminé » à la date de fin. Un BC au bon montant prépare tout de suite les factures du contrat (plus besoin de cliquer « Générer »). Carte « À faire » : imputations à demander et visites médicales en plus, avec un lien vers chaque dossier concerné. Visites : bouton « Faite le… » qui retire l'alerte et sert de dernière visite pour le contrat suivant. Saisie d'une DA : le PDF ou la photo de la DA s'affiche à côté du formulaire et est joint au dossier. Paramètres > Numérotation : formats des n° (avancé, vide = règle actuelle, résultat identique).
+
+- Factures FA H (heures supplémentaires) visibles dans la page Factures (tableau à part, mêmes filtres mois et statut, retard en jours), dans l'export Excel et dans la recherche (« En retard », « À envoyer »…) : une FA H impayée ne passe plus inaperçue. Elles comptent aussi au tableau de bord (facturé, payé, reste à encaisser, retard) et dans « À faire » (à envoyer, en retard).
+
+- Fiche d'attachement à remettre au client : refaite aux couleurs de l'entreprise, en PDF et en Word, archivable dans les documents du dossier, date de remise au client notée. Signature de l'agent à chaque étape (Avant, Après, Payées, Récupérées) : date et scan signé facultatif par étape, dates reprises sur la fiche imprimée. Jours fériés à cheval (Aïd el-Fitr, Tabaski) marqués « à confirmer » : signalés « férié ? » dans la grille, pas comptés à 75 % et devis H bloqué tant que Lola ne les a pas confirmés ou retirés d'un clic. Correction : le bandeau « facture émise » de la page Heures supplémentaires s'affichait écrasé.
+
+- Heures supplémentaires : saisie en grille calendrier (semaines du lundi au dimanche, de date à date, sur plusieurs mois si besoin) : on tape les heures sous chaque jour, motif facultatif ; total par semaine et répartition 28/56/75 % en direct ; dimanches et jours fériés en orange. Jours fériés du Gabon préchargés avec leur nom (fêtes mobiles 2026-2027 à vérifier), modifiables dans Paramètres. La saisie par plages horaires reste possible.
+
+- Heures supplémentaires, dans l'ordre de Lola : relevé du client joint au dossier, fiche d'attachement (heures calculées depuis début et fin, PDF), classement semaine par semaine (8 premières heures à 28 %, le reste à 56 %, dimanches et jours fériés à 75 %, liste des fériés dans Paramètres) proposé puis modifiable, tableau des semaines sur la fiche, Proforma H (n° à part, ex. 124-10-ANO-MAD/2026), facture FA H (ex. FA H 110/11/2026) au montant du devis par défaut, envoi et paiement. Taux horaire = coût mensuel ÷ 173,33 ; calcul identique au devis d'exemple (776 311). Derniers n°, majorations et règle de classement dans Paramètres. Site de test : 2 relevés fictifs sur le dossier MOUELE.
+
+- Mise en conformité des données existantes, automatique au démarrage (une seule fois) : « ANO SERVICE » renseigné sous la désignation pour l'entreprise ANO Services si le champ est vide ; aucun n° émis, montant ou copie archivée n'est modifié. Les factures pas encore émises suivent d'elles-mêmes les nouvelles règles (n° partagé visite / mois). Site de test : « ANO SERVICE » aussi dans « essai » et « verif ».
+
+- Factures : nom de l'entreprise sous la 1re ligne de la désignation, avant l'agent, comme sur les factures d'ANO (« ANO SERVICE ») ; réglable dans Paramètres > Numérotation (vide = raison sociale en majuscules), à l'écran, en PDF et en Word.
+
+- Un n° de facture émis reste lié à son agent : la facture du mois émise après sa visite médicale reprend le n° de la visite (FA 87/Visite médicale/2026 puis FA 87/12/2026), et inversement ; modifier la DA (ordre des agents, dates, montants) ne change jamais le n° ni l'agent d'une facture émise ; un agent qui a des factures émises ne peut être ni retiré ni remplacé.
+
+- Recherche globale (case en haut du menu, touche « / ») : dossiers, factures, documents, clients, intérimaires ; plusieurs mots, accents ignorés, n° et montants avec espaces ; filtres type, client, statut, période, montant HT ; Lecture = factures seulement ; jamais hors de l'entreprise connectée.
+
+- Mise en page : la page ne défile plus jamais de côté, quelles que soient la largeur et le zoom (le menu restait coupé sur la page dossier) ; un tableau trop large défile dans son cadre.
+
+- Site de test : jeu de données fictives (`outils/donnees_fictives.py` : agent seul, groupe de 9, prolongation, prorata, « bis », facture corrigée, visite à l'anniversaire, trop-perçu, DA annulée). L'entreprise « essai » est remplie une fois ; l'entreprise « verif » est recréée à chaque mise à jour pour les tests en ligne (`tests/en_ligne/verifier_dev_api.py`, `tests/e2e/en_ligne_dev.js`).
+- `plateforme.py mdp CODE IDENTIFIANT` : mot de passe oublié, nouveau mot de passe provisoire.
+- Champs de recherche des dossiers et intérimaires : libellés pour les lecteurs d'écran.
+
+- `deploiement/vider-production.sh` : remet la production à zéro (copie complète gardée d'abord dans /root/sauvegardes-erp, confirmation « VIDER », `--restaurer` pour revenir en arrière) ; le site de test n'est pas touché.
+- Branche `dev` : tests GitHub à chaque envoi ; `main` reste la production.
+- Site de test https://dev.<ip>.sslip.io à côté de la production (compte `erp-dev`, port 8766, données
+  `/var/lib/erp-dev`, production illisible pour lui), mis à jour automatiquement à chaque envoi sur `dev`
+  après les tests ; repère discret : badge « TEST » près du nom, onglet « [TEST] ». Installation : `deploiement/installer-dev.sh`.
+- `erp-deployer` accepte aussi « deployer-dev dev-<commit> » (site de test seulement, code copié sans
+  être exécuté en root).
+
 ## v3.5.0 – 25/11/2026 : retours de test de Luc et Lola, cas réels
 - N° des factures calqués sur les vraies : facture du mois FA 159/11/2026 (11 = mois d'émission),
   visite médicale FA 159/Visite médicale/2026 avec le même n° quand elle part avec la facture du mois,

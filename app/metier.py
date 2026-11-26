@@ -300,3 +300,125 @@ def statut_facture(f, aujourd_hui):
     if f.get("echeance") and aujourd_hui > dt.date.fromisoformat(f["echeance"]):
         return "En retard"
     return "Envoyée"
+
+
+# ---------------------------------------------------------------------------
+# Heures supplémentaires (circuit de Lola, 25/11/2026) :
+# relevé COMILOG -> fiche d'attachement -> classement 28/56/75 % -> Proforma H -> facture FA H
+# ---------------------------------------------------------------------------
+HS_CATEGORIES = ("h1", "h2", "h3")
+
+
+def hs_taux_horaire(cout, diviseur_centiemes=17333):
+    """Taux horaire exact (fraction) = coût mensuel ÷ 173,33 heures."""
+    return Fraction(int(cout) * 100, int(diviseur_centiemes))
+
+
+def hs_heures(v):
+    """Heures saisies (8, 7,5, « 3 H ») -> Fraction au quart d'heure près."""
+    if isinstance(v, (int, float)):
+        f = Fraction(v).limit_denominator(100)
+    else:
+        t = str(v or "").upper().replace("H", "").replace(",", ".").strip()
+        if not re.fullmatch(r"\d{1,3}(\.\d{1,2})?", t):
+            raise ValueError("heures")
+        f = Fraction(t)
+    return f
+
+
+def hs_lignes_montants(cout, heures, taux_pdm, diviseur_centiemes=17333):
+    """Une ligne par catégorie : taux horaire majoré (arrondi, affiché) et total,
+    calculé sur le taux exact puis arrondi une seule fois par ligne (comme le devis de Lola).
+    heures et taux_pdm : listes de même longueur (ex. [27, 28, 15] et [2800, 5600, 7500])."""
+    th = hs_taux_horaire(cout, diviseur_centiemes)
+    res = []
+    for h, t in zip(heures, taux_pdm):
+        maj = th * (10000 + int(t)) / 10000
+        res.append({"heures": float(Fraction(h)), "taux_pdm": int(t), "taux_horaire": arrondi(maj),
+                    "total": arrondi(maj * Fraction(h))})
+    return {"taux_horaire": arrondi(th), "lignes": res, "total": sum(x["total"] for x in res)}
+
+
+def _minutes(hhmm):
+    if not hhmm:
+        return None
+    m = re.fullmatch(r"(\d{1,2})[:hH](\d{2})?", str(hhmm).strip())
+    if not m or int(m.group(1)) > 24 or int(m.group(2) or 0) > 59:
+        return None
+    return int(m.group(1)) * 60 + int(m.group(2) or 0)
+
+
+JOURS_FR = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
+
+
+def hs_est_ferie(d, feries):
+    """feries : « MM-JJ » (chaque année) ou « AAAA-MM-JJ » (une seule fois, ex. lundi de Pâques)."""
+    return d.isoformat() in feries or d.isoformat()[5:] in feries
+
+
+def hs_classer(lignes, seuil_semaine=8, feries=(), jours_repos=(6,)):
+    """Règle de Luc (25/11/2026), comme le tableau Excel de Lola :
+    heures regroupées par semaine du calendrier (lundi -> dimanche), total par jour puis par semaine ;
+    - dimanches et jours fériés -> h3
+    - autres jours : les `seuil_semaine` premières heures de la semaine -> h1, le reste -> h2.
+    Renvoie (totaux {h1, h2, h3}, semaines [{du, au, jours: [(date, heures)], total, h1, h2, h3}])."""
+    par_jour = {}
+    for l in lignes:
+        par_jour[l["date"]] = par_jour.get(l["date"], Fraction(0)) + Fraction(l["heures"])
+    semaines = {}
+    for d in sorted(par_jour):
+        lundi = d - dt.timedelta(days=d.weekday())
+        s = semaines.setdefault(lundi, {"du": lundi, "au": lundi + dt.timedelta(days=6), "jours": [],
+                                        "total": Fraction(0), "h1": Fraction(0), "h2": Fraction(0), "h3": Fraction(0)})
+        h = par_jour[d]
+        s["jours"].append((d, h))
+        s["total"] += h
+        if d.weekday() in jours_repos or hs_est_ferie(d, feries):
+            s["h3"] += h
+        else:
+            a = min(h, max(Fraction(0), Fraction(seuil_semaine) - s["h1"]))
+            s["h1"] += a
+            s["h2"] += h - a
+    tot = {k: sum((s[k] for s in semaines.values()), Fraction(0)) for k in HS_CATEGORIES}
+    return tot, [semaines[k] for k in sorted(semaines)]
+
+
+def numero_proforma_h(n, date_devis, code="ANO", suite="MAD"):
+    """124-10-ANO-MAD/2026 (série à part des proformas de mise à disposition)."""
+    return "%d-%02d-%s-%s/%d" % (n, date_devis.month, code, suite or "MAD", date_devis.year)
+
+
+def numero_facture_h(n, date_emission, prefixe="FA", code="H"):
+    """FA H 110/11/2026 (11 = mois d'émission, comme les autres factures)."""
+    return ("%s %s %d/%02d/%d" % (prefixe, code or "H", n, date_emission.month, date_emission.year)).strip()
+
+
+# ---------------------------------------------------------------------------
+# Numérotation par formats (brique « Numérotation », lot 1 du 25/11/2026)
+# Un format vide = règle automatique d'ANO ci-dessus (résultat identique).
+# ---------------------------------------------------------------------------
+JETONS_NUMERO = ("N", "MM", "AAAA", "AA", "CODE", "NOM", "PREFIXE")
+
+
+def verifier_format_numero(fmt):
+    """Renvoie un message d'erreur, ou None si le format est utilisable."""
+    if not fmt:
+        return None
+    jetons = re.findall(r"\{([^{}]*)\}", fmt)
+    inconnus = [j for j in jetons if j not in JETONS_NUMERO]
+    if inconnus:
+        return "Repère inconnu : {%s}. Repères possibles : %s." % (inconnus[0], ", ".join("{%s}" % j for j in JETONS_NUMERO))
+    if "N" not in jetons:
+        return "Le format doit contenir {N} (le n° qui augmente de 1 à chaque document)."
+    if re.sub(r"\{[^{}]*\}", "", fmt).count("{") or re.sub(r"\{[^{}]*\}", "", fmt).count("}"):
+        return "Accolade { ou } mal fermée."
+    return None
+
+
+def formater_numero(fmt, n, date_doc, code="", nom="", prefixe=""):
+    """« {PREFIXE} {N}/{MM}/{AAAA} » -> « FA 159/11/2026 »."""
+    valeurs = {"N": str(n), "MM": "%02d" % date_doc.month, "AAAA": str(date_doc.year),
+               "AA": "%02d" % (date_doc.year % 100), "CODE": nom_pour_numero(code),
+               "NOM": nom_pour_numero(nom), "PREFIXE": prefixe or ""}
+    res = re.sub(r"\{(%s)\}" % "|".join(JETONS_NUMERO), lambda m: valeurs[m.group(1)], fmt)
+    return " ".join(res.split())

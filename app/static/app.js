@@ -248,6 +248,7 @@ async function demarrerApp() {
   $("#app").className = "";
   $("#app").innerHTML = html`<div class="coque">
     <nav class="menu"><div class="marque">${etat.params.parametres.raison_sociale}<small>ERP – version MVP</small></div>
+      <form class="menu-recherche" id="f-rech" role="search"><input id="rech-menu" type="search" aria-label="Rechercher partout" placeholder="Rechercher…" title="Touche / pour chercher depuis n'importe quelle page"></form>
       ${PAGES.map((p) => (p.sep ? html`<div class="sep"></div>` : p.roles.includes(etat.user.role) ? html`<a href="${p.h}">${p.t}</a>` : ""))}
       <div class="sep"></div>
       <div class="moi"><b>${etat.user.nom}</b>${ROLES[etat.user.role]}</div>
@@ -257,16 +258,30 @@ async function demarrerApp() {
     <main class="contenu" id="page"></main></div>`.s;
   $("[data-deco]").onclick = async (e) => { e.preventDefault(); try { await api("POST", "/api/deconnexion", {}); } catch (x) { /* rien */ } etat.user = null; etat.csrf = null; afficherConnexion("Vous êtes déconnecté."); };
   $("[data-mdp]").onclick = (e) => { e.preventDefault(); afficherChangerMdp(false); };
+  $("#f-rech").onsubmit = (e) => {
+    e.preventDefault();
+    const q = $("#rech-menu").value.trim();
+    location.hash = "#/recherche/" + encodeURIComponent(q);
+    $("#rech-menu").value = "";
+    $("#rech-menu").blur();
+  };
   router();
 }
 
 window.addEventListener("hashchange", () => { if (etat.user) router(); });
+// touche « / » : aller à la recherche depuis n'importe quelle page
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || !$("#rech-menu")) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+  e.preventDefault();
+  $("#r-q") ? $("#r-q").focus() : $("#rech-menu").focus();
+});
 
 // Rôles permis par page (les mêmes contrôles sont faits par le serveur)
 function rolesPage(nom, a1) {
   const p = PAGES.find((x) => x.h === "#/" + nom);
   if (p) return p.roles;
-  if (nom === "dossier" || nom === "modifier-da") return ["admin", "gestion"];
+  if (nom === "dossier" || nom === "modifier-da" || nom === "hs") return ["admin", "gestion"];
   if (nom === "imprimer") return a1 === "factures" ? ["admin", "gestion", "lecture"] : ["admin", "gestion"];
   return null;
 }
@@ -289,6 +304,7 @@ async function router() {
     if (nom === "tableau" || !nom) await pageTableau(page);
     else if (nom === "dossiers") await pageDossiers(page);
     else if (nom === "dossier") await pageDossier(page, +a1);
+    else if (nom === "hs") await pageHS(page, +a1);
     else if (nom === "nouvelle-da") await pageSaisieDA(page, null);
     else if (nom === "modifier-da") await pageSaisieDA(page, +a1);
     else if (nom === "factures") await pageFactures(page);
@@ -297,6 +313,7 @@ async function router() {
     else if (nom === "parametres") await pageParametres(page);
     else if (nom === "utilisateurs") await pageUtilisateurs(page);
     else if (nom === "journal") await pageJournal(page);
+    else if (nom === "recherche") await pageRecherche(page, decodeURIComponent(a1 || ""));
     else if (nom === "imprimer") await pageImprimer(page, a1, a2);
     else page.innerHTML = html`<p>Page introuvable. <a href="#/tableau">Retour au tableau de bord</a></p>`.s;
   } catch (e) {
@@ -308,19 +325,25 @@ async function router() {
 // ---------------------------------------------------------------------------
 // Tableau de bord
 // ---------------------------------------------------------------------------
-const filtres = { mois: moisCourant(), factMois: moisCourant(), factStatut: "", dosStatut: "", dosQ: "" };
+const filtres = { mois: moisCourant(), factMois: moisCourant(), factStatut: "", dosStatut: "", dosQ: "",
+  rech: { type: "", client: "", statut: "", du: "", au: "", min: "", max: "" } };
 
 // Carte « À faire » : chaque ligne = une action, avec le lien qui y mène
-function carteAFaire(a) {
+function carteAFaire(a, ad) {
+  ad = ad || {};
+  // [nombre, libellé, lien, statut de facture à filtrer, dossiers concernés]
   const lignes = [
+    [a.en_retard, "facture(s) en retard de paiement : relancer le client", "#/factures", "En retard"],
     [a.a_emettre, "facture(s) à émettre (mois en cours et mois passés)", "#/factures", "À émettre"],
     [a.a_envoyer, "facture(s) émise(s) pas encore envoyée(s) au client", "#/factures", "À envoyer"],
-    [a.en_retard, "facture(s) en retard de paiement (échéance dépassée)", "#/factures", "En retard"],
-    [a.sans_bc, "proforma(s) envoyée(s) ou validée(s) sans bon de commande", "#/dossiers", null],
-    [a.brouillons, "proforma(s) en brouillon, pas encore envoyée(s)", "#/dossiers", null],
+    [a.sans_bc, "proforma(s) envoyée(s) sans bon de commande : relancer le client", "#/dossiers", null, ad.sans_bc],
+    [a.imputations, "dossier(s) sans n° d'imputation : le demander au client", "#/dossiers", null, ad.imputations],
+    [a.visites, "visite(s) médicale(s) à organiser ou à confirmer", "#/tableau", null, null, "tb-visites"],
+    [a.brouillons, "proforma(s) en brouillon : à imprimer et envoyer", "#/dossiers", null, ad.brouillons],
   ].filter((l) => l[0]);
+  const dossiers = (ds) => (ds && ds.length ? html`<span class="a-faire-dos">${ds.map((x) => html`<a href="#/dossier/${x.id}">${x.numero}</a>`)}</span>` : "");
   return html`<div class="carte a-faire"><h2>À faire</h2>${lignes.length
-    ? html`<ul>${lignes.map(([n, lib, lien, statut]) => html`<li><a href="${lien}" ${statut ? html`data-statut="${statut}"` : ""}><b>${n}</b> ${lib}</a></li>`)}</ul>`
+    ? html`<ul>${lignes.map(([n, lib, lien, statut, ds, ancre]) => html`<li>${ancre ? html`<button class="lien" data-aller="${ancre}"><b>${n}</b> ${lib}</button>` : html`<a href="${lien}" ${statut ? html`data-statut="${statut}"` : ""}><b>${n}</b> ${lib}</a>`}${dossiers(ds)}</li>`)}</ul>`
     : html`<p class="doux">Rien en attente : tout est émis, envoyé et à jour.</p>`}</div>`;
 }
 
@@ -334,7 +357,7 @@ async function pageTableau(page) {
     <div class="entete"><div><h1>Tableau de bord</h1><p>Situation du mois de ${t.libelle}</p></div>
       <div class="actions"><label for="tb-mois" class="doux" data-style="margin:0">Mois</label><input type="month" id="tb-mois" value="${filtres.mois}" data-style="width:auto"></div></div>
     ${t.num_facture_manquant && peut("admin") ? html`<div class="bandeau alerte"><span>Avant d'émettre la première facture, indiquez le <b>dernier n° de facture</b> réellement utilisé (ex. 152).</span><a class="bouton" href="#/parametres">Ouvrir les paramètres</a></div>` : ""}
-    ${peut("admin", "gestion") ? carteAFaire(t.a_faire) : ""}
+    ${peut("admin", "gestion") ? carteAFaire(t.a_faire, t.a_faire_dossiers) : ""}
     ${t.ecarts_bc.length ? html`<div class="bandeau danger"><span>Écart entre BC et proforma : ${t.ecarts_bc.map((e) => html`<a href="#/dossier/${e.dossier_id}">${e.numero}</a> (${fmt(e.ecart)} XAF) `)}</span></div>` : ""}
     ${t.trop_percus && t.trop_percus.length && peut("admin", "gestion") ? html`<div class="bandeau alerte"><span>Paiement plus grand que la facture : ${t.trop_percus.map((x) => html`<b>${x.numero}</b> (payé ${fmt(x.paye)} pour ${fmt(x.ttc)} TTC) `)}. À vérifier ; si c'est une erreur, annulez le paiement dans « Factures » puis ressaisissez-le.</span></div>` : ""}
     <div class="grille g4">
@@ -355,9 +378,11 @@ async function pageTableau(page) {
         ${t.alertes_fin.length ? html`<table><thead><tr><th>Agent</th><th>Fin</th><th class="num">Jours</th></tr></thead><tbody>
           ${t.alertes_fin.map((a) => html`<tr class="cliquable" data-href="#/dossier/${a.dossier_id}"><td>${a.agent}</td><td>${dateFr(a.fin)}</td><td class="num">${a.jours}</td></tr>`)}</tbody></table>
           <p class="aide">Renouvellement = nouvelle DA.</p>` : html`<p class="doux">Aucun contrat ne se termine dans les ${etat.params.parametres.alerte_fin_jours} jours.</p>`}</div>
-      <div class="carte"><h2>Visites médicales à refaire</h2>
-        ${t.alertes_visite.length ? html`<table><thead><tr><th>Agent</th><th>À refaire le</th><th>Fin du contrat</th></tr></thead><tbody>
-          ${t.alertes_visite.map((a) => html`<tr class="cliquable" data-href="#/dossier/${a.dossier_id}"><td>${a.agent}</td><td>${dateFr(a.date)}</td><td>${dateFr(a.fin)}</td></tr>`)}</tbody></table>` : html`<p class="doux">Aucune visite à prévoir dans les ${etat.params.parametres.alerte_visite_jours} jours.</p>`}</div>
+      <div class="carte" id="tb-visites"><h2>Visites médicales à organiser</h2>
+        ${t.alertes_visite.length ? html`<table><thead><tr><th>Agent</th><th>Prévue le</th><th>Fin du contrat</th>${peut("admin", "gestion") ? html`<th></th>` : ""}</tr></thead><tbody>
+          ${t.alertes_visite.map((a, i) => html`<tr class="cliquable" data-href="#/dossier/${a.dossier_id}"><td>${a.agent}</td><td>${dateFr(a.date)}${a.passee ? html` <span class="badge b-En retard">à confirmer</span>` : ""}</td><td>${dateFr(a.fin)}</td>
+            ${peut("admin", "gestion") ? html`<td><button class="secondaire petit" data-visite="${i}">Faite le…</button></td>` : ""}</tr>`)}</tbody></table>
+          <p class="aide">« Faite le… » note la date réelle : l'alerte disparaît et la date sert au contrat suivant.</p>` : html`<p class="doux">Aucune visite à prévoir dans les ${etat.params.parametres.alerte_visite_jours} jours.</p>`}</div>
     </div>
     <div class="carte"><h2>Mois par mois (12 derniers mois au plus)</h2>
       <div class="legende"><span class="l-prevu">Prévu (HT)</span><span class="l-facture">Facturé (TTC)</span><span class="l-paye">Payé (TTC)</span></div>
@@ -373,6 +398,23 @@ async function pageTableau(page) {
   $("#tb-mois").onchange = (e) => { if (e.target.value) { filtres.mois = e.target.value; pageTableau(page); } };
   // un clic sur une ligne « À faire » ouvre les factures déjà filtrées sur ce statut
   $$(".a-faire a[data-statut]", page).forEach((l) => { l.onclick = () => { filtres.factStatut = l.dataset.statut; filtres.factMois = ""; }; });
+  $$(".a-faire [data-aller]", page).forEach((b) => { b.onclick = () => { const c = $("#" + b.dataset.aller); if (c) c.scrollIntoView({ behavior: "smooth", block: "start" }); }; });
+  $$("[data-visite]", page).forEach((b) => {
+    b.onclick = () => {
+      const v = t.alertes_visite[+b.dataset.visite];
+      const defaut = v.date < auj() ? v.date : auj();
+      ouvrirModale(html`<h2>Visite médicale de ${v.agent}</h2><p class="doux">Prévue le ${dateFr(v.date)}.</p><form id="vf-f">
+        <div class="champ"><label for="vf-d">Faite le</label><input id="vf-d" type="date" value="${defaut}" max="${auj()}" required></div>
+        <div class="actions"><button type="submit" class="vert">Enregistrer</button><button type="button" class="secondaire" data-fermer>Annuler</button></div></form>`);
+      $("#vf-f").onsubmit = async (e) => {
+        e.preventDefault();
+        const faite = $("#vf-d").value;
+        fermerModale();
+        try { await action(() => api("POST", "/api/agents/" + v.agent_id + "/visite-faite", { prevue: v.date, faite }), "Visite notée : faite le " + dateFr(faite) + "."); } catch (x) { return; }
+        pageTableau(page);
+      };
+    };
+  });
   lignesCliquables(page);
 }
 
@@ -388,6 +430,18 @@ function appliquerStyles(racine) {
 function lignesCliquables(racine) {
   $$("tr[data-href]", racine).forEach((tr) => { tr.onclick = (e) => { if (!e.target.closest("button, input, a")) location.hash = tr.dataset.href; }; });
 }
+// Tableaux larges : chacun défile dans son cadre au lieu d'élargir toute la page
+// (y compris ceux ajoutés plus tard par une mise à jour partielle de la page).
+function encadrerTableaux(racine) {
+  racine.querySelectorAll("table").forEach((t) => {
+    if (t.closest(".doc") || (t.parentElement && t.parentElement.classList.contains("defile"))) return;
+    const d = document.createElement("div");
+    d.className = "defile";
+    t.parentNode.insertBefore(d, t);
+    d.appendChild(t);
+  });
+}
+new MutationObserver(() => encadrerTableaux(document.body)).observe(document.body, { childList: true, subtree: true });
 function rendre(page, contenu) { page.innerHTML = contenu.s; appliquerStyles(page); lignesCliquables(page); marquerObligatoires(page); }
 
 // Aide d'un champ : petite icône ⓘ, le texte s'affiche au survol (ou au toucher / clavier)
@@ -415,8 +469,8 @@ async function pageDossiers(page) {
       <div class="actions"><a class="bouton" href="#/nouvelle-da">+ Nouvelle DA</a></div></div>
     <div class="carte">
       <div class="ligne-form lf3" data-style="margin-bottom:.75rem">
-        <div><input id="d-q" placeholder="Rechercher : agent, matricule, n° proforma, BC, service…" value="${filtres.dosQ}"></div>
-        <div><select id="d-st"><option value="">Tous les statuts</option>${etat.params.statuts.map((s) => html`<option ${s === filtres.dosStatut ? "selected" : ""}>${s}</option>`)}</select></div>
+        <div><input id="d-q" aria-label="Rechercher un dossier" placeholder="Rechercher : agent, matricule, n° proforma, BC, service…" value="${filtres.dosQ}"></div>
+        <div><select id="d-st" aria-label="Filtrer par statut"><option value="">Tous les statuts</option>${etat.params.statuts.map((s) => html`<option ${s === filtres.dosStatut ? "selected" : ""}>${s}</option>`)}</select></div>
         <div class="doux petit" data-style="align-self:center">${r.dossiers.length} dossier(s)</div>
       </div>
       <div class="tableau-wrap"><table><thead><tr><th>N° proforma</th><th>Agent(s)</th><th>Service · lieu</th><th>Période</th><th class="num">Salaire de base</th><th class="num">Cumul HT</th><th>BC</th><th>Factures</th><th>Statut</th></tr></thead><tbody>
@@ -493,8 +547,67 @@ async function pageSaisieDA(page, id) {
             <a class="bouton secondaire" href="${id ? "#/dossier/" + id : "#/dossiers"}">Annuler</a></div>
         </div>
       </form>
-      <div class="apercu"><div class="carte" id="apercu"><h2>Aperçu de la proforma</h2><p class="doux">Remplissez les dates et au moins un agent.</p></div></div>
+      <div class="apercu">
+        <div class="carte" id="da-piece"><h2>La DA reçue</h2>
+          <p class="doux petit">Affichez le PDF ou la photo de la DA ici pour la recopier sans changer de fenêtre. ${id ? "Un nouveau fichier choisi ici sera ajouté aux documents du dossier." : "Elle sera jointe au dossier (pièce « DA ») à l'enregistrement."}</p>
+          <div id="da-pieces-existantes"></div>
+          <div class="champ"><label for="da-fichier">Fichier de la DA (PDF, PNG ou JPEG, 8 Mo au plus)</label><input id="da-fichier" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"></div>
+          <div id="da-vue" class="da-vue cache"></div></div>
+        <div class="carte" id="apercu"><h2>Aperçu de la proforma</h2><p class="doux">Remplissez les dates et au moins un agent.</p></div></div>
     </div>`);
+
+  // lot 1 (A10) : la DA reçue affichée à côté du formulaire
+  let fichierDA = null, urlVue = null;
+  const lireDataUrl = (b) => new Promise((ok, ko) => { const l = new FileReader(); l.onload = () => ok(l.result); l.onerror = ko; l.readAsDataURL(b); });
+  async function montrerPiece(blob) {
+    const vue = $("#da-vue");
+    if (!vue) return;
+    if (urlVue) { URL.revokeObjectURL(urlVue); urlVue = null; }
+    const debut = new Uint8Array(await blob.slice(0, 5).arrayBuffer());
+    const estPdf = String.fromCharCode(...debut) === "%PDF-";
+    vue.classList.remove("cache");
+    if (estPdf) {
+      urlVue = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
+      vue.innerHTML = html`<iframe title="DA reçue" src="${urlVue}"></iframe>`.s;
+    } else {
+      const lu = await lireDataUrl(blob);
+      if (!/^data:image\/(png|jpeg);/.test(lu)) { vue.innerHTML = html`<p class="doux">Aperçu impossible : PDF, PNG ou JPEG seulement.</p>`.s; return; }
+      vue.innerHTML = html`<img alt="DA reçue" src="${lu}">`.s;
+    }
+  }
+  $("#da-fichier").onchange = (e) => {
+    const f = e.target.files[0];
+    fichierDA = null;
+    if (!f) return;
+    if (f.size > 8 * 1024 * 1024) { e.target.value = ""; toast("Fichier trop lourd (8 Mo au plus).", true); return; }
+    if (!/\.(pdf|png|jpe?g)$/i.test(f.name)) { e.target.value = ""; toast("Format refusé : PDF, PNG ou JPEG seulement.", true); return; }
+    fichierDA = f;
+    montrerPiece(f).catch(() => toast("Lecture du fichier impossible.", true));
+  };
+  if (id) {
+    api("GET", "/api/dossiers/" + id + "/documents").then((r) => {
+      const das = r.documents.filter((x) => x.categorie === "DA");
+      const zone = $("#da-pieces-existantes");
+      if (!zone || !das.length) return;
+      zone.innerHTML = html`<div class="actions">${das.map((x) => html`<button type="button" class="secondaire petit" data-voir-da="${x.id}">Afficher ${x.nom}</button>`)}</div>`.s;
+      $$("[data-voir-da]", zone).forEach((b) => {
+        b.onclick = async () => {
+          try {
+            const reponse = await fetch("/api/documents/" + b.dataset.voirDa, { credentials: "same-origin" });
+            if (!reponse.ok) throw new Error("Document illisible.");
+            await montrerPiece(await reponse.blob());
+          } catch (x) { toast(x.message, true); }
+        };
+      });
+    }).catch(() => { /* pas de documents : rien à montrer */ });
+  }
+  async function joindreDA(did) {
+    if (!fichierDA) return;
+    try {
+      const contenu = await lireDataUrl(fichierDA);
+      await api("POST", "/api/dossiers/" + did + "/pieces", { categorie: "DA", nom: fichierDA.name, contenu });
+    } catch (x) { toast("Dossier enregistré, mais la DA n'a pas pu être jointe : " + x.message + " Ajoutez-la depuis « Documents ».", true); }
+  }
 
   const corpsAgents = $("#da-agents");
   function dessinerAgents() {
@@ -572,10 +685,12 @@ async function pageSaisieDA(page, id) {
     try {
       if (id) {
         await api("PUT", "/api/dossiers/" + id, corps());
+        await joindreDA(id);
         toast("Dossier mis à jour.");
         location.hash = "#/dossier/" + id;
       } else {
         const r = await api("POST", "/api/dossiers", corps());
+        await joindreDA(r.id);
         toast("DA " + r.num_da + " enregistrée : proforma " + r.numero_proforma);
         location.hash = "#/dossier/" + r.id;
       }
@@ -589,12 +704,48 @@ async function pageSaisieDA(page, id) {
 // ---------------------------------------------------------------------------
 const ORDRE_ETAPES = ["Brouillon", "Envoyé", "Validé", "BC reçu", "En cours", "Terminé"];
 
+// « Prochaine étape » : une phrase et un bouton, déduits de l'état du dossier (lot 1)
+function prochaineEtape(r) {
+  const d = r.dossier, id = d.id;
+  const moisCourantIso = auj().slice(0, 7) + "-01";
+  const fs = r.factures.filter((f) => f.statut !== "Remplacée");
+  const aEmettre = fs.filter((f) => f.statut === "À émettre" && f.mois <= moisCourantIso);
+  const aEnvoyer = fs.filter((f) => f.statut === "À envoyer");
+  const enRetard = fs.filter((f) => f.statut === "En retard");
+  const ecartOk = r.ecart_bc !== null && Math.abs(r.ecart_bc) <= 1;
+  const imputation = !d.imputation && ["Envoyé", "Validé", "BC reçu", "En cours"].includes(d.statut)
+    ? " Pensez aussi à demander le n° d'imputation au client." : "";
+  if (d.statut === "Annulé") return null;
+  if (d.statut === "Brouillon")
+    return { texte: "Imprimer la proforma (ou l'enregistrer en PDF) et l'envoyer au client. Le dossier passera « Envoyé » tout seul.", lien: "#/imprimer/proforma/" + id, bouton: "Proforma en PDF" };
+  if (!d.bc_numero)
+    return { texte: "Attendre le bon de commande du client, puis le saisir ci-dessous : les factures seront préparées tout de suite." + imputation, focus: "bc-n", bouton: "Saisir le BC" };
+  if (!ecartOk)
+    return { texte: "Le montant du BC ne correspond pas à la proforma (écart de " + fmt(r.ecart_bc) + " XAF). Vérifiez le BC ou la proforma avec le client.", focus: "bc-m", bouton: "Revoir le BC", alerte: true };
+  if (!r.factures.length)
+    return { texte: "Le BC est conforme : préparez les factures du contrat.", clic: "ds-gen", bouton: "Générer les factures" };
+  if (enRetard.length)
+    return { texte: enRetard.length + " facture(s) en retard de paiement (" + enRetard.map((f) => f.numero).join(", ") + ") : relancer le client." + imputation, lien: "#/factures", statut: "En retard", bouton: "Voir les factures en retard", alerte: true };
+  if (aEmettre.length) {
+    const mois = [...new Set(aEmettre.map((f) => f.mois))];
+    return { texte: "Émettre " + aEmettre.length + " facture(s) : " + mois.map((m) => moisFr(m)).join(", ") + "." + imputation, lien: "#/factures", mois: mois[mois.length - 1].slice(0, 7), bouton: "Aller à l'émission" };
+  }
+  if (aEnvoyer.length)
+    return { texte: "Envoyer au client " + aEnvoyer.length + " facture(s) émise(s), puis les marquer « envoyées »." + imputation, lien: "#/imprimer/factures/" + aEnvoyer.map((f) => f.id).join(","), bouton: "Factures à envoyer" };
+  const prochaine = fs.find((f) => f.statut === "À émettre");
+  if (prochaine) return { texte: "Rien à faire pour l'instant. Prochaine facture : " + moisFr(prochaine.mois) + "." + imputation, calme: true };
+  const impayees = fs.filter((f) => f.numero && f.statut !== "Payée");
+  if (impayees.length) return { texte: "Toutes les factures sont émises et envoyées. " + impayees.length + " attendent leur paiement." + imputation, calme: true };
+  return { texte: "Contrat soldé : toutes les factures sont payées.", calme: true };
+}
+
 async function pageDossier(page, id) {
   const r = await api("GET", "/api/dossiers/" + id);
   const d = r.dossier, pr = r.proforma;
   const iEtape = ORDRE_ETAPES.indexOf(d.statut);
   const nbFact = r.factures.length, nbEmises = r.factures.filter((f) => f.numero && f.statut !== "Remplacée").length;
   const ecartOk = r.ecart_bc !== null && Math.abs(r.ecart_bc) <= 1;
+  const etape = prochaineEtape(r);
   rendre(page, html`
     <div class="entete"><div><h1>${d.numero_proforma}</h1><p>${r.client.nom} · ${d.service} · ${d.lieu} · du ${dateFr(d.date_debut)} au ${dateFr(d.date_fin)}</p></div>
       <div class="actions">
@@ -604,6 +755,8 @@ async function pageDossier(page, id) {
       </div></div>
     <div class="etapes">${ORDRE_ETAPES.map((s, i) => html`<div class="etape ${d.statut === "Annulé" ? "" : i < iEtape ? "fait" : i === iEtape ? "courant" : ""}">${s}</div>`)}</div>
     ${d.statut === "Annulé" ? html`<div class="bandeau danger">Dossier annulé.</div>` : ""}
+    ${etape && peut("admin", "gestion") ? html`<div class="bandeau ${etape.alerte ? "alerte" : etape.calme ? "info" : "prochaine"}" id="ds-etape"><span><b>Prochaine étape :</b> ${etape.texte}</span>
+      ${etape.bouton ? (etape.lien ? html`<a class="bouton" href="${etape.lien}" id="ds-etape-b">${etape.bouton}</a>` : html`<button id="ds-etape-b">${etape.bouton}</button>`) : ""}</div>` : ""}
     <div class="grille g3">
       <div class="kpi accent"><div class="lib">Cumul proforma HT</div><div class="val">${fmt(pr.cumul_ht)}</div><div class="sous">XAF hors taxes</div></div>
       <div class="kpi ${d.bc_numero ? (ecartOk ? "ok" : "danger") : "alerte"}"><div class="lib">Bon de commande</div><div class="val">${d.bc_numero || "En attente"}</div>
@@ -643,10 +796,19 @@ async function pageDossier(page, id) {
     <div class="carte"><div class="entete" data-style="margin-bottom:.5rem"><h2 data-style="margin:0">Factures du contrat</h2>
       <div class="actions">${d.statut !== "Annulé" ? html`<button class="vert" id="ds-gen">${nbFact ? "Mettre à jour les factures prévues" : "Générer les factures"}</button>` : ""}
       ${nbEmises ? html`<a class="bouton secondaire" href="#/imprimer/factures/${r.factures.filter((f) => f.numero && f.statut !== "Remplacée").map((f) => f.id).join(",")}">Toutes les factures en PDF</a>` : ""}</div></div>
-      ${nbFact ? tableFactures(r.factures, false) : html`<p class="doux">Aucune facture encore. À réception du BC, cliquez sur « Générer les factures » : une facture de visite médicale (si due) et une facture par mois, au prorata. Les mois déjà écoulés seront émis en rattrapage.</p>`}
+      ${nbFact ? tableFactures(r.factures, false) : html`<p class="doux">Aucune facture encore. Elles se préparent toutes seules quand le BC est enregistré avec un montant conforme : une facture de visite médicale (si due) et une facture par mois, au prorata. Le bouton « Générer les factures » sert si le BC a un écart que vous acceptez.</p>`}
     </div>
+    ${carteHeuresSup(r, id)}
     ${peut("admin", "gestion") ? html`<div class="carte" id="ds-docs"><h2>Documents</h2><p class="doux">Chargement…</p></div>` : ""}`);
   brancherTableFactures(page, () => pageDossier(page, id));
+  brancherHeuresSup(page, r, id);
+  const be = $("#ds-etape-b");
+  if (be && etape) be.onclick = (e) => {
+    if (etape.statut) { filtres.factStatut = etape.statut; filtres.factMois = ""; }
+    if (etape.mois) { filtres.factMois = etape.mois; filtres.factStatut = ""; }
+    if (etape.focus) { e.preventDefault(); const c = $("#" + etape.focus); c.scrollIntoView({ behavior: "smooth", block: "center" }); c.focus(); }
+    if (etape.clic) { e.preventDefault(); $("#" + etape.clic).click(); }
+  };
   if (peut("admin", "gestion")) chargerDocuments(id);
 
   $("#ds-statut").onchange = async (e) => {
@@ -666,7 +828,8 @@ async function pageDossier(page, id) {
       if (m === null) return toast("Montant du BC : chiffres uniquement.", true);
       const nbc = Number(etat.params.parametres.bc_chiffres) || 0;
       if (nbc && !new RegExp("^\\d{" + nbc + "}$").test($("#bc-n").value.trim()) && !(await confirmer("N° de BC inhabituel", "Les BC de ce client ont normalement " + nbc + " chiffres. Enregistrer quand même ?"))) return;
-      try { const res = await action(() => api("POST", "/api/dossiers/" + id + "/bc", { bc_numero: $("#bc-n").value.trim(), bc_montant: m, bc_date: $("#bc-d").value })); toast(Math.abs(res.ecart) <= 1 ? "BC enregistré : montant conforme." : "BC enregistré, mais écart de " + fmt(res.ecart) + " XAF.", Math.abs(res.ecart) > 1); } catch (x) { return; }
+      try { const res = await action(() => api("POST", "/api/dossiers/" + id + "/bc", { bc_numero: $("#bc-n").value.trim(), bc_montant: m, bc_date: $("#bc-d").value })); toast(Math.abs(res.ecart) > 1 ? "BC enregistré, mais écart de " + fmt(res.ecart) + " XAF : factures pas encore préparées."
+        : res.factures_creees ? "BC enregistré : montant conforme. " + res.factures_creees + " facture(s) préparée(s)." : "BC enregistré : montant conforme.", Math.abs(res.ecart) > 1); } catch (x) { return; }
       pageDossier(page, id);
     };
   }
@@ -909,9 +1072,19 @@ async function pageFactures(page) {
         <div><label for="fa-m">Mois facturé</label><input type="month" id="fa-m" value="${filtres.factMois}"></div>
         <div><label for="fa-s">Statut</label><select id="fa-s"><option value="">Tous</option>${STATUTS_FACT.map((s) => html`<option ${s === filtres.factStatut ? "selected" : ""}>${s}</option>`)}</select></div>
         <div data-style="align-self:end;display:flex;gap:.4rem;flex-wrap:wrap"><button class="secondaire" id="fa-tous">Tous les mois</button><button class="secondaire" id="fa-csv" title="Tableau pour Excel ou Numbers, avec les filtres choisis">Exporter (Excel)</button></div>
-        <div data-style="align-self:end" class="doux petit">${valides.length} facture(s) · ${fmt(valides.reduce((s, f) => s + f.ttc, 0))} XAF TTC${aEmettre ? html` · <b>${aEmettre} à émettre</b>` : ""}</div>
+        <div data-style="align-self:end" class="doux petit">${valides.length} facture(s) · ${fmt(valides.reduce((s, f) => s + f.ttc, 0))} XAF TTC${r.factures_hs.length ? html`<br>+ ${r.factures_hs.length} FA H · ${fmt(r.factures_hs.reduce((s, f) => s + f.ttc, 0))} XAF TTC` : ""}${aEmettre ? html` · <b>${aEmettre} à émettre</b>` : ""}</div>
       </div>
-      ${tableFactures(r.factures, true)}</div>`);
+      ${tableFactures(r.factures, true)}</div>
+    ${r.factures_hs.length ? html`<div class="carte" id="fa-hs"><h2>Heures supplémentaires (FA H)</h2>
+      <p class="aide">Envoi et paiement se notent sur la page du relevé d'heures (bouton Ouvrir).</p>
+      <div class="tableau-wrap"><table><thead><tr><th>Mois</th><th>Agent · proforma</th><th class="num">HT</th><th class="num">TTC</th><th>N° facture</th><th>Date · échéance</th><th>Statut</th><th></th></tr></thead><tbody>
+      ${r.factures_hs.map((f) => html`<tr data-hs="${f.id}"><td>${moisFr(f.mois)}</td>
+        <td>${f.agent}${f.matricule ? html` <span class="matricule">${f.matricule}</span>` : ""}<div class="petit"><a href="#/dossier/${f.dossier_id}">${f.numero_proforma}</a>${f.bc_numero ? " · BC " + f.bc_numero : ""}</div></td>
+        <td class="num">${fmt(f.montant_ht)}</td><td class="num">${fmt(f.ttc)}</td><td class="petit gras">${f.numero}</td>
+        <td class="petit">${dateFr(f.date_facture)}${f.echeance ? html`<div class="doux">éch. ${dateFr(f.echeance)}</div>` : ""}</td>
+        <td>${badge(f.statut)}${f.paye_le ? html`<div class="doux petit">le ${dateFr(f.paye_le)}${f.ref_paiement ? " · " + f.ref_paiement : ""}</div>` : f.envoyee_le ? html`<div class="doux petit">envoyée le ${dateFr(f.envoyee_le)}</div>` : ""}${f.retard_jours ? html`<div class="petit" data-style="color:#b42318">${f.retard_jours} j de retard</div>` : ""}</td>
+        <td class="actions-ligne">${peut("admin", "gestion") ? html`<a class="bouton secondaire petit" href="#/imprimer/facture-hs/${f.id}">PDF</a> <a class="bouton secondaire petit" href="#/hs/${f.id}">Ouvrir</a>` : ""}</td></tr>`)}
+      </tbody></table></div></div>` : ""}`);
   brancherTableFactures(page, () => pageFactures(page));
   $("#fa-m").onchange = (e) => { filtres.factMois = e.target.value; pageFactures(page); };
   $("#fa-s").onchange = (e) => { filtres.factStatut = e.target.value; pageFactures(page); };
@@ -970,17 +1143,19 @@ function docProforma(p, d, pr, c) {
 }
 
 function docFacture(p, f) {
-  // Désignation sans dates (demande de Luc) : le mois facturé est dans le titre
+  // Désignation sans dates (demande de Luc) : le mois facturé est dans le titre ;
+  // nom de l'entreprise sous la 1re ligne, comme sur les factures d'ANO (« ANO SERVICE »)
+  const men = (p.mention_designation || p.raison_sociale || "").trim().toUpperCase();
   let ligne;
   if (f.groupe && f.type === "MAD") {
     const complet = f.jours === f.jours_mois;
-    ligne = html`<tr><td>MAD de ${f.nb_agents} ${f.poste}<br>${f.agent}</td><td>${complet ? "1" : String(f.jours).padStart(2, "0")}</td><td>${f.unite || (complet ? "Mois" : "Jours")}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+    ligne = html`<tr><td>MAD de ${f.nb_agents} ${f.poste}<br>${men}<br>${f.agent}</td><td>${complet ? "1" : String(f.jours).padStart(2, "0")}</td><td>${f.unite || (complet ? "Mois" : "Jours")}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
   } else if (f.groupe && f.type === "VISITE") {
     const q = f.jours || 1;
-    ligne = html`<tr><td>Visite médicale<br>${f.agent}</td><td>${q}</td><td>${f.unite || "1"}</td><td>${fmtPt(Math.floor(f.montant_ht / q))}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
-  } else if (f.type === "MAD") ligne = html`<tr><td>MAD d'un ${f.poste}<br>${f.agent}</td><td>${String(f.jours).padStart(2, "0")}</td><td>${f.unite || "Jours"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
-  else if (f.type === "VISITE") ligne = html`<tr><td>Visite médicale<br>${f.agent}</td><td>1</td><td>${f.unite || "1"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
-  else ligne = html`<tr><td>Ajustement selon PV<br>${f.agent}</td><td>1</td><td>${f.unite || "Forfait"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+    ligne = html`<tr><td>Visite médicale<br>${men}<br>${f.agent}</td><td>${q}</td><td>${f.unite || "1"}</td><td>${fmtPt(Math.floor(f.montant_ht / q))}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  } else if (f.type === "MAD") ligne = html`<tr><td>MAD d'un ${f.poste}<br>${men}<br>${f.agent}</td><td>${String(f.jours).padStart(2, "0")}</td><td>${f.unite || "Jours"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  else if (f.type === "VISITE") ligne = html`<tr><td>Visite médicale<br>${men}<br>${f.agent}</td><td>1</td><td>${f.unite || "1"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
+  else ligne = html`<tr><td>Ajustement selon PV<br>${men}<br>${f.agent}</td><td>1</td><td>${f.unite || "Forfait"}</td><td>${fmtPt(f.montant_ht)}</td><td>${fmtPt(f.montant_ht)}</td></tr>`;
   return html`<div class="doc fa">
     <div class="fa-tete"><div class="fa-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
     <div class="fa-infos"><div class="fa-gauche">
@@ -996,14 +1171,482 @@ function docFacture(p, f) {
     <div class="fa-pied">RCCM ${p.rccm} – NIF ${p.nif} – N° CNSS ${p.cnss}<br>Compte bancaire ${p.banque} ${p.compte}</div></div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Heures supplémentaires (circuit de Lola) : 1 relevé du client -> 2 fiche d'attachement
+// -> 3 classement 28/56/75 % -> 4 Proforma H -> 5 facture FA H
+// ---------------------------------------------------------------------------
+const hFr = (h) => (h === null || h === undefined ? "" : Number(h).toLocaleString("fr-FR", { maximumFractionDigits: 2 }));
+const plageFr = (l) => (l.debut && l.fin ? l.debut.replace(":00", "h").replace(":", "h") + " à " + l.fin.replace(":00", "h").replace(":", "h") : "");
+const tauxFr = (pdm) => "+" + (pdm / 100).toLocaleString("fr-FR") + "%";
+const ETAPES_HS = ["Relevé", "Fiche", "Classement", "Devis H", "Facture H"];
+const ETAPES_SIG = [["avant", "Avant"], ["apres", "Après"], ["payees", "Payées"], ["recuperees", "Récupérées"]];
+
+function carteHeuresSup(r, id) {
+  const hs = r.heures_sup || [];
+  const ouvert = r.dossier.statut !== "Annulé";
+  return html`<div class="carte"><div class="entete" data-style="margin-bottom:.5rem"><h2 data-style="margin:0">Heures supplémentaires</h2>
+    ${ouvert ? html`<div class="actions">${r.agents.length > 1 ? html`<select id="hs-agent" aria-label="Agent" data-style="width:auto">${r.agents.map((a) => html`<option value="${a.id}">${a.nom}</option>`)}</select>` : ""}
+      <button class="secondaire" id="hs-nouveau">+ Nouveau relevé d'heures</button></div>` : ""}</div>
+    ${hs.length ? html`<table><thead><tr><th>Agent</th><th>Période</th><th class="num">Heures</th><th>Devis H</th><th>Facture H</th><th class="num">HT</th><th>État</th></tr></thead><tbody>
+      ${hs.map((h) => html`<tr data-href="#/hs/${h.id}"><td>${h.agent}</td><td class="petit">${h.periode_du ? dateFr(h.periode_du) + " – " + dateFr(h.periode_au) : "—"}</td>
+        <td class="num">${hFr(h.total_heures)}</td><td>${h.devis_numero || "—"}</td><td>${h.facture_numero || "—"}</td>
+        <td class="num">${fmt(h.montant_ht !== null ? h.montant_ht : h.calcul.total)}</td><td>${badge(h.statut === "Saisie" ? "Brouillon" : h.statut === "Devis" ? "À émettre" : h.statut === "Facturée" ? "Émise" : h.statut)}<div class="doux petit">${h.statut}</div></td></tr>`)}
+    </tbody></table>` : html`<p class="doux">Aucun relevé. Quand le client envoie le relevé des heures supplémentaires d'un agent, créez un relevé : vous y joindrez le scan, saisirez la fiche d'attachement, puis ferez le devis H et la facture FA H.</p>`}</div>`;
+}
+
+function brancherHeuresSup(page, r, id) {
+  const b = $("#hs-nouveau");
+  if (!b) return;
+  b.onclick = async () => {
+    const agent_id = $("#hs-agent") ? +$("#hs-agent").value : r.agents[0].id;
+    try { const x = await api("POST", "/api/dossiers/" + id + "/heures-sup", { agent_id }); location.hash = "#/hs/" + x.id; } catch (e) { toast(e.message, true); }
+  };
+}
+
+function ligneHS(l, dis) {
+  return html`<tr><td><input type="date" data-l="date" aria-label="Date" value="${l.date || ""}" ${dis}></td>
+    <td><input type="time" data-l="debut" aria-label="Début" value="${l.debut || ""}" ${dis}></td>
+    <td><input type="time" data-l="fin" aria-label="Fin" value="${l.fin || ""}" ${dis}></td>
+    <td><input data-l="justification" aria-label="Justification" maxlength="120" value="${l.justification || ""}" ${dis}></td>
+    <td><input data-l="heures" aria-label="Heures réalisées" class="montant" inputmode="decimal" data-style="width:5rem" value="${l.heures === undefined || l.heures === null ? "" : hFr(l.heures)}" ${dis}></td>
+    <td>${dis ? "" : html`<button type="button" class="lien petit" data-l-suppr title="Retirer la ligne">✕</button>`}</td></tr>`;
+}
+
+async function pageHS(page, id) {
+  const h = (await api("GET", "/api/heures-sup/" + id)).heures_sup;
+  const p = etat.params.parametres;
+  const fige = !!h.facture_numero;
+  const dis = fige ? "disabled" : "";
+  const iEtape = h.facture_numero ? 4 : h.devis_numero ? 3 : h.lignes.length ? 2 : h.releves.length ? 1 : 0;
+  const cats = [["h1", h.taux_pdm[0]], ["h2", h.taux_pdm[1]], ["h3", h.taux_pdm[2]]];
+  rendre(page, html`
+    <div class="entete"><div><h1>Heures supplémentaires · ${h.agent}</h1><p><a href="#/dossier/${h.dossier_id}">${h.numero_proforma}</a> · ${h.client.nom} · ${h.poste}${h.periode_du ? " · du " + dateFr(h.periode_du) + " au " + dateFr(h.periode_au) : ""}</p></div>
+      <div class="actions">${!h.devis_numero ? html`<button class="secondaire" id="hs-suppr">Supprimer ce relevé</button>` : ""}</div></div>
+    <div class="etapes">${ETAPES_HS.map((s, i) => html`<div class="etape ${i < iEtape ? "fait" : i === iEtape ? "courant" : ""}">${i + 1}. ${s}</div>`)}</div>
+    ${fige ? html`<div class="bandeau info">Facture ${h.facture_numero} émise : la fiche et le classement ne se modifient plus.</div>` : ""}
+
+    ${h.feries_a_confirmer.length ? html`<div class="bandeau alerte" id="hs-afc"><div><b>Jour(s) férié(s) à confirmer avant le devis.</b> Ces dates sont annoncées au dernier moment : confirmez-les pour les compter au taux des dimanches (${tauxFr(h.taux_pdm[2])}).
+      ${h.feries_a_confirmer.map((f) => html`<div class="actions" data-style="margin-top:.4rem"><span>${dateFr(f.date)} · ${f.libelle}</span>
+        <button type="button" class="petit" data-ferie="${f.date}" data-oui="1">C'est férié</button><button type="button" class="petit secondaire" data-ferie="${f.date}" data-oui="">Pas férié</button></div>`)}</div></div>` : ""}
+    <div class="carte"><h2>1. Relevé envoyé par le client</h2>
+      ${h.releves.length ? html`<table><tbody>${h.releves.map((d) => html`<tr><td>${d.nom}</td><td class="petit doux">${dateFr(d.ajoute_le.slice(0, 10))} · ${tailleFr(d.taille)}</td><td><button class="secondaire" data-doc-tel="${d.id}">Télécharger</button></td></tr>`)}</tbody></table>` : html`<p class="doux">Joignez le scan du relevé (PDF ou photo) : il est gardé avec le dossier.</p>`}
+      <form id="hs-f-rel" data-style="margin-top:.5rem"><div class="ligne-form lf2">
+        <div class="champ"><label for="hs-rel">Fichier (PDF, PNG ou JPEG, 8 Mo au plus)</label><input id="hs-rel" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" required></div>
+        <div class="champ"><span class="doux petit">&nbsp;</span><button type="submit" class="secondaire" id="hs-rel-ok">Joindre le relevé</button></div></div></form></div>
+
+    <form id="hs-f">
+    <div class="carte"><div class="entete" data-style="margin-bottom:.5rem"><h2 data-style="margin:0">2. Fiche d'attachement</h2>
+      ${h.lignes.length ? html`<div class="actions"><a class="bouton secondaire" href="#/imprimer/fiche-hs/${id}">Fiche en PDF</a>
+        <button type="button" class="secondaire" id="hs-word">Fiche en Word</button></div>` : ""}</div>
+      <div class="ligne-form lf3">
+        <div class="champ"><label for="hs-direction">Direction</label><input id="hs-direction" maxlength="80" value="${h.direction}" placeholder="ex. DRHST" ${dis}></div>
+        <div class="champ"><label for="hs-service">Service</label><input id="hs-service" maxlength="80" value="${h.service}" ${dis}></div>
+        <div class="champ"><label for="hs-section">Section</label><input id="hs-section" maxlength="40" value="${h.section}" ${dis}></div></div>
+      <div class="ligne-form lf3">
+        <div class="champ"><label for="hs-matricule">Matricule (chez le client)</label><input id="hs-matricule" maxlength="40" value="${h.matricule_client}" placeholder="ex. MAD" ${dis}></div>
+        <div class="champ"><label for="hs-categorie">Catégorie</label><input id="hs-categorie" maxlength="40" value="${h.categorie}" ${dis}></div><div></div></div>
+      <div class="hs-modes"><label class="case"><input type="radio" name="hs-mode" value="grille" checked> Grille calendrier (heures par jour)</label>
+        <label class="case"><input type="radio" name="hs-mode" value="plages"> Plages horaires (détail début / fin)</label></div>
+      <div id="hs-zone-grille">
+        <div class="ligne-form lf3"><div class="champ"><label for="hs-du">Du</label><input id="hs-du" type="date" value="${h.periode_du || auj().slice(0, 8) + "01"}" ${dis}></div>
+          <div class="champ"><label for="hs-au">Au</label><input id="hs-au" type="date" value="${h.periode_au || auj()}" ${dis}></div>
+          <p class="aide" data-style="align-self:end">Tapez les heures sous chaque jour (le motif est facultatif). La période peut couvrir plusieurs mois. En orange : dimanches et jours fériés.</p></div>
+        <div id="hs-grille"></div></div>
+      <div id="hs-zone-plages" class="cache">
+        <p class="aide">Une ligne par plage d'heures du relevé. Avec le début et la fin, les heures réalisées se calculent seules.</p>
+        <table><thead><tr><th>Date</th><th>Début</th><th>Fin</th><th>Justification</th><th class="num">Heures réalisées</th><th></th></tr></thead>
+          <tbody id="hs-lignes">${(h.lignes.length ? h.lignes : [{}]).map((l) => ligneHS(l, dis))}</tbody>
+          <tfoot><tr class="total"><td colspan="4">Total</td><td class="num" id="hs-total">${hFr(h.total_heures)} h</td><td></td></tr></tfoot></table>
+        ${fige ? "" : html`<button type="button" class="lien" id="hs-plus">+ Ajouter une ligne</button>`}</div></div>
+
+    <div class="carte"><h2>3. Classement des heures</h2>
+      <p class="aide">Heures regroupées semaine par semaine (lundi → dimanche) : les ${p.hs_seuil_semaine} premières heures de chaque semaine à ${tauxFr(h.taux_pdm[0])}, le reste de la semaine à ${tauxFr(h.taux_pdm[1])}, les dimanches et jours fériés à ${tauxFr(h.taux_pdm[2])}. Corrigez à la main si besoin.</p>
+      ${h.semaines.length ? tableSemainesHS(h) : ""}
+      <label class="case"><input type="checkbox" id="hs-manuel" ${h.classement_manuel ? "checked" : ""} ${dis}> Classement à la main</label>
+      <table class="hs-classement"><thead><tr><th>Désignation</th><th class="num">Proposé</th><th class="num">Retenu (heures)</th><th class="num hs-opt">Taux horaire</th><th class="num">Total</th></tr></thead><tbody>
+        ${cats.map(([k, t], i) => html`<tr><td><span class="hs-long">Heures supp à ${(t / 100).toLocaleString("fr-FR")}% (${tauxFr(t)} heures normales)</span><span class="hs-court">${tauxFr(t)}</span></td><td class="num doux">${hFr(h.proposition[k])}</td>
+          <td class="num"><input data-h="${k}" aria-label="Heures retenues à ${tauxFr(t)}" class="montant" inputmode="decimal" data-style="width:6rem" value="${hFr(h.heures[k])}" ${h.classement_manuel && !fige ? "" : "disabled"}></td>
+          <td class="num hs-opt">${fmt(h.calcul.lignes[i].taux_horaire)}</td><td class="num gras">${fmt(h.calcul.lignes[i].total)}</td></tr>`)}
+        <tr class="total"><td>Montant total</td><td class="num">${hFr(h.total_heures)}</td><td class="num">${hFr(h.heures.h1 + h.heures.h2 + h.heures.h3)}</td><td class="hs-opt"></td><td class="num">${fmt(h.calcul.total)}</td></tr>
+      </tbody></table>
+      <p class="aide">Taux horaire = coût mensuel ${fmt(h.cout_mensuel)} ÷ ${(p.hs_diviseur_centiemes / 100).toLocaleString("fr-FR")} h = ${fmt(h.calcul.taux_horaire)} XAF / h, puis majoré.</p>
+      ${Math.abs(h.ecart_heures) > 0.001 ? html`<div class="bandeau alerte">Le classement retenu compte ${hFr(h.ecart_heures)} h de ${h.ecart_heures > 0 ? "plus" : "moins"} que la fiche.</div>` : ""}
+      ${fige ? "" : html`<div class="actions" data-style="margin-top:.75rem"><button type="submit" class="vert">Enregistrer la fiche et le classement</button></div>`}</div>
+    </form>
+
+    ${h.lignes.length ? html`<div class="carte"><h2>Fiche remise au client et signatures de l'agent</h2>
+      <p class="aide">La fiche d'attachement est refaite à nos couleurs, signée par l'agent à chaque étape, puis remise au client. Archivez-la pour en garder une copie dans les documents du dossier.</p>
+      <div class="actions"><button type="button" class="secondaire" id="hs-archiver">Archiver la fiche dans le dossier</button>
+        ${h.fiche_envoyee_le ? html`<span>Remise au client le <b>${dateFr(h.fiche_envoyee_le)}</b> <button type="button" class="lien petit" id="hs-fiche-nonenv">annuler</button></span>`
+          : html`<button type="button" class="secondaire" id="hs-fiche-env">Marquer remise au client aujourd'hui</button>`}</div>
+      <table class="hs-etapes" data-style="margin-top:.75rem"><thead><tr><th>Signature de l'agent</th><th>Signée le</th><th>Scan signé</th><th></th></tr></thead><tbody>
+        ${ETAPES_SIG.map(([k, lib]) => { const e = h.etapes[k] || {}; const doc = e.doc_id && h.releves.find((x) => x.id === e.doc_id); return html`<tr>
+          <td class="gras">${lib}</td><td>${e.date ? dateFr(e.date) : html`<span class="doux">pas encore</span>`}</td>
+          <td>${doc ? html`<button type="button" class="lien petit" data-doc-tel="${doc.id}">${doc.nom}</button>` : html`<span class="doux">—</span>`}</td>
+          <td><div class="actions"><button type="button" class="secondaire petit" data-etape="${k}">${e.date ? "Changer" : "Signée"}</button>
+            ${e.date ? html`<button type="button" class="lien petit" data-etape-x="${k}">effacer</button>` : ""}</div></td></tr>`; })}
+      </tbody></table></div>` : ""}
+
+    <div class="grille g2">
+      <div class="carte"><h2>4. Devis H (Proforma H)</h2>
+        ${h.devis_numero ? html`<p>N° <b>${h.devis_numero}</b> du ${dateFr(h.devis_date)} · ${fmt(h.calcul.total)} XAF HT</p>` : html`<p class="doux">Le n° de Proforma H est attribué à la création (série à part des proformas de mise à disposition).</p>`}
+        ${fige ? "" : html`<div class="ligne-form lf2"><div class="champ"><label for="hs-ddev">Date du devis</label><input id="hs-ddev" type="date" value="${h.devis_date || auj()}"></div>
+          <div class="champ"><span class="doux petit">&nbsp;</span><button id="hs-devis" ${h.lignes.length ? "" : "disabled"}>${h.devis_numero ? "Changer la date" : "Créer le devis H"}</button></div></div>`}
+        ${h.devis_numero ? html`<a class="bouton secondaire" href="#/imprimer/devis-hs/${id}">Devis H en PDF</a>` : ""}</div>
+      <div class="carte"><h2>5. Facture FA H</h2>
+        ${h.facture_numero ? html`<table><tbody>
+            <tr><td class="doux">N°</td><td class="gras">${h.facture_numero}</td></tr><tr><td class="doux">Émise le</td><td>${dateFr(h.facture_date)}</td></tr>
+            <tr><td class="doux">BC</td><td>${h.bc_numero || "—"}</td></tr><tr><td class="doux">HT / TTC</td><td>${fmt(h.montant_ht)} / ${fmt(h.ttc)} XAF</td></tr>
+            <tr><td class="doux">Envoyée</td><td>${h.envoyee_le ? dateFr(h.envoyee_le) : html`<button class="lien" id="hs-env">marquer envoyée aujourd'hui</button>`}</td></tr>
+            <tr><td class="doux">Payée</td><td>${h.paye_le ? html`${dateFr(h.paye_le)} · ${fmt(h.montant_paye)} XAF ${h.ref_paiement ? "· " + h.ref_paiement : ""} <button class="lien petit" id="hs-nonpaye">annuler</button>` : html`<button class="lien" id="hs-paye">saisir le paiement</button>`}</td></tr></tbody></table>
+          <a class="bouton secondaire" href="#/imprimer/facture-hs/${id}">Facture FA H en PDF</a>`
+        : h.devis_numero ? html`<div class="ligne-form lf3">
+            <div class="champ"><label for="hs-dfac">Date d'émission</label><input id="hs-dfac" type="date" value="${auj()}"></div>
+            <div class="champ"><label for="hs-bc">N° de BC</label><input id="hs-bc" maxlength="20" inputmode="numeric" value="${h.bc_dossier || ""}"></div>
+            <div class="champ"><label for="hs-ht">Montant HT</label><input id="hs-ht" class="montant" inputmode="numeric" value="${fmt(h.calcul.total)}"></div></div>
+            <p class="aide">Par défaut, le montant du devis H. Changez-le seulement si le BC ou le PV du client donne un autre montant.</p>
+            <button class="vert" id="hs-fac">Émettre la facture FA H</button>`
+        : html`<p class="doux">Faites d'abord le devis H.</p>`}</div>
+    </div>`);
+
+  $$("[data-doc-tel]", page).forEach((b) => { b.onclick = async () => { try { await telecharger("/api/documents/" + b.dataset.docTel); } catch (e) { toast(e.message, true); } }; });
+  $("#hs-f-rel").onsubmit = (e) => {
+    e.preventDefault();
+    const f = $("#hs-rel").files[0];
+    if (!f) return toast("Choisissez un fichier.", true);
+    if (f.size > 8 * 1024 * 1024) return toast("Fichier trop lourd (8 Mo au plus).", true);
+    const lecteur = new FileReader();
+    lecteur.onload = async () => {
+      try { await action(() => api("POST", "/api/heures-sup/" + id + "/releve", { nom: f.name, contenu: lecteur.result }), "Relevé joint : " + f.name); pageHS(page, id); } catch (x) { /* affiché */ }
+    };
+    lecteur.readAsDataURL(f);
+  };
+  if ($("#hs-suppr")) $("#hs-suppr").onclick = async () => {
+    if (!(await confirmer("Supprimer ce relevé ?", "La fiche saisie sera perdue (le scan joint reste dans les documents du dossier).", "Supprimer", "danger"))) return;
+    try { await api("POST", "/api/heures-sup/" + id + "/supprimer", {}); location.hash = "#/dossier/" + h.dossier_id; } catch (e) { toast(e.message, true); }
+  };
+  const corps = $("#hs-lignes");
+  const nombre = (s) => { const t = String(s || "").replace(",", ".").replace(/[\sHh]/g, ""); return /^\d{1,3}(\.\d{1,2})?$/.test(t) ? parseFloat(t) : null; };
+  const duree = (a, b) => { if (!a || !b) return null; const m = (x) => +x.slice(0, 2) * 60 + +x.slice(3, 5); const d = (m(b) - m(a) + 1440) % 1440; return d ? d / 60 : null; };
+  const majTotal = () => {
+    let t = 0;
+    $$("tr", corps).forEach((tr) => {
+      const hh = $("[data-l=heures]", tr);
+      const d = duree($("[data-l=debut]", tr).value, $("[data-l=fin]", tr).value);
+      if (d !== null && !hh.dataset.touche) hh.value = hFr(d);
+      t += nombre(hh.value) || 0;
+    });
+    $("#hs-total").textContent = hFr(t) + " h";
+  };
+  const brancher = () => {
+    $$("tr", corps).forEach((tr) => {
+      $$("input", tr).forEach((i) => { i.oninput = () => { if (i.dataset.l === "heures") i.dataset.touche = "1"; majTotal(); }; });
+      const s = $("[data-l-suppr]", tr);
+      if (s) s.onclick = () => { tr.remove(); majTotal(); };
+    });
+  };
+  brancher();
+  if ($("#hs-plus")) $("#hs-plus").onclick = () => {
+    const der = $$("tr", corps).pop();
+    const tmp = document.createElement("tbody");
+    tmp.innerHTML = ligneHS({ date: der ? $("[data-l=date]", der).value : "" }, "").s;
+    corps.appendChild(tmp.firstElementChild);
+    appliquerStyles(corps);
+    brancher();
+  };
+  // --- grille calendrier : une case par jour, semaines du lundi au dimanche, de date à date ---
+  const feries = new Map((p.hs_jours_feries || []).map((x) => { const [k, ...r] = String(x).trim().split(" "); return [k, r.join(" ") || "Jour férié"]; }));
+  const libFerie = (iso) => feries.get(iso) || feries.get(iso.slice(5)) || "";
+  const ferie = (iso) => { const l = libFerie(iso); return l && !l.includes("(à confirmer)") ? l : ""; };   // confirmés seulement
+  const aConfirmer = (iso) => { const l = libFerie(iso); return l.includes("(à confirmer)") ? l : ""; };
+  const addJ = (iso, n) => { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const jsem = (iso) => (new Date(iso + "T00:00:00Z").getUTCDay() + 6) % 7;
+  const etatGrille = new Map();
+  const chargerGrille = (lignes) => {
+    etatGrille.clear();
+    for (const l of lignes) {
+      const e = etatGrille.get(l.date) || { h: 0, j: [], detail: [] };
+      e.h += Number(l.heures) || 0;
+      if (l.justification && !e.j.includes(l.justification)) e.j.push(l.justification);
+      e.detail.push(l);
+      etatGrille.set(l.date, e);
+    }
+    for (const e of etatGrille.values()) { e.h = Math.round(e.h * 100) / 100; e.j = e.j.join(", "); e.h0 = e.h; e.j0 = e.j; }
+  };
+  const lireGrille = () => {
+    $$("[data-g]", $("#hs-grille")).forEach((td) => {
+      const d = td.dataset.g, n = nombre($("[data-gh]", td).value), jv = $("[data-gj]", td).value.trim();
+      const e = etatGrille.get(d) || { h: 0, j: "", detail: [], h0: null, j0: null };
+      e.h = n || 0; e.j = jv;
+      etatGrille.set(d, e);
+    });
+  };
+  const classerSemaine = (jours) => {
+    const r = { t: 0, h1: 0, h2: 0, h3: 0 };
+    for (const [d, v] of jours) {
+      r.t += v;
+      if (jsem(d) === 6 || ferie(d)) { r.h3 += v; continue; }
+      const a = Math.min(v, Math.max(0, (Number(p.hs_seuil_semaine) || 0) - r.h1));
+      r.h1 += a; r.h2 += v - a;
+    }
+    return r;
+  };
+  const majGrille = () => {
+    const tot = { t: 0, h1: 0, h2: 0, h3: 0 };
+    $$("tr[data-sem]", $("#hs-grille")).forEach((tr) => {
+      const jours = $$("[data-g]", tr).map((td) => [td.dataset.g, nombre($("[data-gh]", td).value) || 0]);
+      const r = classerSemaine(jours);
+      for (const k of ["t", "h1", "h2", "h3"]) { $("[data-s=" + k + "]", tr).textContent = r[k] ? hFr(r[k]) : "–"; tot[k] += r[k]; }
+    });
+    for (const k of ["t", "h1", "h2", "h3"]) { const c = $("#hs-g-" + k); if (c) c.textContent = hFr(tot[k]); }
+  };
+  const dessinerGrille = () => {
+    const zone = $("#hs-grille");
+    if ($$("[data-g]", zone).length) lireGrille();
+    const du = $("#hs-du").value, au = $("#hs-au").value;
+    if (!du || !au || au < du) { zone.innerHTML = '<p class="doux">Choisissez la période (du … au …).</p>'; return; }
+    let l0 = addJ(du, -jsem(du));
+    const fin = addJ(au, 6 - jsem(au));
+    const semaines = [];
+    for (; l0 <= fin && semaines.length < 60; l0 = addJ(l0, 7)) semaines.push(l0);
+    const t = h.taux_pdm;
+    zone.innerHTML = html`<table class="hs-grille"><thead><tr><th>Semaine</th>${["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((j) => html`<th>${j}</th>`)}
+        <th class="num">Total</th><th class="num">${t[0] / 100}%</th><th class="num">${t[1] / 100}%</th><th class="num">${t[2] / 100}%</th></tr></thead><tbody>
+      ${semaines.map((lun) => html`<tr data-sem="${lun}"><td class="petit">du ${dateFr(lun).slice(0, 5)} <br>au ${dateFr(addJ(lun, 6)).slice(0, 5)}</td>
+        ${[0, 1, 2, 3, 4, 5, 6].map((i) => {
+          const d = addJ(lun, i);
+          if (d < du || d > au) return html`<td class="hs-hors"></td>`;
+          const e = etatGrille.get(d) || { h: 0, j: "" };
+          const fe = ferie(d), afc = aConfirmer(d);
+          const plages = (e.detail || []).filter((x) => x.debut).length;
+          return html`<td data-g="${d}" class="${i === 6 || fe ? "hs-repos" : afc ? "hs-afc" : ""}" title="${fe || afc || (i === 6 ? "Dimanche" : "")}">
+            <div class="hs-d"><span class="hs-js">${["lun", "mar", "mer", "jeu", "ven", "sam", "dim"][i]} </span>${d.slice(8) === "01" ? html`<b>${dateFr(d).slice(0, 5)}</b>` : dateFr(d).slice(0, 5)}${fe ? html` <span class="hs-f">férié</span>` : afc ? html` <span class="hs-f">férié ?</span>` : ""}</div>
+            <input data-gh aria-label="Heures le ${dateFr(d)}" inputmode="decimal" class="montant" value="${e.h ? hFr(e.h) : ""}" ${dis}>
+            <input data-gj aria-label="Motif le ${dateFr(d)}" placeholder="motif" maxlength="120" value="${e.j || ""}" ${dis}>
+            ${plages ? html`<div class="hs-d doux">${plages} plage(s)</div>` : ""}</td>`;
+        })}
+        <td class="num gras" data-s="t" data-lib="Total"></td><td class="num" data-s="h1" data-lib="${t[0] / 100}%"></td><td class="num" data-s="h2" data-lib="${t[1] / 100}%"></td><td class="num" data-s="h3" data-lib="${t[2] / 100}%"></td></tr>`)}
+      </tbody><tfoot><tr class="total"><td colspan="8">Total de la période</td><td class="num" id="hs-g-t" data-lib="Total"></td><td class="num" id="hs-g-h1" data-lib="${t[0] / 100}%"></td><td class="num" id="hs-g-h2" data-lib="${t[1] / 100}%"></td><td class="num" id="hs-g-h3" data-lib="${t[2] / 100}%"></td></tr></tfoot></table>`.s;
+    appliquerStyles(zone);
+    $$("input", zone).forEach((i) => { i.oninput = majGrille; });
+    majGrille();
+  };
+  const collecterGrille = () => {
+    lireGrille();
+    const du = $("#hs-du").value, au = $("#hs-au").value, res = [];
+    for (const d of [...etatGrille.keys()].sort()) {
+      const e = etatGrille.get(d);
+      if (d < du || d > au || !e.h) continue;
+      // jour saisi en plages horaires et pas retouché : les plages sont gardées telles quelles
+      if (e.detail && e.detail.length && e.h === e.h0 && e.j === e.j0) res.push(...e.detail);
+      else res.push({ date: d, debut: "", fin: "", justification: e.j, heures: e.h });
+    }
+    return res;
+  };
+  const collecterPlages = () => {
+    const lignes = [];
+    for (const tr of $$("tr", corps)) {
+      const v = (k) => $("[data-l=" + k + "]", tr).value.trim();
+      if (!v("date") && !v("heures") && !v("debut")) continue;
+      const hh = v("heures");
+      if (hh && nombre(hh) === null) throw new Error("Heures réalisées invalides : " + hh);
+      lignes.push({ date: v("date"), debut: v("debut"), fin: v("fin"), justification: v("justification"), heures: hh ? nombre(hh) : null });
+    }
+    return lignes;
+  };
+  chargerGrille(h.lignes);
+  dessinerGrille();
+  $("#hs-du").onchange = dessinerGrille; $("#hs-au").onchange = dessinerGrille;
+  const mode = () => $("[name=hs-mode]:checked").value;
+  $$("[name=hs-mode]").forEach((r) => {
+    r.onchange = () => {
+      try {
+        if (mode() === "plages") {
+          const ls = collecterGrille();
+          corps.innerHTML = (ls.length ? ls : [{}]).map((l) => ligneHS(l, dis).s).join("");
+          appliquerStyles(corps); brancher(); majTotal();
+        } else {
+          const ls = collecterPlages().filter((l) => l.date);
+          chargerGrille(ls.map((l) => ({ ...l, heures: l.heures === null ? duree(l.debut, l.fin) || 0 : l.heures })));
+          if (ls.length) { $("#hs-du").value = ls.map((l) => l.date).sort()[0]; $("#hs-au").value = ls.map((l) => l.date).sort().pop(); }
+          $("#hs-grille").innerHTML = "";
+          dessinerGrille();
+        }
+      } catch (x) { toast(x.message, true); }
+      $("#hs-zone-grille").classList.toggle("cache", mode() !== "grille");
+      $("#hs-zone-plages").classList.toggle("cache", mode() !== "plages");
+    };
+  });
+  $$("[data-ferie]", page).forEach((bt) => {
+    bt.onclick = async () => {
+      try {
+        await action(() => api("POST", "/api/feries/confirmer", { jour: bt.dataset.ferie, ferie: !!bt.dataset.oui }), bt.dataset.oui ? "Jour férié confirmé." : "Jour retiré des fériés.");
+        etat.params = await api("GET", "/api/parametres");
+        pageHS(page, id);
+      } catch (x) { /* affiché */ }
+    };
+  });
+  if ($("#hs-word")) $("#hs-word").onclick = async () => { try { const n = await telecharger("/api/heures-sup/" + id + "/fiche.docx"); if (n) toast("Fiche enregistrée : " + n); } catch (x) { toast(x.message, true); } };
+  if ($("#hs-archiver")) $("#hs-archiver").onclick = async () => {
+    try { const r = await action(() => api("POST", "/api/heures-sup/" + id + "/fiche-archiver", {})); toast("Fiche archivée dans les documents du dossier" + (r && r.pdf ? " (Word, le PDF suit)." : " (Word).")); pageHS(page, id); } catch (x) { /* affiché */ }
+  };
+  const ficheEnv = (v) => async () => { try { await action(() => api("POST", "/api/heures-sup/" + id + "/suivi", { fiche_envoyee_le: v }), v ? "Fiche marquée remise au client." : "Remise annulée."); pageHS(page, id); } catch (x) { /* affiché */ } };
+  if ($("#hs-fiche-env")) $("#hs-fiche-env").onclick = ficheEnv(auj());
+  if ($("#hs-fiche-nonenv")) $("#hs-fiche-nonenv").onclick = ficheEnv(null);
+  $$("[data-etape-x]", page).forEach((bt) => { bt.onclick = async () => { try { await action(() => api("POST", "/api/heures-sup/" + id + "/etape", { etape: bt.dataset.etapeX, date: null }), "Signature effacée."); pageHS(page, id); } catch (x) { /* affiché */ } }; });
+  $$("[data-etape]", page).forEach((bt) => {
+    bt.onclick = () => {
+      const k = bt.dataset.etape, lib = ETAPES_SIG.find((x) => x[0] === k)[1];
+      ouvrirModale(html`<h2>Signature de l'agent : ${lib}</h2><form id="hs-f-sig">
+        <div class="champ"><label for="sg-d">Signée le</label><input id="sg-d" type="date" value="${(h.etapes[k] || {}).date || auj()}" required></div>
+        <div class="champ"><label for="sg-f">Scan de la fiche signée (facultatif : PDF, PNG ou JPEG)</label><input id="sg-f" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"></div>
+        <div class="actions"><button type="submit" class="vert">Enregistrer</button><button type="button" class="secondaire" data-fermer>Annuler</button></div></form>`);
+      $("#hs-f-sig").onsubmit = (e) => {
+        e.preventDefault();
+        const corps = { etape: k, date: $("#sg-d").value };
+        const envoyer = async () => { fermerModale(); try { await action(() => api("POST", "/api/heures-sup/" + id + "/etape", corps), "Signature « " + lib + " » enregistrée."); pageHS(page, id); } catch (x) { /* affiché */ } };
+        const f = $("#sg-f").files[0];
+        if (!f) { envoyer(); return; }
+        if (f.size > 8 * 1024 * 1024) { toast("Fichier trop lourd (8 Mo au plus).", true); return; }
+        const lecteur = new FileReader();
+        lecteur.onload = () => { corps.nom = f.name; corps.contenu = lecteur.result; envoyer(); };
+        lecteur.readAsDataURL(f);
+      };
+    };
+  });
+  if ($("#hs-manuel")) $("#hs-manuel").onchange = (e) => { $$("[data-h]").forEach((i) => { i.disabled = !e.target.checked; }); };
+  $("#hs-f").onsubmit = async (e) => {
+    e.preventDefault();
+    let lignes;
+    try { lignes = mode() === "grille" ? collecterGrille() : collecterPlages(); } catch (x) { return toast(x.message, true); }
+    if (mode() === "grille" && $$("[data-gh]").some((i) => i.value.trim() && nombre(i.value) === null)) return toast("Grille : nombre d'heures invalide (ex. 4 ou 7,5).", true);
+    let heures = null;
+    if ($("#hs-manuel").checked) {
+      heures = {};
+      for (const i of $$("[data-h]")) { const n = nombre(i.value || "0"); if (n === null) return toast("Classement : nombre d'heures invalide.", true); heures[i.dataset.h] = n; }
+    }
+    const corpsReq = { direction: $("#hs-direction").value, service: $("#hs-service").value, section: $("#hs-section").value,
+      matricule_client: $("#hs-matricule").value, categorie: $("#hs-categorie").value, lignes, heures };
+    try { await action(() => api("PUT", "/api/heures-sup/" + id, corpsReq), "Fiche enregistrée."); pageHS(page, id); } catch (x) { /* affiché */ }
+  };
+  if ($("#hs-devis")) $("#hs-devis").onclick = async () => {
+    try { await action(() => api("POST", "/api/heures-sup/" + id + "/devis", { date: $("#hs-ddev").value }), "Devis H enregistré."); pageHS(page, id); } catch (x) { /* affiché */ }
+  };
+  if ($("#hs-fac")) $("#hs-fac").onclick = async () => {
+    const m = entierSaisi($("#hs-ht").value);
+    if (m === null || m <= 0) return toast("Montant HT : chiffres uniquement.", true);
+    if (!(await confirmer("Émettre la facture FA H ?", "Un n° définitif sera attribué : " + fmt(m) + " XAF HT. La fiche et le classement ne se modifieront plus.", "Émettre"))) return;
+    const corpsReq = { date_facture: $("#hs-dfac").value, bc_numero: $("#hs-bc").value.trim() };
+    if (m !== h.calcul.total) corpsReq.montant_ht = m;
+    try { await action(() => api("POST", "/api/heures-sup/" + id + "/facture", corpsReq), "Facture émise."); pageHS(page, id); } catch (x) { /* affiché */ }
+  };
+  const suivi = async (corpsReq, msg) => { try { await action(() => api("POST", "/api/heures-sup/" + id + "/suivi", corpsReq), msg); pageHS(page, id); } catch (x) { /* affiché */ } };
+  if ($("#hs-env")) $("#hs-env").onclick = () => suivi({ envoyee_le: auj() }, "Facture marquée envoyée.");
+  if ($("#hs-nonpaye")) $("#hs-nonpaye").onclick = () => suivi({ paye_le: null }, "Paiement annulé.");
+  if ($("#hs-paye")) $("#hs-paye").onclick = () => {
+    ouvrirModale(html`<h2>Paiement de ${h.facture_numero}</h2><form id="hs-f-pay">
+      <div class="ligne-form lf3"><div class="champ"><label for="hp-d">Reçu le</label><input id="hp-d" type="date" value="${auj()}" required></div>
+      <div class="champ"><label for="hp-m">Montant reçu</label><input id="hp-m" class="montant" inputmode="numeric" value="${fmt(h.ttc)}"></div>
+      <div class="champ"><label for="hp-r">Référence</label><input id="hp-r" maxlength="80"></div></div>
+      <div class="actions"><button type="submit" class="vert">Enregistrer</button><button type="button" class="secondaire" id="hp-x">Annuler</button></div></form>`);
+    $("#hp-x").onclick = fermerModale;
+    $("#hs-f-pay").onsubmit = (e) => { e.preventDefault(); const m = entierSaisi($("#hp-m").value); fermerModale(); suivi({ paye_le: $("#hp-d").value, montant_paye: m, reference: $("#hp-r").value }, "Paiement enregistré."); };
+  };
+}
+
+// Documents imprimables des heures supplémentaires, calqués sur ceux de Lola
+// Tableau semaine par semaine : total par jour, total de la semaine, puis répartition entre les 3 majorations
+function tableSemainesHS(h, doc) {
+  const JF = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
+  const jour = (iso) => JF[(new Date(iso + "T12:00:00").getDay() + 6) % 7] + " " + dateFr(iso).slice(0, 5);
+  const t = h.taux_pdm;
+  return html`<table class="${doc ? "hs-table hs-sem" : "hs-sem"}"><thead><tr><th>Semaine</th><th class="hs-detail">Heures par jour</th><th class="num">Total semaine</th>
+      <th class="num">${t[0] / 100}%</th><th class="num">${t[1] / 100}%</th><th class="num">${t[2] / 100}% (dim./férié)</th></tr></thead><tbody>
+    ${h.semaines.map((w) => html`<tr><td>du ${dateFr(w.du).slice(0, 5)} au ${dateFr(w.au).slice(0, 5)}</td>
+      <td class="petit hs-detail">${w.jours.map((j, i) => html`${i ? " · " : ""}${j.repos ? html`<b>${jour(j.date)} : ${hFr(j.heures)} h</b>` : html`${jour(j.date)} : ${hFr(j.heures)} h`}`)}</td>
+      <td class="num">${hFr(w.total)}</td><td class="num">${hFr(w.h1)}</td><td class="num">${hFr(w.h2)}</td><td class="num">${hFr(w.h3)}</td></tr>`)}
+    <tr class="${doc ? "hs-tot" : "total"}"><td>Total</td><td class="hs-detail"></td><td class="num">${hFr(h.total_heures)}</td><td class="num">${hFr(h.proposition.h1)}</td><td class="num">${hFr(h.proposition.h2)}</td><td class="num">${hFr(h.proposition.h3)}</td></tr></tbody></table>`;
+}
+function blocClient(c, classe) {
+  return html`<div class="${classe}">Nom du client : ${c.nom}<br>${c.adresse}<br>${c.ville}${c.telephone ? html`<br>Téléphone : ${c.telephone}` : ""}</div>`;
+}
+function docFicheHS(p, h) {
+  return html`<div class="doc pf hs"><div class="pf-cadre">
+    <div class="pf-tete"><div class="pf-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
+    <div class="hs-titre">Fiche d'attachement pour la réalisation d'heures supplémentaires</div>
+    <div class="pf-infos"><div class="pf-gauche hs-ident">
+        ${h.direction ? html`<div><b>Direction :</b> ${h.direction}</div>` : ""}
+        <div class="pf-gi">Service : ${h.service}</div>
+        ${h.section ? html`<div class="pf-b">Section : ${h.section}</div>` : ""}
+        ${h.matricule_client ? html`<div class="pf-b">Matricule : ${h.matricule_client}</div>` : ""}
+        ${h.categorie ? html`<div class="pf-b">Catégorie : ${h.categorie}</div>` : ""}
+        <div class="pf-b">${h.agent}</div></div>
+      ${blocClient(h.client, "pf-client")}</div>
+    <div class="hs-planif">Planification d'heures supplémentaires pour raisons de service, selon les modalités suivantes :</div>
+    <table class="hs-table"><thead><tr><th>Heures prévues</th><th>Date</th><th>Justifications</th><th>Heures supplémentaires réalisées</th></tr></thead><tbody>
+      ${h.lignes.map((l) => html`<tr><td>${plageFr(l)}</td><td>${dateFr(l.date)}</td><td>${l.justification}</td><td>${hFr(l.heures)} H</td></tr>`)}
+      <tr class="hs-tot"><td colspan="3">Total</td><td>${hFr(h.total_heures)} H</td></tr></tbody></table>
+    ${tableSemainesHS(h, true)}
+    <div class="hs-signs"><div><b>Signature de l'agent :</b><div class="petit hs-sig-lignes">${ETAPES_SIG.map(([k, lib]) => html`<div>${lib} :${(h.etapes || {})[k] ? "  signé le " + dateFr(h.etapes[k].date) : ""}</div>`)}</div></div>
+      <div class="hs-resp"><b>Signature Responsable ${p.raison_sociale} :</b>${imgSignature()}</div></div>
+  </div><div class="pf-pied">RCCM ${p.rccm} – NIF ${p.nif} – N° CNSS ${p.cnss}<br>Compte bancaire ${p.banque} ${p.compte}</div></div>`;
+}
+function docDevisHS(p, h) {
+  const valable = +p.validite_devis_jours === 30 ? "1mois" : p.validite_devis_jours + " jours";
+  const c = h.calcul;
+  return html`<div class="doc pf hs"><div class="pf-cadre">
+    <div class="pf-tete"><div class="pf-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
+    <div class="pf-bandeau"><div class="pf-titre">Proforma H</div><div class="pf-num">${h.devis_numero}</div></div>
+    <div class="pf-infos"><div class="pf-gauche">
+        <div class="pf-date">Devis du ${dateFr(h.devis_date)}</div><br>
+        <div class="pf-gi">Service Demandeur : ${h.service}</div></div>
+      ${blocClient(h.client, "pf-client")}</div>
+    <div class="pf-bi">Nombre d'agents (${h.poste}) : 1</div>
+    <div class="pf-b">${h.agent}</div>
+    ${h.imputation ? html`<div>Imputation : ${h.imputation}</div>` : ""}
+    <div class="pf-cout hs-cout"><span>Coût mensuel ( ${p.heures} )</span><span>:</span><span class="pf-cout-val">${fmt(h.cout_mensuel)}</span><span class="pf-xaf">XAF</span></div>
+    <table class="hs-table hs-devis"><thead><tr><th>Désignation</th><th>Taux Horaires</th><th>Nombre d'heures</th><th>Total</th></tr></thead><tbody>
+      <tr><td class="g">Heures normales</td><td>${fmt(c.taux_horaire)}</td><td>0</td><td></td></tr>
+      ${c.lignes.map((l) => html`<tr><td class="g">Heures supp à ${(l.taux_pdm / 100).toLocaleString("fr-FR")}% (${tauxFr(l.taux_pdm)} heures normales)</td><td>${fmt(l.taux_horaire)}</td><td>${hFr(l.heures)}</td><td>${fmt(l.total)}</td></tr>`)}
+      <tr class="hs-tot"><td colspan="3">Montant Total</td><td>${fmt(c.total)}</td></tr></tbody></table>
+    <div class="pf-valable">Devis valable ${valable}</div>
+    <div class="pf-sign">Signature du client avec mention "bon pour accord" :</div>
+    <div class="pf-resp">${imgSignature()}<div>Le responsable</div></div>
+  </div><div class="pf-pied">RCCM ${p.rccm} – NIF ${p.nif} – N° CNSS ${p.cnss}<br>Compte bancaire ${p.banque} ${p.compte}</div></div>`;
+}
+function docFactureHS(p, h) {
+  const men = (p.mention_designation || p.raison_sociale || "").trim().toUpperCase();
+  return html`<div class="doc fa">
+    <div class="fa-tete"><div class="fa-logo"><img class="logo-doc" src="/api/logo" alt="${p.raison_sociale}"><div class="double-trait"></div></div>${enteteEmetteur(p)}</div>
+    <div class="fa-infos"><div class="fa-gauche">
+        <div>Date d'émission : ${dateFr(h.facture_date)}</div><div>Emis par : ${p.raison_sociale}</div>
+        <div>Commande client N° : ${h.bc_numero}</div></div>
+      <div class="fa-client"><div>Nom du client : ${h.client.nom}</div><div>${h.client.adresse}</div><div>${h.client.ville}</div>${h.client.telephone ? html`<div>Téléphone : ${h.client.telephone}</div>` : ""}</div></div>
+    <div class="fa-titre">Facture N° ${h.facture_numero}</div>
+    <table class="fa-table"><thead><tr><th>Désignation des produits ou des prestations</th><th>Quantité</th><th>Unité</th><th>Prix unitaire HT</th><th>TOTAL HT</th></tr></thead>
+      <tbody><tr><td>Heures supplémentaires de ${h.agent} - ${h.poste}<br>${men}</td><td>-</td><td>Heures</td><td>${fmtPt(h.montant_ht)}</td><td>${fmtPt(h.montant_ht)}</td></tr></tbody></table>
+    <table class="fa-totaux"><tbody><tr><td>Total HT</td><td>${fmtPt(h.montant_ht)}</td></tr><tr><td>TVA (${pct(p.tva_pdm)})</td><td>${fmtPt(h.tva)}</td></tr>
+      <tr class="fa-trait"><td colspan="2"></td></tr><tr><td>Total TTC</td><td>${fmtPt(h.ttc)}</td></tr></tbody></table>
+    <div class="fa-sign"><b>Signature :</b>${imgSignature()}</div>
+    <div class="fa-pied">RCCM ${p.rccm} – NIF ${p.nif} – N° CNSS ${p.cnss}<br>Compte bancaire ${p.banque} ${p.compte}</div></div>`;
+}
+
 async function pageImprimer(page, type, arg) {
   const p = etat.params.parametres;
-  let docs, titre, retour, factures = null;
-  if (type === "proforma") {
+  let docs, titre, retour, factures = null, proformaBrouillon = null;
+  if (type === "fiche-hs" || type === "devis-hs" || type === "facture-hs") {
+    const h = (await api("GET", "/api/heures-sup/" + (+arg))).heures_sup;
+    const propre = (t) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[\/\\:*?"<>|]/g, "-").replace(/[^\x20-\x7e]/g, "");
+    retour = "#/hs/" + h.id;
+    if (type === "fiche-hs") { titre = propre("Fiche d'attachement des heures supplementaires - " + dateFr(h.periode_au || auj()).replace(/\//g, ".") + "_" + h.agent); docs = docFicheHS(p, h); }
+    else if (type === "devis-hs") { if (!h.devis_numero) throw new Error("Créez d'abord le devis H."); titre = propre("Devis d'heures supplementaires - " + dateFr(h.devis_date).replace(/\//g, ".") + "_" + h.agent); docs = docDevisHS(p, h); }
+    else { if (!h.facture_numero) throw new Error("Émettez d'abord la facture FA H."); titre = propre(h.facture_numero.replace(/\//g, "-") + " " + p.raison_sociale + " - " + h.agent + " - " + h.poste); docs = docFactureHS(p, h); }
+  } else if (type === "proforma") {
     const r = await api("GET", "/api/dossiers/" + (+arg));
     const d = r.dossier;
-    titre = "Proforma_ANO_Services_" + d.nom_numero + "_" + dateFr(d.date_debut).replace(/\//g, "-");
+    titre = "Proforma_" + p.raison_sociale.trim().replace(/\s+/g, "_") + "_" + d.nom_numero + "_" + dateFr(d.date_debut).replace(/\//g, "-");
     retour = "#/dossier/" + d.id;
+    if (d.statut === "Brouillon" && peut("admin", "gestion")) proformaBrouillon = d.id;
     docs = docProforma(p, d, r.proforma, r.client);
   } else {
     const ids = String(arg || "").split(",").filter((x) => /^\d+$/.test(x));
@@ -1040,7 +1683,15 @@ async function pageImprimer(page, type, arg) {
   $$(".imp-sel").forEach((c) => { c.onchange = majChoix; });
   if ($("#imp-tout")) { $("#imp-tout").onclick = () => { $$(".imp-sel").forEach((c) => { c.checked = true; }); majChoix(); }; $("#imp-rien").onclick = () => { $$(".imp-sel").forEach((c) => { c.checked = false; }); majChoix(); }; }
   if ($("#imp-word")) $("#imp-word").onclick = () => exporterWord(cochees());
-  $("#imp").onclick = () => window.print();
+  $("#imp").onclick = () => {
+    window.print();
+    // lot 1 : la proforma imprimée ou enregistrée en PDF part au client -> « Envoyé »
+    if (proformaBrouillon) {
+      const did = proformaBrouillon;
+      proformaBrouillon = null;
+      api("POST", "/api/dossiers/" + did + "/proforma-envoyee", {}).then((r) => { if (r.change) toast("Dossier passé à « Envoyé ». Vous pouvez le remettre en « Brouillon » depuis le dossier si besoin."); }).catch(() => {});
+    }
+  };
   window.addEventListener("hashchange", () => { document.title = etat.params.parametres.raison_sociale + " – ERP"; }, { once: true });
 }
 
@@ -1052,7 +1703,7 @@ async function pageInterimaires(page) {
   rendre(page, html`<div class="entete"><div><h1>Intérimaires</h1>
       <p>Chaque intérimaire reçoit un matricule fixe à sa première DA. Il le garde à chaque nouvelle DA (reconnu par son nom, sans tenir compte des accents ni des majuscules). Usage interne : le matricule n'est pas imprimé sur les proformas et factures.</p></div>
       <div class="actions"><button id="it-plus">+ Ancien intérimaire</button></div></div>
-    <div class="carte"><div class="ligne-form lf3" data-style="margin-bottom:.75rem"><div><input id="it-q" placeholder="Rechercher : nom, matricule, poste…"></div><div></div><div class="doux petit" data-style="align-self:center">${r.interimaires.length} intérimaire(s), ${r.interimaires.filter((x) => x.en_contrat).length} en contrat aujourd'hui</div></div>
+    <div class="carte"><div class="ligne-form lf3" data-style="margin-bottom:.75rem"><div><input id="it-q" aria-label="Rechercher un intérimaire" placeholder="Rechercher : nom, matricule, poste…"></div><div></div><div class="doux petit" data-style="align-self:center">${r.interimaires.length} intérimaire(s), ${r.interimaires.filter((x) => x.en_contrat).length} en contrat aujourd'hui</div></div>
     <div class="tableau-wrap"><table><thead><tr><th>Matricule</th><th>Nom</th><th>Dernier poste · lieu</th><th class="num">Contrats</th><th>Depuis</th><th>Jusqu'au</th><th>Dossiers</th></tr></thead><tbody id="it-corps">
     ${r.interimaires.length ? r.interimaires.map((x) => html`<tr data-cherche="${(x.matricule + " " + x.nom + " " + x.poste + " " + x.lieu).toLowerCase()}">
       <td><span class="matricule">${x.matricule}</span></td><td class="gras">${x.nom}${x.en_contrat ? html` <span class="matricule nouveau">en contrat</span>` : ""}${x.ancien ? html` <span class="doux petit">(historique)</span>` : ""}<div><button class="lien petit" data-it="${x.id}">modifier la fiche</button></div></td>
@@ -1175,14 +1826,29 @@ async function pageParametres(page) {
         <div class="ligne-form lf2">${champ("dernier_num_proforma", "Dernier n° de proforma utilisé", "La prochaine DA prendra ce n° + 1.")}
         ${champ("dernier_num_facture", "Dernier n° de facture utilisé", p.dernier_num_facture === null ? "À renseigner avant la 1re émission (ex. 152)." : "La prochaine facture prendra ce n° + 1.")}</div>
         <div class="ligne-form lf2">${champ("code_entreprise", "Code entreprise (n° de proforma)")}${champ("prefixe_facture", "Préfixe des factures")}</div>
-        <div class="ligne-form lf2">${champ("code_mad", "Code facture mensuelle", "Vide (comme les factures d'ANO) : FA 159/11/2026. Avec un code : FA 159/11-MAD/2026. 11 = mois d'émission.")}${champ("code_visite", "Code facture visite médicale", "FA 159/Visite médicale/2026 : même n° que la facture du mois émise avec elle, sinon un n° à elle.")}</div>
+        <div class="ligne-form lf3">${champ("code_mad", "Code facture mensuelle", "Vide (comme les factures d'ANO) : FA 159/11/2026. Avec un code : FA 159/11-MAD/2026. 11 = mois d'émission.")}${champ("mention_designation", "Nom sous la désignation des factures", "Ligne imprimée sous la 1re ligne de la désignation, avant le nom de l'agent (ex. ANO SERVICE). Vide : la raison sociale en majuscules.")}${champ("code_visite", "Code facture visite médicale", "FA 159/Visite médicale/2026 : même n° que la facture du même mois et du même agent, même si elles sont émises à des jours différents. Un n° émis ne change plus jamais.")}</div>
         <p class="aide" id="p-exemples"></p>
+        <details class="formats-num"><summary>Formats des n° (avancé)</summary>
+          <p class="aide">Laissez vide pour garder la règle actuelle (codes ci-dessus). Pour une autre entreprise, écrivez le format avec ces repères : {N} le n° qui augmente, {MM} le mois, {AAAA} l'année, {AA} l'année sur 2 chiffres, {CODE} le code entreprise, {NOM} le nom du dossier, {PREFIXE} le préfixe des factures. Les n° déjà émis ne changent jamais.</p>
+          ${[["format_proforma", "Proforma", "{N}-{MM}-{CODE}-{NOM}/{AAAA}"], ["format_facture", "Facture du mois", "{PREFIXE} {N}/{MM}/{AAAA}"],
+             ["format_visite", "Facture de visite médicale", "{PREFIXE} {N}/Visite médicale/{AAAA}"], ["format_proforma_h", "Proforma H (heures sup)", "{N}-{MM}-{CODE}-MAD/{AAAA}"],
+             ["format_facture_h", "Facture H (heures sup)", "{PREFIXE} H {N}/{MM}/{AAAA}"]].map(([cle, lib, auto]) => html`<div class="champ"><label for="p-${cle}">${lib}</label><input id="p-${cle}" data-p="${cle}" maxlength="60" value="${p[cle] || ""}" placeholder="Automatique : ${auto}" ${dis}></div>`)}
+        </details>
         <div class="ligne-form lf2">${champ("bc_chiffres", "Chiffres d'un n° de BC client", "0 = pas de contrôle.")}<div></div></div>
         <div class="ligne-form lf2">${champ("alerte_fin_jours", "Alerte fin de contrat (jours avant)")}${champ("alerte_visite_jours", "Alerte visite médicale (jours avant)")}</div></div>
       <div class="carte"><h2>Listes</h2>
         <div class="champ"><label for="p-lieux">Lieux (un par ligne)</label><textarea id="p-lieux" rows="4" ${dis}>${p.lieux.join("\n")}</textarea></div>
         <div class="champ"><label for="p-services">Services demandeurs (un par ligne)</label><textarea id="p-services" rows="4" ${dis}>${p.services.join("\n")}</textarea></div></div>
     </div>
+    <div class="carte"><h2>Heures supplémentaires</h2>
+      <div class="ligne-form lf2">${champ("dernier_num_proforma_h", "Dernier n° de Proforma H utilisé", p.dernier_num_proforma_h === null ? "À renseigner avant le 1er devis H (ex. 124)." : "Le prochain devis H prendra ce n° + 1.")}
+        ${champ("dernier_num_facture_h", "Dernier n° de facture FA H utilisé", p.dernier_num_facture_h === null ? "À renseigner avant la 1re facture FA H (ex. 110)." : "La prochaine facture FA H prendra ce n° + 1.")}</div>
+      <div class="ligne-form lf3">${champ("code_proforma_h", "Code du n° de Proforma H", "124-10-ANO-MAD/2026 : le code est « MAD ».")}${champ("code_facture_h", "Code des factures H", "FA H 110/11/2026 : le code est « H » (11 = mois d'émission).")}
+        <div class="champ"><label for="p-hs-div">Heures par mois</label><input id="p-hs-div" class="montant" value="${(p.hs_diviseur_centiemes / 100).toLocaleString("fr-FR")}" ${dis}></div></div>
+      <div class="ligne-form lf3">${[1, 2, 3].map((i) => html`<div class="champ"><label for="p-hs-t${i}">Majoration ${i} (%)</label><input id="p-hs-t${i}" class="montant" value="${(p["hs_taux" + i + "_pdm"] / 100).toLocaleString("fr-FR")}" ${dis}></div>`)}</div>
+      <div class="ligne-form lf2">${champ("hs_seuil_semaine", "Heures par semaine à la majoration 1", "Chaque semaine (lundi → dimanche), ces premières heures vont à la majoration 1 ; le reste de la semaine à la majoration 2 ; les dimanches et jours fériés à la majoration 3.")}
+        <div class="champ"><label for="p-feries">Jours fériés (un par ligne) ${aideIcone("MM-JJ : chaque année (ex. 08-17). AAAA-MM-JJ : une seule fois, pour les fêtes mobiles (lundi de Pâques, Ascension, Pentecôte, Tabaski…).")}</label><textarea id="p-feries" rows="4" ${dis}>${(p.hs_jours_feries || []).join("\n")}</textarea></div></div>
+      <p class="aide">Le classement proposé reste modifiable à la main sur chaque relevé.</p></div>
     <div class="carte"><h2>Logo et cachet sur les documents</h2>
       <div class="grille g2">
         <div><p class="doux petit">Logo (en-tête de la proforma et des factures)</p><img class="apercu-image" id="p-img-logo" src="/api/logo" alt="Logo">
@@ -1234,7 +1900,16 @@ async function pageParametres(page) {
     if (tva === null) return toast("TVA : nombre attendu (ex. 18).", true);
     par.tva_pdm = tva;
     par.tva_visite = $("#p-tva-visite").checked;
-    if (par.dernier_num_facture === "") par.dernier_num_facture = null;
+    for (const k of ["dernier_num_facture", "dernier_num_proforma_h", "dernier_num_facture_h"]) if (par[k] === "") par[k] = null;
+    for (const i of [1, 2, 3]) {
+      const t = pdmSaisi($("#p-hs-t" + i).value);
+      if (t === null) return toast("Majoration " + i + " : nombre attendu (ex. 28).", true);
+      par["hs_taux" + i + "_pdm"] = t;
+    }
+    const div = pdmSaisi($("#p-hs-div").value);
+    if (!div) return toast("Heures par mois : nombre attendu (ex. 173,33).", true);
+    par.hs_diviseur_centiemes = div;
+    par.hs_jours_feries = $("#p-feries").value.split("\n").map((x) => x.trim()).filter(Boolean);
     par.lieux = $("#p-lieux").value.split("\n");
     par.services = $("#p-services").value.split("\n");
     const charges = [];
@@ -1282,6 +1957,96 @@ async function pageUtilisateurs(page) {
   $$("[data-u]", page).forEach((b) => { b.onclick = () => form(r.utilisateurs.find((u) => u.id === +b.dataset.u)); });
 }
 
+// ---------------------------------------------------------------------------
+// Recherche globale : documents (factures, proformas, pièces DA/BC/PV) et données
+// ---------------------------------------------------------------------------
+const TYPES_RECH = { dossier: "Dossiers", facture: "Factures", document: "Documents", client: "Clients", interimaire: "Intérimaires" };
+async function pageRecherche(page, q) {
+  const f = filtres.rech;
+  const lecture = etat.user.role === "lecture";
+  const clients = lecture ? [] : (await api("GET", "/api/clients")).clients;
+  const types = lecture ? ["facture"] : Object.keys(TYPES_RECH);
+  const opt = (v, t, cur) => html`<option value="${v}" ${v === cur ? "selected" : ""}>${t}</option>`;
+  rendre(page, html`<div class="entete"><div><h1>Recherche</h1>
+      <p>Un ou plusieurs mots : n° de facture ou de proforma, n° de BC ou de DA, nom ou matricule d'un agent, client, service, lieu, mois (« septembre 2026 »), montant… Les accents et majuscules ne comptent pas.</p></div></div>
+    <form class="carte" id="f-r" role="search">
+      <div class="ligne-form lf2"><div class="champ"><label for="r-q">Rechercher</label><input id="r-q" type="search" value="${q}" placeholder="Ex. : FA 159, 493930, KABILA, septembre 2026" autocomplete="off"></div>
+        <div class="champ"><label for="r-type">Type</label><select id="r-type">${opt("", lecture ? "Factures" : "Tout", f.type)}${types.map((t) => opt(t, TYPES_RECH[t], f.type))}</select></div></div>
+      <details id="r-plus" ${f.client || f.statut || f.du || f.au || f.min || f.max ? "open" : ""}><summary>Filtres : client, statut, période, montant</summary>
+        <div class="ligne-form lf3">
+          ${lecture ? "" : html`<div class="champ"><label for="r-client">Client</label><select id="r-client">${opt("", "Tous", f.client)}${clients.map((c) => opt(String(c.id), c.nom, f.client))}</select></div>`}
+          <div class="champ"><label for="r-statut">Statut</label><select id="r-statut">${opt("", "Tous", f.statut)}
+            ${lecture ? "" : html`<optgroup label="Dossiers">${etat.params.statuts.map((x) => opt(x, x, f.statut))}</optgroup>`}
+            <optgroup label="Factures">${STATUTS_FACT.map((x) => opt(x, x, f.statut))}</optgroup></select></div>
+          <div class="champ"><label for="r-du">Du</label><input id="r-du" type="date" value="${f.du}"></div>
+          <div class="champ"><label for="r-au">Au</label><input id="r-au" type="date" value="${f.au}"></div>
+          <div class="champ"><label for="r-min">Montant HT mini</label><input id="r-min" type="number" min="0" step="1" value="${f.min}"></div>
+          <div class="champ"><label for="r-max">Montant HT maxi</label><input id="r-max" type="number" min="0" step="1" value="${f.max}"></div>
+        </div>
+        <p class="doux petit">Période : dates du contrat pour un dossier, date d'émission (ou mois) pour une facture, date d'ajout pour un document. Montant : HT de la facture, ou montant du BC pour un dossier.</p>
+      </details>
+      <div class="actions"><button type="submit">Rechercher</button><button type="button" class="secondaire" id="r-raz">Effacer les filtres</button></div>
+    </form>
+    <div id="r-res"></div>`);
+  const lire = () => {
+    Object.assign(f, { type: $("#r-type").value, client: $("#r-client") ? $("#r-client").value : "", statut: $("#r-statut").value,
+      du: $("#r-du").value, au: $("#r-au").value, min: $("#r-min").value, max: $("#r-max").value });
+  };
+  let num = 0;
+  const chercher = async () => {
+    if (!$("#r-q")) return;                        // page quittée entre-temps
+    lire();
+    const qq = $("#r-q").value.trim();
+    const p = new URLSearchParams({ q: qq });
+    for (const k of ["type", "client", "statut", "du", "au", "min", "max"]) if (f[k]) p.set(k, f[k]);
+    const moi = ++num;
+    let r;
+    try { r = await api("GET", "/api/recherche?" + p.toString()); } catch (e) { $("#r-res").innerHTML = html`<div class="bandeau danger">${e.message}</div>`.s; return; }
+    if (moi !== num || !$("#r-res")) return;       // frappe plus récente, ou page quittée
+    if (location.hash !== "#/recherche/" + encodeURIComponent(qq)) history.replaceState(null, "", "#/recherche/" + encodeURIComponent(qq));
+    afficherResultats(r, qq);
+  };
+  const afficherResultats = (r, qq) => {
+    const zone = $("#r-res");
+    if (!qq && !["client", "statut", "du", "au", "min", "max"].some((k) => f[k])) {
+      zone.innerHTML = html`<p class="doux">Tapez un mot ou choisissez un filtre.</p>`.s;
+      return;
+    }
+    if (!r.total) { zone.innerHTML = html`<div class="carte"><p class="doux">Aucun résultat.</p></div>`.s; return; }
+    const nb = {};
+    r.resultats.forEach((x) => { nb[x.type] = (nb[x.type] || 0) + 1; });
+    zone.innerHTML = html`<div class="carte">
+      <p class="r-total"><b>${r.total} résultat(s)</b>${r.tronque ? " (300 premiers affichés : précisez la recherche)" : ""} ·
+        ${Object.keys(nb).map((t) => html`<span class="badge">${TYPES_RECH[t]} ${nb[t]}</span> `)}</p>
+      <table class="r-table"><thead><tr><th>Type</th><th>Résultat</th><th>Statut</th><th>Date</th><th class="num">Montant HT</th><th></th></tr></thead><tbody>
+      ${r.resultats.map((x) => html`<tr>
+        <td><span class="badge">${TYPES_RECH[x.type].replace(/s$/, "")}</span></td>
+        <td>${x.type === "document" ? html`<b>${x.titre}</b>` : html`<a class="gras" href="${x.lien}">${x.titre}</a>`}
+          <div class="doux petit">${x.detail}</div>${x.agents ? html`<div class="petit">${x.agents}</div>` : ""}</td>
+        <td>${x.statut ? badge(x.statut) : ""}</td>
+        <td class="petit">${x.date ? (x.date.length === 10 && x.type === "facture" && x.date.endsWith("-01") && x.statut === "À émettre" ? x.date.slice(5, 7) + "/" + x.date.slice(0, 4) : dateFr(x.date)) : ""}${x.date_fin ? html`<br>→ ${dateFr(x.date_fin)}` : ""}</td>
+        <td class="num">${fmt(x.montant_ht)}${x.ttc ? html`<div class="doux petit">TTC ${fmt(x.ttc)}</div>` : ""}</td>
+        <td class="actions-ligne">${x.type === "document" ? html`<button class="secondaire petit" data-r-doc="${x.id}">Télécharger</button> <a class="bouton secondaire petit" href="${x.lien_dossier}">Dossier</a>`
+          : x.type === "facture" && x.dossier_id && !lecture ? html`<a class="bouton secondaire petit" href="#/dossier/${x.dossier_id}">Dossier</a>` : ""}</td></tr>`)}
+      </tbody></table></div>`.s;
+    appliquerStyles(zone);
+    $$("[data-r-doc]", zone).forEach((b) => {
+      b.onclick = async () => { try { const n = await telecharger("/api/documents/" + b.dataset.rDoc); if (n) toast("Document enregistré : " + n); } catch (e) { toast(e.message, true); } };
+    });
+  };
+  let minuterie;
+  $("#r-q").oninput = () => { clearTimeout(minuterie); minuterie = setTimeout(chercher, 300); };
+  $$("#f-r select, #f-r input:not(#r-q)").forEach((el) => { el.onchange = chercher; });
+  $("#f-r").onsubmit = (e) => { e.preventDefault(); chercher(); };
+  $("#r-raz").onclick = () => {
+    Object.assign(f, { type: "", client: "", statut: "", du: "", au: "", min: "", max: "" });
+    ["#r-type", "#r-client", "#r-statut", "#r-du", "#r-au", "#r-min", "#r-max"].forEach((sel) => { if ($(sel)) $(sel).value = ""; });
+    chercher();
+  };
+  $("#r-q").focus();
+  chercher();
+}
+
 async function pageJournal(page) {
   const r = await api("GET", "/api/journal");
   rendre(page, html`<div class="entete"><div><h1>Journal d'activité</h1><p>Les 500 dernières actions (connexions, créations, émissions, paiements…).</p></div></div>
@@ -1293,6 +2058,14 @@ async function pageJournal(page) {
 // Démarrage
 // ---------------------------------------------------------------------------
 async function demarrage() {
+  // site de test (dev.…) : bandeau permanent pour ne jamais le confondre avec la production
+  if (/^dev\./.test(location.hostname)) {
+    document.body.classList.add("site-test");
+    // onglet du navigateur : « [TEST] … », quel que soit le titre de la page
+    const prefixer = () => { if (!document.title.startsWith("[TEST] ")) document.title = "[TEST] " + document.title; };
+    prefixer();
+    new MutationObserver(prefixer).observe(document.querySelector("title"), { childList: true });
+  }
   try {
     const e = await api("GET", "/api/etat");
     etat.multi = !!e.multi;

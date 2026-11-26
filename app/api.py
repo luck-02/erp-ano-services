@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import os
 import re
+import unicodedata
 
 import db
 import docx_facture
@@ -206,6 +207,10 @@ def _derniere_visite_connue(con, nom, sauf_dossier=None):
         vis = M.dates_visites(dt.date.fromisoformat(r["date_debut"]), dt.date.fromisoformat(r["date_fin"]),
                               dern, r["visite_mode"], val)
         cand = vis[-1] if vis else dern
+        # visites réellement faites (lot 1) : la plus récente compte si elle est plus tardive
+        faites = [dt.date.fromisoformat(v["faite"]) for v in json.loads(r["visites_faites"] or "[]") if v.get("faite")]
+        if faites and (cand is None or max(faites) > cand):
+            cand = max(faites)
         if cand and (meilleur is None or cand > meilleur):
             meilleur = cand
     # ancien intérimaire saisi à la main : dernière visite connue
@@ -477,14 +482,17 @@ def sauvegarde(ctx, g, body):
 CHAMPS_TEXTE_PARAM = {
     "raison_sociale": 80, "adresse": 120, "ville": 80, "telephone": 80, "email": 120, "rccm": 80,
     "nif": 40, "cnss": 40, "banque": 80, "compte": 60, "devise": 6, "modalite_reglement": 40, "heures": 120,
-    "code_entreprise": 12, "prefixe_facture": 10, "code_mad": 20, "code_visite": 30,
+    "code_entreprise": 12, "prefixe_facture": 10, "code_mad": 20, "code_visite": 30, "mention_designation": 60,
+    "code_proforma_h": 12, "code_facture_h": 6,
 }
 # morceaux de n° : pas de « / » ni de « - » (ils séparent les parties du n°)
-CHAMPS_CODE_PARAM = ("code_entreprise", "prefixe_facture", "code_mad", "code_visite")
+CHAMPS_CODE_PARAM = ("code_entreprise", "prefixe_facture", "code_mad", "code_visite", "code_proforma_h", "code_facture_h")
 CHAMPS_ENTIER_PARAM = {
     "tva_pdm": (0, 5000), "validite_devis_jours": (1, 365), "delai_paiement_jours": (0, 365),
     "visite_ht": (0, 10_000_000), "validite_visite_mois": (1, 60), "dernier_num_proforma": (0, 10_000_000),
     "alerte_fin_jours": (1, 365), "alerte_visite_jours": (1, 365), "bc_chiffres": (0, 20),
+    "hs_diviseur_centiemes": (100, 100000), "hs_taux1_pdm": (0, 50000), "hs_taux2_pdm": (0, 50000),
+    "hs_taux3_pdm": (0, 50000), "hs_seuil_semaine": (0, 80),
 }
 
 
@@ -506,6 +514,12 @@ def modifier_parametres(ctx, g, body):
     for k in CHAMPS_CODE_PARAM:
         if k in nouv and any(c in nouv[k] for c in "/-\\"):
             raise ErreurAPI(400, "« %s » ne doit contenir ni « / » ni « - » (ils séparent les parties du n°)." % k)
+    for k in FORMATS_NUMERO:
+        if k in p_in:
+            nouv[k] = texte(p_in, k, 60)
+            err = M.verifier_format_numero(nouv[k])
+            if err:
+                raise ErreurAPI(400, err)
     if "code_entreprise" in nouv and not M.nom_pour_numero(nouv["code_entreprise"]):
         raise ErreurAPI(400, "Code entreprise obligatoire (lettres ou chiffres, ex. ANO).")
     for k, (a, b) in CHAMPS_ENTIER_PARAM.items():
@@ -513,8 +527,26 @@ def modifier_parametres(ctx, g, body):
             nouv[k] = entier(p_in, k, a, b)
     if "tva_visite" in p_in:
         nouv["tva_visite"] = booleen(p_in, "tva_visite")
-    if "dernier_num_facture" in p_in:
-        nouv["dernier_num_facture"] = entier(p_in, "dernier_num_facture", 0, 10_000_000, requis=False)
+    for k in ("dernier_num_facture", "dernier_num_proforma_h", "dernier_num_facture_h"):
+        if k in p_in:
+            nouv[k] = entier(p_in, k, 0, 10_000_000, requis=False)
+    if "hs_jours_feries" in p_in:
+        v = p_in["hs_jours_feries"]
+        if not isinstance(v, list) or len(v) > 100:
+            raise ErreurAPI(400, "Liste des jours fériés invalide.")
+        fer = []
+        for x in v:
+            x = str(x).strip()
+            if not x:
+                continue
+            x = " ".join(x.split())[:60]
+            m = re.fullmatch(r"(?:(\d{4})-)?(\d{2})-(\d{2})(?: .*)?", x)
+            try:
+                dt.date(int(m.group(1) or 2024), int(m.group(2)), int(m.group(3)))
+            except (AttributeError, ValueError):
+                raise ErreurAPI(400, "Jour férié « %s » invalide : MM-JJ (chaque année) ou AAAA-MM-JJ, puis le nom." % x[:20])
+            fer.append(texte({"x": x}, "x", 60))
+        nouv["hs_jours_feries"] = sorted(set(fer), key=lambda y: (len(y.split()[0]) > 5, y))
     for k in ("lieux", "services"):
         if k in p_in:
             v = p_in[k]
@@ -587,6 +619,200 @@ def modifier_client(ctx, g, body):
         journaliser(ctx, "client_modifie", r["code"], c["nom"])
     return {"ok": True}
 
+
+
+# ---------------------------------------------------------------------------
+# Recherche globale : dossiers, factures, documents, clients, intérimaires
+# ---------------------------------------------------------------------------
+TYPES_RECHERCHE = ("dossier", "facture", "document", "client", "interimaire")
+STATUTS_FACTURE = ["À émettre", "À envoyer", "Envoyée", "En retard", "Payée", "Remplacée"]
+LIBELLE_TYPE_FACTURE = {"MAD": "mise à disposition", "VISITE": "visite médicale", "BIS": "bis ajustée PV",
+                        "HS": "heures supplémentaires"}
+
+
+def _normal(t):
+    """Minuscules, sans accents, espaces des nombres retirés (6 921 000 = 6921000)."""
+    t = unicodedata.normalize("NFD", str(t or "")).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"(?<=\d)[\s.  ](?=\d{3}\b)", "", t)
+
+
+def _mots(q):
+    return [m for m in _normal(q).split() if m]
+
+
+def _trouve(mots, *champs):
+    blob = _normal(" ".join(str(c) for c in champs if c not in (None, "")))
+    blob += " " + blob.replace(" ", "")
+    return all(m in blob for m in mots)
+
+
+def _mois_lisible(m):
+    try:
+        d = dt.date.fromisoformat(m[:10])
+        return "%s %d" % (M.MOIS_FR[d.month - 1], d.year)
+    except (TypeError, ValueError):
+        return ""
+
+
+def recherche(ctx, g, body):
+    """Recherche dans toute l'entreprise connectée (une seule base : rien d'une autre
+    entreprise). Plusieurs mots = tous doivent se trouver. Filtres facultatifs :
+    type, client, statut, période (du/au), montant HT (min/max). Rôle Lecture :
+    factures seulement (pas de dossiers, documents ni intérimaires)."""
+    con, q = ctx["con"], ctx["query"]
+    texte_q = (q.get("q") or "").strip()[:120]
+    mots = _mots(texte_q)
+    type_ = q.get("type") or ""
+    if type_ and type_ not in TYPES_RECHERCHE:
+        raise ErreurAPI(400, "Type de recherche inconnu.")
+    client = q.get("client") or ""
+    if client and not client.isdigit():
+        raise ErreurAPI(400, "Client invalide.")
+    client = int(client) if client else None
+    statut = q.get("statut") or ""
+    if statut and statut not in M.STATUTS + STATUTS_FACTURE:
+        raise ErreurAPI(400, "Statut inconnu.")
+    du = date_(q, "du", requis=False)
+    au = date_(q, "au", requis=False)
+    mini = entier(q, "min", 0, 10_000_000_000, requis=False) if q.get("min") else None
+    maxi = entier(q, "max", 0, 10_000_000_000, requis=False) if q.get("max") else None
+    if not mots and not any([client, statut, du, au, mini is not None, maxi is not None]):
+        return {"resultats": [], "total": 0, "tronque": False}
+    lecture = ctx["user"]["role"] == "lecture"
+    types = ("facture",) if lecture else TYPES_RECHERCHE
+    if type_:
+        types = tuple(t for t in types if t == type_)
+    filtre_doc = statut or mini is not None or maxi is not None   # sans objet pour clients / intérimaires
+    res = []
+
+    def montant_ok(v):
+        if mini is None and maxi is None:
+            return True
+        return v is not None and (mini is None or v >= mini) and (maxi is None or v <= maxi)
+
+    def periode_ok(debut, fin=None):
+        fin = fin or debut
+        if not debut:
+            return not (du or au)
+        return (not du or fin >= du.isoformat()) and (not au or debut[:10] <= au.isoformat())
+
+    if "dossier" in types:
+        rows = con.execute(
+            "SELECT d.id, d.numero_proforma, d.num_da, d.service, d.imputation, d.lieu, d.date_debut, d.date_fin, "
+            "d.date_proforma, d.statut, d.bc_numero, d.bc_montant, d.notes, d.client_id, c.nom AS client_nom, "
+            "(SELECT GROUP_CONCAT(a.nom || ' ' || a.poste || ' ' || COALESCE(i.matricule, ''), ' | ') FROM agents a "
+            " LEFT JOIN interimaires i ON i.id = a.interimaire_id WHERE a.dossier_id = d.id) AS agents, "
+            "(SELECT GROUP_CONCAT(a.nom, ' | ') FROM agents a WHERE a.dossier_id = d.id) AS noms, "
+            "(SELECT COUNT(*) FROM agents a WHERE a.dossier_id = d.id) AS nb_agents "
+            "FROM dossiers d JOIN clients c ON c.id = d.client_id ORDER BY d.num_seq DESC").fetchall()
+        for d in rows:
+            if client and d["client_id"] != client or statut and d["statut"] != statut:
+                continue
+            if not periode_ok(d["date_debut"], d["date_fin"]) or not montant_ok(d["bc_montant"]):
+                continue
+            if mots and not _trouve(mots, d["numero_proforma"], d["num_da"], d["service"], d["imputation"], d["lieu"],
+                                    d["bc_numero"], d["client_nom"], d["agents"], d["notes"], d["statut"]):
+                continue
+            noms = (d["noms"] or "").split(" | ")
+            res.append({"type": "dossier", "id": d["id"], "titre": d["numero_proforma"], "statut": d["statut"],
+                        "detail": "%s · %s · %s · %d agent(s)%s" % (d["client_nom"], d["service"], d["lieu"], d["nb_agents"],
+                                                                    (" · BC " + d["bc_numero"]) if d["bc_numero"] else ""),
+                        "agents": ", ".join(noms[:3]) + (" …" if len(noms) > 3 else ""),
+                        "date": d["date_debut"], "date_fin": d["date_fin"], "montant_ht": d["bc_montant"],
+                        "lien": "#/dossier/%d" % d["id"]})
+
+    if "facture" in types:
+        client_de = dict(con.execute("SELECT id, client_id FROM dossiers").fetchall())
+        for f in _vue_factures(con.execute(SQL_FACTURES + ORDRE_FACTURES).fetchall(), con):
+            if client and client_de[f["dossier_id"]] != client:
+                continue
+            if statut and f["statut"] != statut:
+                continue
+            if not periode_ok(f["date_facture"] or f["mois"]) or not montant_ok(f["montant_ht"]):
+                continue
+            if mots and not _trouve(mots, f["numero"], f["agent"], f.get("matricule"), f["client_nom"], f["bc_numero"],
+                                    f["numero_proforma"], f["service"], f["lieu"], _mois_lisible(f["mois"]),
+                                    LIBELLE_TYPE_FACTURE.get(f["type"]), f["montant_ht"], f["ttc"], f["ref_paiement"],
+                                    f["remarque"], f["statut"], "facture"):
+                continue
+            res.append({"type": "facture", "id": f["id"], "titre": f["numero"] or "Facture prévue (pas encore émise)",
+                        "statut": f["statut"], "detail": "%s · %s · %s" % (f["client_nom"], LIBELLE_TYPE_FACTURE.get(f["type"], ""),
+                                                                          _mois_lisible(f["mois"])),
+                        "agents": f["agent"], "date": f["date_facture"] or f["mois"], "montant_ht": f["montant_ht"],
+                        "ttc": f["ttc"], "dossier_id": f["dossier_id"],
+                        "lien": ("#/imprimer/factures/%d" % f["id"]) if f["numero"] and f["statut"] != "Remplacée"
+                        else ("#/factures" if lecture else "#/dossier/%d" % f["dossier_id"])})
+        for f in factures_hs(con):
+            if client and f["client_id"] != client or statut and f["statut"] != statut:
+                continue
+            if not periode_ok(f["date_facture"]) or not montant_ok(f["montant_ht"]):
+                continue
+            if mots and not _trouve(mots, f["numero"], f["agent"], f.get("matricule"), f["client_nom"], f["bc_numero"],
+                                    f["numero_proforma"], f["service"], f["lieu"], _mois_lisible(f["mois"]),
+                                    "heures supplementaires sup HS", f["montant_ht"], f["ttc"], f["ref_paiement"],
+                                    f["statut"], "facture"):
+                continue
+            res.append({"type": "facture", "id": f["id"], "titre": f["numero"], "statut": f["statut"],
+                        "detail": "%s · heures supplémentaires · %s" % (f["client_nom"], _mois_lisible(f["mois"])),
+                        "agents": f["agent"], "date": f["date_facture"], "montant_ht": f["montant_ht"], "ttc": f["ttc"],
+                        "dossier_id": f["dossier_id"], "hs_id": f["id"],
+                        "lien": "#/factures" if lecture else "#/hs/%d" % f["id"]})
+
+    if "document" in types and not filtre_doc:
+        rows = con.execute(
+            "SELECT o.id, o.categorie, o.nom, o.ajoute_le, o.taille, o.dossier_id, d.numero_proforma, d.bc_numero, d.client_id, "
+            "c.nom AS client_nom, f.numero AS facture_numero, "
+            "(SELECT GROUP_CONCAT(a.nom, ' | ') FROM agents a WHERE a.dossier_id = d.id) AS agents "
+            "FROM documents o JOIN dossiers d ON d.id = o.dossier_id JOIN clients c ON c.id = d.client_id "
+            "LEFT JOIN factures f ON f.id = o.facture_id WHERE o.retire_le IS NULL ORDER BY o.ajoute_le DESC, o.id DESC").fetchall()
+        for o in rows:
+            if client and o["client_id"] != client or not periode_ok(o["ajoute_le"][:10]):
+                continue
+            if mots and not _trouve(mots, o["categorie"], o["nom"], o["numero_proforma"], o["bc_numero"], o["client_nom"],
+                                    o["facture_numero"], o["agents"], "document piece"):
+                continue
+            res.append({"type": "document", "id": o["id"], "titre": o["nom"], "statut": o["categorie"],
+                        "detail": "%s · %s" % (o["client_nom"], o["numero_proforma"]), "date": o["ajoute_le"][:10],
+                        "taille": o["taille"], "dossier_id": o["dossier_id"],
+                        "lien": "/api/documents/%d" % o["id"], "lien_dossier": "#/dossier/%d" % o["dossier_id"]})
+
+    if "client" in types and not filtre_doc and not (du or au):
+        for c in con.execute("SELECT * FROM clients ORDER BY nom").fetchall():
+            if client and c["id"] != client:
+                continue
+            if mots and not _trouve(mots, c["code"], c["nom"], c["ville"], c["adresse"], c["contact"], c["email"], c["telephone"]):
+                continue
+            if not mots and not client:
+                continue
+            res.append({"type": "client", "id": c["id"], "titre": c["nom"], "statut": "Actif" if c["actif"] else "Inactif",
+                        "detail": " · ".join(x for x in (c["ville"], c["contact"], c["telephone"], c["email"]) if x),
+                        "lien": "#/clients"})
+
+    if "interimaire" in types and not filtre_doc and not (du or au) and not client and mots:
+        for i in con.execute(
+                "SELECT i.id, i.matricule, i.nom, (SELECT GROUP_CONCAT(DISTINCT a.poste) FROM agents a WHERE a.interimaire_id = i.id) "
+                "AS postes, (SELECT MAX(a.dossier_id) FROM agents a WHERE a.interimaire_id = i.id) AS dernier, "
+                "(SELECT COUNT(DISTINCT a.dossier_id) FROM agents a WHERE a.interimaire_id = i.id) AS nb "
+                "FROM interimaires i ORDER BY i.nom").fetchall():
+            if not _trouve(mots, i["matricule"], i["nom"], i["postes"]):
+                continue
+            res.append({"type": "interimaire", "id": i["id"], "titre": i["nom"], "statut": i["matricule"],
+                        "detail": "%s · %d dossier(s)" % (i["postes"] or "", i["nb"]),
+                        "lien": ("#/dossier/%d" % i["dernier"]) if i["dernier"] else "#/interimaires"})
+
+    # le plus pertinent d'abord : n° / nom qui contient toute la recherche, puis tous les mots dans le titre
+    if mots:
+        entier_q = "".join(mots)
+
+        def rang(r):
+            t = _normal(r["titre"])
+            if entier_q in t.replace(" ", ""):
+                return 0
+            t += " " + _normal("%s %s" % (r.get("detail", ""), r.get("agents", "")))
+            return 1 if all(m in t for m in mots) else 2
+        res.sort(key=rang)      # tri stable : à pertinence égale, dossiers, factures, documents, clients, intérimaires
+    total = len(res)
+    return {"resultats": res[:300], "total": total, "tronque": total > 300}
 
 # ---------------------------------------------------------------------------
 # Dossiers (DA -> proforma -> BC)
@@ -663,6 +889,39 @@ def _codes_facture(p):
             "code_visite": p.get("code_visite", "Visite médicale")}
 
 
+# Numérotation par formats : un format vide dans Paramètres = règle automatique (codes ci-dessus)
+FORMATS_NUMERO = ("format_proforma", "format_facture", "format_visite", "format_proforma_h", "format_facture_h")
+
+
+def _num_format(p, cle, n, date_doc, nom=""):
+    return M.formater_numero(p[cle], n, date_doc, p.get("code_entreprise") or "ANO", nom, p.get("prefixe_facture") or "")
+
+
+def num_proforma(p, seq, date_doc, nom):
+    if p.get("format_proforma"):
+        return _num_format(p, "format_proforma", seq, date_doc, nom)
+    return M.numero_proforma(seq, date_doc, nom, p.get("code_entreprise", "ANO"))
+
+
+def num_facture(p, n, type_facture, date_doc):
+    cle = "format_visite" if type_facture == M.TYPE_VISITE else "format_facture"
+    if p.get(cle):
+        return _num_format(p, cle, n, date_doc)
+    return M.numero_facture(n, type_facture, date_doc, **_codes_facture(p))
+
+
+def num_proforma_h(p, n, date_doc):
+    if p.get("format_proforma_h"):
+        return _num_format(p, "format_proforma_h", n, date_doc)
+    return M.numero_proforma_h(n, date_doc, p.get("code_entreprise") or "ANO", p.get("code_proforma_h") or "MAD")
+
+
+def num_facture_h(p, n, date_doc):
+    if p.get("format_facture_h"):
+        return _num_format(p, "format_facture_h", n, date_doc)
+    return M.numero_facture_h(n, date_doc, p.get("prefixe_facture") or "FA", p.get("code_facture_h") or "H")
+
+
 def prochain_num_da(con, annee):
     """N° de DA automatique quand la DA de COMILOG n'en a pas : DA-AAAA-001,
     DA-AAAA-002… (repart à 001 chaque année)."""
@@ -694,7 +953,7 @@ def apercu_dossier(ctx, g, body):
     p = parametres(con)
     seq = int(p.get("dernier_num_proforma") or 0) + 1
     pro = M.calcul_proforma(d, agents, b["charges"], b)
-    pro["numero_propose"] = M.numero_proforma(seq, d["date_proforma"], d["nom_numero"], p.get("code_entreprise", "ANO"))
+    pro["numero_propose"] = num_proforma(p, seq, d["date_proforma"], d["nom_numero"])
     pro["num_da_propose"] = d["num_da"] or prochain_num_da(con, d["date_proforma"].year)
     pro["dernieres_visites"] = [a["derniere_visite"].isoformat() if a["derniere_visite"] else None for a in agents]
     mats = []
@@ -712,7 +971,7 @@ def creer_dossier(ctx, g, body):
         p = parametres(con)
         mx = con.execute("SELECT COALESCE(MAX(num_seq), 0) FROM dossiers").fetchone()[0]
         seq = max(int(p.get("dernier_num_proforma") or 0), mx) + 1
-        numero = M.numero_proforma(seq, d["date_proforma"], d["nom_numero"], p.get("code_entreprise", "ANO"))
+        numero = num_proforma(p, seq, d["date_proforma"], d["nom_numero"])
         if con.execute("SELECT 1 FROM dossiers WHERE numero_proforma = ?", (numero,)).fetchone():
             raise ErreurAPI(409, "Le n° de proforma %s existe déjà." % numero)
         if d["num_da"]:
@@ -757,6 +1016,7 @@ def _vue_dossier_resume(con, r):
 
 
 def liste_dossiers(ctx, g, body):
+    statuts_automatiques(ctx)
     con = ctx["con"]
     q = ctx["query"]
     sql = "SELECT * FROM dossiers"
@@ -800,6 +1060,7 @@ def _factures_de(con, did):
 
 
 def detail_dossier(ctx, g, body):
+    statuts_automatiques(ctx)
     con = ctx["con"]
     r = _dossier_row(con, int(g[0]))
     agents = _agents(con, r["id"])
@@ -808,7 +1069,9 @@ def detail_dossier(ctx, g, body):
     d = dict(r)
     d["bareme"] = json.loads(d.pop("bareme_json"))
     factures = _factures_de(con, r["id"])
-    return {"dossier": d, "agents": agents, "client": cl, "proforma": pro, "factures": factures,
+    hs = [_hs_vue(con, x, False) for x in con.execute("SELECT * FROM heures_sup WHERE dossier_id = ? ORDER BY id DESC",
+                                                      (r["id"],)).fetchall()]
+    return {"dossier": d, "agents": agents, "client": cl, "proforma": pro, "factures": factures, "heures_sup": hs,
             "ecart_bc": (r["bc_montant"] - pro["cumul_ht"]) if r["bc_montant"] is not None else None,
             "verrouille": any(f["numero"] for f in factures)}
 
@@ -831,13 +1094,36 @@ def modifier_dossier(ctx, g, body):
         # La proforma reste modifiable même après émission (demande de Luc, 25/11/2026) :
         # les factures déjà émises ne changent pas (montants figés) ; les factures
         # prévues sont recalculées. Un agent qui a des factures émises ne peut pas être retiré.
-        for a in anciens[len(agents):]:
-            if con.execute("SELECT 1 FROM factures WHERE agent_id = ? AND numero IS NOT NULL", (a["id"],)).fetchone():
-                raise ErreurAPI(409, "L'agent « %s » a des factures émises : il ne peut pas être retiré "
-                                     "(laissez-le dans la liste)." % a["nom"])
+        # Un n° de facture émis reste lié à SON agent (règle de Luc, 25/11/2026) : les agents
+        # sont retrouvés par leur nom (sans tenir compte des accents ni des majuscules), pas
+        # par leur place dans la liste. Un agent qui a des factures émises ne peut être ni
+        # retiré ni remplacé par une autre personne.
+        libres = list(anciens)
+        correspond = []
+        for a in agents:
+            k = M.cle_nom(a["nom"])
+            ancien = next((x for x in libres if M.cle_nom(x["nom"]) == k), None)
+            if ancien is not None:
+                libres.remove(ancien)
+            correspond.append(ancien)
+        for a in libres:
+            nums = [x[0] for x in con.execute("SELECT numero FROM factures WHERE agent_id = ? AND numero IS NOT NULL "
+                                              "ORDER BY num_seq", (a["id"],)).fetchall()]
+            if nums:
+                raise ErreurAPI(409, "L'agent « %s » a des factures émises (%s) : il ne peut être ni retiré ni remplacé, "
+                                     "car un n° de facture reste lié à son agent. Gardez-le dans la liste (les accents et "
+                                     "majuscules de son nom peuvent être corrigés)." % (a["nom"], ", ".join(nums[:3])
+                                                                                      + (" …" if len(nums) > 3 else "")))
+            if con.execute("SELECT 1 FROM heures_sup WHERE agent_id = ?", (a["id"],)).fetchone():
+                raise ErreurAPI(409, "L'agent « %s » a des heures supplémentaires enregistrées : il ne peut être ni retiré "
+                                     "ni remplacé (les accents et majuscules de son nom peuvent être corrigés)." % a["nom"])
         # le code entreprise d'origine est gardé (repris du n° existant)
         code = r["numero_proforma"].split("-")[2] if r["numero_proforma"].count("-") >= 3 else "ANO"
-        numero = M.numero_proforma(r["num_seq"], d["date_proforma"], d["nom_numero"], code)
+        p_fmt = parametres(con)
+        if p_fmt.get("format_proforma"):
+            numero = num_proforma(p_fmt, r["num_seq"], d["date_proforma"], d["nom_numero"])
+        else:
+            numero = M.numero_proforma(r["num_seq"], d["date_proforma"], d["nom_numero"], code)
         if con.execute("SELECT 1 FROM dossiers WHERE numero_proforma = ? AND id <> ?", (numero, did)).fetchone():
             raise ErreurAPI(409, "Le n° de proforma %s existe déjà." % numero)
         avait_factures = con.execute("SELECT COUNT(*) FROM factures f JOIN agents a ON a.id = f.agent_id "
@@ -848,15 +1134,16 @@ def modifier_dossier(ctx, g, body):
             (numero, d["nom_numero"], d["date_proforma"].isoformat(), d["client_id"], d["num_da"], d["service"],
              d["imputation"], d["lieu"], d["date_debut"].isoformat(), d["date_fin"].isoformat(), d["visite_mode"],
              d["notes"], db.maintenant(), d["facture_groupee"], did))
-        # agents mis à jour sur place (rang = ligne) : leurs factures émises restent rattachées
-        for a in anciens[len(agents):]:
+        # même personne = même ligne d'agent : ses factures (et leurs n°) la suivent, quel que soit l'ordre
+        for a in libres:
+            con.execute("DELETE FROM factures WHERE agent_id = ? AND numero IS NULL", (a["id"],))
             con.execute("DELETE FROM agents WHERE id = ?", (a["id"],))
         for i, a in enumerate(agents):
             dv = a["derniere_visite"] or _derniere_visite_connue(con, a["nom"], did)
             vals = (a["nom"], a["poste"], a["salaire_base"], dv.isoformat() if dv else None, db.interimaire_id(con, a["nom"]))
-            if i < len(anciens):
-                con.execute("UPDATE agents SET nom=?, poste=?, salaire_base=?, derniere_visite=?, interimaire_id=? "
-                            "WHERE id=?", vals + (anciens[i]["id"],))
+            if correspond[i] is not None:
+                con.execute("UPDATE agents SET nom=?, poste=?, salaire_base=?, derniere_visite=?, interimaire_id=?, rang=? "
+                            "WHERE id=?", vals + (i + 1, correspond[i]["id"]))
             else:
                 con.execute("INSERT INTO agents(nom, poste, salaire_base, derniere_visite, interimaire_id, dossier_id, rang) "
                             "VALUES (?,?,?,?,?,?,?)", vals + (did, i + 1))
@@ -912,8 +1199,69 @@ def bc_dossier(ctx, g, body):
         con.execute("UPDATE dossiers SET bc_numero=?, bc_montant=?, bc_date=?, statut=?, maj_le=? WHERE id=?",
                     (num, montant, dbc.isoformat(), st, db.maintenant(), did))
         pro = _proforma(r, _agents(con, did))
-        journaliser(ctx, "bc_saisi", r["numero_proforma"], "BC %s, %d XAF (écart %d)" % (num, montant, montant - pro["cumul_ht"]))
-    return {"ok": True, "ecart": montant - pro["cumul_ht"]}
+        ecart = montant - pro["cumul_ht"]
+        journaliser(ctx, "bc_saisi", r["numero_proforma"], "BC %s, %d XAF (écart %d)" % (num, montant, ecart))
+        # lot 1 : BC conforme (écart d'arrondi au plus) -> factures prévues créées tout de suite
+        creees = 0
+        deja = con.execute("SELECT COUNT(*) FROM factures f JOIN agents a ON a.id = f.agent_id WHERE a.dossier_id = ?",
+                           (did,)).fetchone()[0]
+        if abs(ecart) <= 1 and not deja:
+            creees = _generer(con, did)
+            con.execute("UPDATE dossiers SET statut = 'En cours', maj_le = ? WHERE id = ?", (db.maintenant(), did))
+            journaliser(ctx, "factures_generees", r["numero_proforma"], "%d prévue(s), dès la saisie du BC" % creees)
+    return {"ok": True, "ecart": ecart, "factures_creees": creees}
+
+
+def proforma_envoyee(ctx, g, body):
+    """Lot 1 : la proforma vient d'être imprimée ou enregistrée en PDF -> « Envoyé »
+    (seulement depuis « Brouillon » ; ne recule jamais un statut)."""
+    con = ctx["con"]
+    did = int(g[0])
+    with Transaction(con):
+        r = _dossier_row(con, did)
+        if r["statut"] != "Brouillon":
+            return {"statut": r["statut"], "change": False}
+        con.execute("UPDATE dossiers SET statut = 'Envoyé', envoye_le = ?, maj_le = ? WHERE id = ?",
+                    (aujourdhui().isoformat(), db.maintenant(), did))
+        journaliser(ctx, "dossier_statut", r["numero_proforma"], "Brouillon → Envoyé (proforma imprimée)")
+    return {"statut": "Envoyé", "change": True}
+
+
+def statuts_automatiques(ctx):
+    """Lot 1 : un dossier « En cours » dont la date de fin est passée devient « Terminé »."""
+    con = ctx["con"]
+    auj = aujourdhui().isoformat()
+    rows = con.execute("SELECT id, numero_proforma FROM dossiers WHERE statut = 'En cours' AND date_fin < ?",
+                       (auj,)).fetchall()
+    if not rows:
+        return
+    with Transaction(con):
+        for r in rows:
+            con.execute("UPDATE dossiers SET statut = 'Terminé', maj_le = ? WHERE id = ? AND statut = 'En cours'",
+                        (db.maintenant(), r["id"]))
+            journaliser(ctx, "dossier_statut", r["numero_proforma"], "En cours → Terminé (date de fin passée)")
+
+
+def visite_faite(ctx, g, body):
+    """Lot 1 : « visite faite le … » pour une visite prévue. La date sert de
+    dernière visite connue pour le contrat suivant et retire l'alerte."""
+    con = ctx["con"]
+    aid = int(g[0])
+    prevue = date_(body, "prevue")
+    faite = date_(body, "faite")
+    if faite > aujourdhui():
+        raise ErreurAPI(400, "La date de la visite ne peut pas être dans le futur.")
+    with Transaction(con):
+        a = con.execute("SELECT a.*, d.numero_proforma FROM agents a JOIN dossiers d ON d.id = a.dossier_id WHERE a.id = ?",
+                        (aid,)).fetchone()
+        if not a:
+            raise ErreurAPI(404, "Agent introuvable.")
+        liste = [v for v in json.loads(a["visites_faites"] or "[]") if v.get("prevue") != prevue.isoformat()]
+        liste.append({"prevue": prevue.isoformat(), "faite": faite.isoformat()})
+        liste.sort(key=lambda v: v["prevue"])
+        con.execute("UPDATE agents SET visites_faites = ? WHERE id = ?", (json.dumps(liste), aid))
+        journaliser(ctx, "visite_faite", a["numero_proforma"], "%s : prévue le %s, faite le %s" % (a["nom"], prevue, faite))
+    return {"ok": True}
 
 
 def _generer(con, did):
@@ -1023,6 +1371,37 @@ def _vue_factures(rows, con=None):
     return res
 
 
+def factures_hs(con, mois=None, dossier=None):
+    """Factures FA H émises (heures supplémentaires), au même format que les
+    factures mensuelles pour les listes, l'export, la recherche et les relances.
+    Le mois retenu est celui de la date de facture."""
+    sql = ("SELECT h.id, h.dossier_id, h.facture_numero AS numero, h.facture_date AS date_facture, h.echeance, "
+           "h.montant_ht, h.tva, h.ttc, h.envoyee_le, h.paye_le, h.montant_paye, h.ref_paiement, h.bc_numero, "
+           "a.nom AS agent, a.poste, i.matricule, d.numero_proforma, d.service, d.lieu, d.client_id, c.nom AS client_nom "
+           "FROM heures_sup h JOIN agents a ON a.id = h.agent_id JOIN dossiers d ON d.id = h.dossier_id "
+           "JOIN clients c ON c.id = d.client_id LEFT JOIN interimaires i ON i.id = a.interimaire_id "
+           "WHERE h.facture_numero IS NOT NULL")
+    args = []
+    if mois:
+        sql += " AND substr(h.facture_date, 1, 7) = ?"
+        args.append(mois.isoformat()[:7])
+    if dossier:
+        sql += " AND h.dossier_id = ?"
+        args.append(dossier)
+    auj = aujourdhui()
+    res = []
+    for r in con.execute(sql + " ORDER BY h.facture_date, h.facture_num_seq, h.id", args).fetchall():
+        x = dict(r)
+        x.update(type="HS", hs_id=x["id"], mois=x["date_facture"][:7] + "-01", remarque="", remplacee_par_id=None)
+        x["statut"] = M.statut_facture(x, auj)
+        x["retard_jours"] = None
+        if x["echeance"]:
+            fin = dt.date.fromisoformat(x["paye_le"]) if x["paye_le"] else auj
+            x["retard_jours"] = max(0, (fin - dt.date.fromisoformat(x["echeance"])).days)
+        res.append(x)
+    return res
+
+
 def liste_factures(ctx, g, body):
     con, q = ctx["con"], ctx["query"]
     cond, args = [], []
@@ -1042,10 +1421,13 @@ def liste_factures(ctx, g, body):
         args += ids
     sql = SQL_FACTURES + (" WHERE " + " AND ".join(cond) if cond else "") + ORDRE_FACTURES
     res = _vue_factures(con.execute(sql, args).fetchall(), con)
+    hs = [] if q.get("ids") else factures_hs(con, mois_(q["mois"]) if q.get("mois") else None,
+                                              int(q["dossier"]) if q.get("dossier") else None)
     st = q.get("statut", "")
     if st:
         res = [x for x in res if x["statut"] == st]
-    return {"factures": res}
+        hs = [x for x in hs if x["statut"] == st]
+    return {"factures": res, "factures_hs": hs}
 
 
 def _dernier_num_facture(con):
@@ -1081,13 +1463,24 @@ def emettre(ctx, g, body):
         paire = {}
         for r in rows:
             cle = (r["agent_id"], r["mois"])
-            if cle in paire and paire[cle][1] != r["type"] and r["type"] in ("MAD", "VISITE"):
+            # la visite (ou la facture du mois) de ce même agent et de ce même mois a déjà son n° :
+            # l'autre reprend ce n°, qui reste lié à l'agent (ex. FA 87/Visite médicale/2026 puis FA 87/12/2026)
+            deja = None
+            if r["type"] in ("MAD", "VISITE") and cle not in paire:
+                autre = "VISITE" if r["type"] == "MAD" else "MAD"
+                deja = con.execute(
+                    "SELECT f.num_seq FROM factures f WHERE f.agent_id = ? AND f.mois = ? AND f.type = ? AND f.num_seq IS NOT NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM factures g WHERE g.num_seq = f.num_seq AND g.id <> f.id AND g.type <> 'BIS')",
+                    (r["agent_id"], r["mois"], autre)).fetchone()
+            if deja is not None:
+                num_seq = deja[0]
+            elif cle in paire and paire[cle][1] != r["type"] and r["type"] in ("MAD", "VISITE"):
                 num_seq = paire.pop(cle)[0]
             else:
                 n += 1
                 num_seq = n
                 paire[cle] = (n, r["type"])
-            numero = M.numero_facture(num_seq, r["type"], dfac, **_codes_facture(p))
+            numero = num_facture(p, num_seq, r["type"], dfac)
             if con.execute("SELECT 1 FROM factures WHERE numero = ?", (numero,)).fetchone():
                 raise ErreurAPI(409, "Le n° %s existe déjà : vérifiez le dernier n° de facture." % numero)
             ech = M.echeance(dfac, p.get("delai_paiement_jours", 30))
@@ -1242,7 +1635,15 @@ def remarque_facture(ctx, g, body):
 # ---------------------------------------------------------------------------
 # Tableau de bord
 # ---------------------------------------------------------------------------
+A_RELANCER_IMPUTATION = ("Envoyé", "Validé", "BC reçu", "En cours")
+
+
+def _lien_dossier(r):
+    return {"id": r["id"], "numero": r["numero_proforma"], "depuis": r["envoye_le"] or r["date_proforma"]}
+
+
 def tableau_de_bord(ctx, g, body):
+    statuts_automatiques(ctx)
     con, q = ctx["con"], ctx["query"]
     auj = aujourdhui()
     m = mois_(q["mois"]) if q.get("mois") else M.debut_mois(auj)
@@ -1293,13 +1694,19 @@ def tableau_de_bord(ctx, g, body):
         _, ags_c = _pour_calcul(r, ags)
         for a, ac in zip(ags, ags_c):
             vis = M.dates_visites(d1, d2, ac["derniere_visite"], r["visite_mode"], b["validite_visite_mois"])
-            suivantes = [v for v in vis if v >= auj]
+            faites = {v.get("prevue") for v in json.loads(a["visites_faites"] or "[]")}
+            # une visite prévue et pas encore confirmée reste à faire (même si sa date est passée de peu)
+            suivantes = [v for v in vis if v.isoformat() not in faites
+                         and v >= auj - dt.timedelta(days=int(p["alerte_visite_jours"]))]
             if suivantes and suivantes[0] <= auj + dt.timedelta(days=int(p["alerte_visite_jours"])):
-                alertes_visite.append({"dossier_id": r["id"], "agent": a["nom"], "date": suivantes[0].isoformat(),
-                                       "fin": r["date_fin"]})
+                alertes_visite.append({"dossier_id": r["id"], "agent_id": a["id"], "agent": a["nom"],
+                                       "date": suivantes[0].isoformat(), "fin": r["date_fin"],
+                                       "passee": suivantes[0] < auj})
     alertes_fin.sort(key=lambda x: x["fin"])
     fact = _vue_factures(con.execute(SQL_FACTURES + ORDRE_FACTURES).fetchall(), con)
-    valides = [f for f in fact if f["numero"] and not f["remplacee_par_id"]]
+    valides_mad = [f for f in fact if f["numero"] and not f["remplacee_par_id"]]
+    # factures FA H (heures supplémentaires) comptées avec les autres : facturé, payé, retard, à envoyer
+    valides = valides_mad + factures_hs(con)
     du_mois = [f for f in valides if f["mois"] == m.isoformat()]
     a_emettre_passe = [f for f in fact if not f["numero"] and f["mois"] < m.isoformat() and f["type"] != "BIS"]
     a_emettre_mois = [f for f in fact if not f["numero"] and f["mois"] == m.isoformat() and f["type"] != "BIS"]
@@ -1325,7 +1732,7 @@ def tableau_de_bord(ctx, g, body):
     # reste dû facture par facture : un paiement saisi en trop ne rend pas le reste négatif
     reste = sum(max(0, f["ttc"] - (f["montant_paye"] or 0)) for f in valides)
     trop_percus = [{"id": f["id"], "numero": f["numero"], "ttc": f["ttc"], "paye": f["montant_paye"]}
-                   for f in valides if (f["montant_paye"] or 0) > f["ttc"]]
+                   for f in valides_mad if (f["montant_paye"] or 0) > f["ttc"]]
     return {
         "mois": m.isoformat(), "libelle": M.libelle_mois(m),
         "personnes_en_contrat": personnes, "personnes_en_attente": attente,
@@ -1351,6 +1758,15 @@ def tableau_de_bord(ctx, g, body):
             "en_retard": sum(1 for f in valides if f["statut"] == "En retard"),
             "brouillons": sum(1 for r in dossiers if r["statut"] == "Brouillon"),
             "sans_bc": sum(1 for r in dossiers if r["statut"] in ("Envoyé", "Validé") and not r["bc_numero"]),
+            "imputations": sum(1 for r in dossiers if r["statut"] in A_RELANCER_IMPUTATION and not r["imputation"]),
+            "visites": len(alertes_visite),
+        },
+        # le détail, pour aller droit au dossier concerné depuis « À faire »
+        "a_faire_dossiers": {
+            "sans_bc": [_lien_dossier(r) for r in dossiers if r["statut"] in ("Envoyé", "Validé") and not r["bc_numero"]][:8],
+            "brouillons": [_lien_dossier(r) for r in dossiers if r["statut"] == "Brouillon"][:8],
+            "imputations": [_lien_dossier(r) for r in dossiers
+                            if r["statut"] in A_RELANCER_IMPUTATION and not r["imputation"]][:8],
         },
     }
 
@@ -1463,14 +1879,24 @@ def documents_dossier(ctx, g, body):
 
 def ajouter_piece(ctx, g, body):
     """Pièce reçue du client (DA, BC, PV…) : PDF, PNG ou JPEG, 8 Mo au plus."""
-    import base64
-    import binascii
     con = ctx["con"]
     did = int(g[0])
     _dossier_row(con, did)
     cat = body.get("categorie")
     if cat not in DOC.CATEGORIES_PIECES:
         raise ErreurAPI(400, "Type de pièce inconnu (DA, BC, PV ou Autre).")
+    nom, contenu, fmt = _fichier_recu(body)
+    with Transaction(con):
+        doc_id = DOC.enregistrer(con, ctx["chemin_db"], did, None, cat, nom, contenu, fmt[0], fmt[1],
+                                 ctx["user"]["id"])
+        journaliser(ctx, "piece_ajoutee", "dossier %d" % did, "%s : %s (%d Ko)" % (cat, nom, len(contenu) // 1024))
+    return {"id": doc_id}
+
+
+def _fichier_recu(body):
+    """Fichier envoyé en base64 : PDF, PNG ou JPEG, 8 Mo au plus -> (nom, contenu, (type, ext))."""
+    import base64
+    import binascii
     nom = texte(body, "nom", 150, True)
     nom = re.sub(r"[\\/\x00-\x1f]", "_", nom).strip() or "piece"
     b64 = body.get("contenu")
@@ -1487,11 +1913,7 @@ def ajouter_piece(ctx, g, body):
     fmt = DOC.format_fichier(contenu)
     if not fmt:
         raise ErreurAPI(400, "Format refusé : PDF, PNG ou JPEG seulement.")
-    with Transaction(con):
-        doc_id = DOC.enregistrer(con, ctx["chemin_db"], did, None, cat, nom, contenu, fmt[0], fmt[1],
-                                 ctx["user"]["id"])
-        journaliser(ctx, "piece_ajoutee", "dossier %d" % did, "%s : %s (%d Ko)" % (cat, nom, len(contenu) // 1024))
-    return {"id": doc_id}
+    return nom, contenu, fmt
 
 
 def telecharger_document(ctx, g, body):
@@ -1592,10 +2014,11 @@ def _cellule_csv(v):
 def factures_csv(ctx, g, body):
     """Liste des factures (mêmes filtres que l'écran) en CSV lisible par
     Excel et Numbers. Aucun salaire : seulement les montants facturés."""
-    res = liste_factures(ctx, g, body)["factures"]
+    lf = liste_factures(ctx, g, body)
+    res = lf["factures"] + lf["factures_hs"]
     entetes = ["N° facture", "Mois", "Type", "Agent", "Poste", "Client", "BC", "Montant HT", "TVA", "TTC",
                "Date facture", "Échéance", "Statut", "Envoyée le", "Payée le", "Réf. paiement", "Remarque"]
-    types = {"MAD": "Mise à disposition", "VISITE": "Visite médicale", "BIS": "Facture bis (PV)"}
+    types = {"MAD": "Mise à disposition", "VISITE": "Visite médicale", "BIS": "Facture bis (PV)", "HS": "Heures supplémentaires"}
     lignes = [";".join(entetes)]
     for f in res:
         lignes.append(";".join(_cellule_csv(v) for v in (
@@ -1610,3 +2033,390 @@ def factures_csv(ctx, g, body):
     nom = "Factures %s - %s.csv" % (parametres(ctx["con"]).get("raison_sociale", ""),
                                     M.libelle_mois(mois_(q["mois"])) if q.get("mois") else "tous les mois")
     return Fichier(contenu, "text/csv; charset=utf-8", M.sans_accents(nom))
+
+
+# ---------------------------------------------------------------------------
+# Heures supplémentaires (circuit de Lola) : relevé COMILOG -> fiche d'attachement
+# -> classement 28/56/75 % -> Proforma H -> facture FA H
+# ---------------------------------------------------------------------------
+from fractions import Fraction  # noqa: E402
+
+HS_MAX_LIGNES = 200
+
+
+def _hs_row(con, hid):
+    r = con.execute("SELECT * FROM heures_sup WHERE id = ?", (hid,)).fetchone()
+    if not r:
+        raise ErreurAPI(404, "Relevé d'heures supplémentaires introuvable.")
+    return r
+
+
+def _hs_params(p):
+    return {"taux": [int(p.get("hs_taux1_pdm", 2800)), int(p.get("hs_taux2_pdm", 5600)), int(p.get("hs_taux3_pdm", 7500))],
+            "diviseur": int(p.get("hs_diviseur_centiemes", 17333)),
+            "seuil": int(p.get("hs_seuil_semaine", 8)),
+            # un jour férié « (à confirmer) » n'est appliqué qu'une fois confirmé
+            "feries": {str(x).split()[0] for x in (p.get("hs_jours_feries") or []) if str(x).strip() and db.A_CONFIRMER not in str(x)},
+            "a_confirmer": {str(x).split()[0]: " ".join(str(x).split()[1:]).replace(db.A_CONFIRMER, "").strip()
+                            for x in (p.get("hs_jours_feries") or []) if db.A_CONFIRMER in str(x)}}
+
+
+def _hs_lignes(body):
+    lignes = body.get("lignes")
+    if not isinstance(lignes, list) or len(lignes) > HS_MAX_LIGNES:
+        raise ErreurAPI(400, "Lignes de la fiche invalides (%d au plus)." % HS_MAX_LIGNES)
+    res = []
+    for i, l in enumerate(lignes):
+        if not isinstance(l, dict):
+            raise ErreurAPI(400, "Ligne %d invalide." % (i + 1))
+        d = date_(l, "date")
+        deb, fin = (str(l.get("debut") or "").strip()[:5], str(l.get("fin") or "").strip()[:5])
+        for t in (deb, fin):
+            if t and M._minutes(t) is None:
+                raise ErreurAPI(400, "Ligne %d : heure « %s » invalide (ex. 20:00)." % (i + 1, t))
+        h = l.get("heures")
+        if h in (None, ""):
+            a, b = M._minutes(deb), M._minutes(fin)
+            if a is None or b is None or a == b:
+                raise ErreurAPI(400, "Ligne %d : indiquez les heures réalisées (ou le début et la fin)." % (i + 1))
+            hf = Fraction((b - a) % 1440, 60)
+        else:
+            try:
+                hf = M.hs_heures(h)
+            except (ValueError, ZeroDivisionError):
+                raise ErreurAPI(400, "Ligne %d : heures réalisées invalides." % (i + 1))
+        if hf <= 0 or hf > 24:
+            raise ErreurAPI(400, "Ligne %d : entre 0 et 24 heures." % (i + 1))
+        res.append({"date": d.isoformat(), "debut": deb, "fin": fin,
+                    "justification": texte(l, "justification", 120), "heures": float(hf)})
+    res.sort(key=lambda x: (x["date"], M._minutes(x["debut"]) or 0))
+    return res
+
+
+def _hs_proposition(lignes, hp):
+    return M.hs_classer([{"date": dt.date.fromisoformat(l["date"]), "debut": l["debut"], "fin": l["fin"],
+                          "heures": Fraction(l["heures"]).limit_denominator(100)} for l in lignes],
+                        hp["seuil"], hp["feries"])
+
+
+def _hs_vue(con, r, avec_docs=True):
+    x = dict(r)
+    lignes = json.loads(x.pop("lignes_json"))
+    heures = json.loads(x.pop("heures_json")) or {}
+    p = parametres(con)
+    hp = _hs_params(p)
+    drow = _dossier_row(con, r["dossier_id"])
+    ag = con.execute("SELECT a.*, i.matricule FROM agents a LEFT JOIN interimaires i ON i.id = a.interimaire_id "
+                     "WHERE a.id = ?", (r["agent_id"],)).fetchone()
+    cout = r["cout_mensuel"] or M.cout_mensuel(ag["salaire_base"], _bareme(drow)["charges"])
+    prop, semaines = _hs_proposition(lignes, hp)
+    retenu = {k: Fraction(str(heures[k])) for k in M.HS_CATEGORIES} if heures else prop
+    calc = M.hs_lignes_montants(cout, [retenu[k] for k in M.HS_CATEGORIES], hp["taux"], hp["diviseur"])
+    total_h = sum((Fraction(l["heures"]).limit_denominator(100) for l in lignes), Fraction(0))
+    cl = con.execute("SELECT * FROM clients WHERE id = ?", (drow["client_id"],)).fetchone()
+    jours_saisis = sorted({l["date"] for l in lignes})
+    x.update(etapes=json.loads(x.pop("etapes_json") or "{}"),
+             feries_a_confirmer=[{"date": d, "libelle": hp["a_confirmer"].get(d) or hp["a_confirmer"].get(d[5:])}
+                                 for d in jours_saisis if (d in hp["a_confirmer"] or d[5:] in hp["a_confirmer"])
+                                 and d not in hp["feries"] and d[5:] not in hp["feries"]])
+    x.update(lignes=lignes, proposition={k: float(v) for k, v in prop.items()},
+             semaines=[{"du": w["du"].isoformat(), "au": w["au"].isoformat(), "total": float(w["total"]),
+                        "jours": [{"date": d.isoformat(), "heures": float(h), "repos": d.weekday() == 6 or M.hs_est_ferie(d, hp["feries"])}
+                                  for d, h in w["jours"]], **{k: float(w[k]) for k in M.HS_CATEGORIES}} for w in semaines],
+             heures={k: float(v) for k, v in retenu.items()}, total_heures=float(total_h),
+             ecart_heures=float(sum(retenu.values()) - total_h), calcul=calc, cout_mensuel=cout,
+             taux_pdm=hp["taux"], agent=ag["nom"], poste=ag["poste"], matricule=ag["matricule"],
+             numero_proforma=drow["numero_proforma"], imputation=drow["imputation"], lieu=drow["lieu"],
+             bc_dossier=drow["bc_numero"],
+             statut_dossier=drow["statut"], client=dict(cl),
+             periode_du=lignes[0]["date"] if lignes else None, periode_au=lignes[-1]["date"] if lignes else None,
+             statut=("Payée" if r["paye_le"] else "Envoyée" if r["envoyee_le"] else "Facturée" if r["facture_numero"]
+                     else "Devis" if r["devis_numero"] else "Saisie"))
+    if avec_docs:
+        x["releves"] = [_vue_document(d) for d in con.execute(
+            "SELECT * FROM documents WHERE hs_id = ? AND retire_le IS NULL ORDER BY id", (r["id"],))]
+    return x
+
+
+def _hs_champs(body, drow=None):
+    return {"direction": texte(body, "direction", 80), "service": texte(body, "service", 80) or (drow["service"] if drow else ""),
+            "section": texte(body, "section", 40) or (drow["imputation"] if drow else ""),
+            "matricule_client": texte(body, "matricule_client", 40), "categorie": texte(body, "categorie", 40),
+            "notes": texte(body, "notes", 500, multiligne=True)}
+
+
+def liste_hs(ctx, g, body):
+    con = ctx["con"]
+    did = int(g[0])
+    _dossier_row(con, did)
+    rows = con.execute("SELECT * FROM heures_sup WHERE dossier_id = ? ORDER BY id DESC", (did,)).fetchall()
+    return {"heures_sup": [_hs_vue(con, r, False) for r in rows]}
+
+
+def creer_hs(ctx, g, body):
+    con = ctx["con"]
+    did = int(g[0])
+    drow = _dossier_row(con, did)
+    if drow["statut"] == "Annulé":
+        raise ErreurAPI(409, "Ce dossier est annulé.")
+    aid = entier(body, "agent_id", 1)
+    if not con.execute("SELECT 1 FROM agents WHERE id = ? AND dossier_id = ?", (aid, did)).fetchone():
+        raise ErreurAPI(400, "Agent inconnu dans ce dossier.")
+    ch = _hs_champs(body, drow)
+    lignes = _hs_lignes(body) if body.get("lignes") is not None else []
+    with Transaction(con):
+        cur = con.execute(
+            "INSERT INTO heures_sup(dossier_id, agent_id, direction, service, section, matricule_client, categorie, notes, "
+            "lignes_json, cree_le, maj_le) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (did, aid, ch["direction"], ch["service"], ch["section"], ch["matricule_client"], ch["categorie"],
+             ch["notes"], json.dumps(lignes), db.maintenant(), db.maintenant()))
+        journaliser(ctx, "hs_cree", drow["numero_proforma"], "%d ligne(s)" % len(lignes))
+    return {"id": cur.lastrowid}
+
+
+def detail_hs(ctx, g, body):
+    con = ctx["con"]
+    return {"heures_sup": _hs_vue(con, _hs_row(con, int(g[0])))}
+
+
+def modifier_hs(ctx, g, body):
+    """Fiche d'attachement et classement. Modifiable tant que la facture FA H n'est pas émise
+    (le n° du devis H, lui, ne change jamais)."""
+    con = ctx["con"]
+    hid = int(g[0])
+    ch = _hs_champs(body)
+    lignes = _hs_lignes(body)
+    heures = body.get("heures")
+    if heures is not None:
+        if not isinstance(heures, dict):
+            raise ErreurAPI(400, "Classement invalide.")
+        h = {}
+        for k in M.HS_CATEGORIES:
+            try:
+                h[k] = M.hs_heures(heures.get(k) if heures.get(k) not in (None, "") else 0)
+            except (ValueError, ZeroDivisionError):
+                raise ErreurAPI(400, "Classement : nombre d'heures invalide.")
+            if h[k] > 2000:
+                raise ErreurAPI(400, "Classement : nombre d'heures trop grand.")
+        heures = {k: float(v) for k, v in h.items()}
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        if r["facture_numero"]:
+            raise ErreurAPI(409, "La facture %s est émise : les heures ne se modifient plus." % r["facture_numero"])
+        con.execute("UPDATE heures_sup SET direction=?, service=?, section=?, matricule_client=?, categorie=?, notes=?, "
+                    "lignes_json=?, heures_json=?, classement_manuel=?, maj_le=? WHERE id=?",
+                    (ch["direction"], ch["service"], ch["section"], ch["matricule_client"], ch["categorie"], ch["notes"],
+                     json.dumps(lignes), json.dumps(heures or {}), 1 if heures else 0, db.maintenant(), hid))
+        journaliser(ctx, "hs_modifie", r["devis_numero"] or "relevé %d" % hid,
+                    "%d ligne(s), classement %s" % (len(lignes), "manuel" if heures else "proposé"))
+    return detail_hs(ctx, g, body)
+
+
+def _dernier_num(con, cle, colonne, libelle):
+    v = parametres(con).get(cle)
+    if v is None:
+        raise ErreurAPI(409, "Renseignez d'abord le dernier n° de %s réellement utilisé (Paramètres)." % libelle,
+                        "NUM_" + cle.upper())
+    mx = con.execute("SELECT COALESCE(MAX(%s), 0) FROM heures_sup" % colonne).fetchone()[0]
+    return max(int(v), mx)
+
+
+def devis_hs(ctx, g, body):
+    """Attribue le n° de Proforma H (une seule fois) ; la date reste modifiable avant la facture."""
+    con = ctx["con"]
+    hid = int(g[0])
+    ddev = date_(body, "date", requis=False) or aujourdhui()
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        if not json.loads(r["lignes_json"]):
+            raise ErreurAPI(400, "Saisissez d'abord les heures de la fiche d'attachement.")
+        afc = _hs_vue(con, r, False)["feries_a_confirmer"]
+        if afc:
+            raise ErreurAPI(409, "Confirmez d'abord le(s) jour(s) férié(s) : %s." % ", ".join(
+                "%s (%s)" % (x["date"], x["libelle"]) for x in afc), "FERIE_A_CONFIRMER")
+        if r["facture_numero"]:
+            raise ErreurAPI(409, "La facture est émise : le devis ne change plus.")
+        p = parametres(con)
+        code = p.get("code_entreprise") or "ANO"
+        if r["devis_num_seq"]:
+            n = r["devis_num_seq"]
+        else:
+            n = _dernier_num(con, "dernier_num_proforma_h", "devis_num_seq", "Proforma H") + 1
+        numero = num_proforma_h(p, n, ddev)
+        if con.execute("SELECT 1 FROM heures_sup WHERE devis_numero = ? AND id <> ?", (numero, hid)).fetchone():
+            raise ErreurAPI(409, "Le n° %s existe déjà : vérifiez le dernier n° de Proforma H." % numero)
+        con.execute("UPDATE heures_sup SET devis_num_seq=?, devis_numero=?, devis_date=?, maj_le=? WHERE id=?",
+                    (n, numero, ddev.isoformat(), db.maintenant(), hid))
+        if not r["devis_num_seq"]:
+            con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('dernier_num_proforma_h', ?)", (json.dumps(n),))
+        journaliser(ctx, "hs_devis", numero)
+    return detail_hs(ctx, g, body)
+
+
+def facture_hs(ctx, g, body):
+    """Émet la facture FA H : montant = total du devis H par défaut (modifiable), TVA comme les factures du mois."""
+    con = ctx["con"]
+    hid = int(g[0])
+    dfac = date_(body, "date_facture", requis=False) or aujourdhui()
+    bc = texte(body, "bc_numero", 20)
+    montant = entier(body, "montant_ht", 1, 10_000_000_000, requis=False)
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        if r["facture_numero"]:
+            raise ErreurAPI(409, "Facture déjà émise : %s." % r["facture_numero"])
+        if not r["devis_numero"]:
+            raise ErreurAPI(409, "Faites d'abord le devis H.")
+        vue = _hs_vue(con, r, False)
+        ht = montant if montant is not None else vue["calcul"]["total"]
+        if ht <= 0:
+            raise ErreurAPI(400, "Montant à 0 : vérifiez le classement des heures.")
+        p = parametres(con)
+        n = _dernier_num(con, "dernier_num_facture_h", "facture_num_seq", "facture FA H") + 1
+        numero = num_facture_h(p, n, dfac)
+        if con.execute("SELECT 1 FROM heures_sup WHERE facture_numero = ?", (numero,)).fetchone():
+            raise ErreurAPI(409, "Le n° %s existe déjà : vérifiez le dernier n° de facture FA H." % numero)
+        tva = M.tva(ht, int(p.get("tva_pdm", 1800)))
+        ech = M.echeance(dfac, p.get("delai_paiement_jours", 30))
+        con.execute("UPDATE heures_sup SET facture_num_seq=?, facture_numero=?, facture_date=?, echeance=?, bc_numero=?, "
+                    "montant_ht=?, tva=?, ttc=?, cout_mensuel=?, heures_json=?, maj_le=? WHERE id=?",
+                    (n, numero, dfac.isoformat(), ech.isoformat(), bc, ht, tva, ht + tva, vue["cout_mensuel"],
+                     json.dumps(vue["heures"]), db.maintenant(), hid))
+        con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('dernier_num_facture_h', ?)", (json.dumps(n),))
+        journaliser(ctx, "hs_facture", numero, "HT %d%s" % (ht, " (montant saisi)" if montant is not None else ""))
+    return detail_hs(ctx, g, body)
+
+
+def suivi_hs(ctx, g, body):
+    """Facture FA H envoyée et/ou payée (ou paiement annulé)."""
+    con = ctx["con"]
+    hid = int(g[0])
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        if ("envoyee_le" in body or "paye_le" in body) and not r["facture_numero"]:
+            raise ErreurAPI(409, "Facture pas encore émise.")
+        if "fiche_envoyee_le" in body:
+            d = date_(body, "fiche_envoyee_le", requis=False)
+            con.execute("UPDATE heures_sup SET fiche_envoyee_le=? WHERE id=?", (d.isoformat() if d else None, hid))
+        if "envoyee_le" in body:
+            d = date_(body, "envoyee_le", requis=False)
+            con.execute("UPDATE heures_sup SET envoyee_le=? WHERE id=?", (d.isoformat() if d else None, hid))
+        if "paye_le" in body:
+            d = date_(body, "paye_le", requis=False)
+            m = entier(body, "montant_paye", 1, 10_000_000_000, requis=False)
+            con.execute("UPDATE heures_sup SET paye_le=?, montant_paye=?, ref_paiement=? WHERE id=?",
+                        (d.isoformat() if d else None, (m if m is not None else r["ttc"]) if d else None,
+                         texte(body, "reference", 80) if d else "", hid))
+        journaliser(ctx, "hs_suivi", r["facture_numero"] or "relevé %d" % hid,
+                    json.dumps({k: body.get(k) for k in ("fiche_envoyee_le", "envoyee_le", "paye_le") if k in body}))
+    return detail_hs(ctx, g, body)
+
+
+def releve_hs(ctx, g, body):
+    """Relevé d'heures envoyé par le client (scan PDF ou photo), rangé avec le dossier."""
+    con = ctx["con"]
+    hid = int(g[0])
+    r = _hs_row(con, hid)
+    nom, contenu, fmt = _fichier_recu(body)
+    with Transaction(con):
+        doc_id = DOC.enregistrer(con, ctx["chemin_db"], r["dossier_id"], None, "Autre", "Relevé heures sup. - " + nom,
+                                 contenu, fmt[0], fmt[1], ctx["user"]["id"])
+        con.execute("UPDATE documents SET hs_id = ? WHERE id = ?", (hid, doc_id))
+        journaliser(ctx, "hs_releve", r["devis_numero"] or "relevé %d" % hid, "%s (%d Ko)" % (nom, len(contenu) // 1024))
+    return {"id": doc_id}
+
+
+def supprimer_hs(ctx, g, body):
+    con = ctx["con"]
+    hid = int(g[0])
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        if r["devis_numero"]:
+            raise ErreurAPI(409, "Le devis %s a un n° : ce relevé ne se supprime plus." % r["devis_numero"])
+        con.execute("UPDATE documents SET hs_id = NULL WHERE hs_id = ?", (hid,))
+        con.execute("DELETE FROM heures_sup WHERE id = ?", (hid,))
+        journaliser(ctx, "hs_supprime", "relevé %d" % hid)
+    return {"ok": True}
+
+
+def etape_hs(ctx, g, body):
+    """L'agent signe la fiche à chaque étape (avant, après, payées, récupérées) : date et scan signé facultatif."""
+    con = ctx["con"]
+    hid = int(g[0])
+    etape = body.get("etape")
+    libs = dict(docx_facture.ETAPES_HS)
+    if etape not in libs:
+        raise ErreurAPI(400, "Étape inconnue (avant, après, payées ou récupérées).")
+    d = date_(body, "date", requis=False)
+    fichier = _fichier_recu(body) if body.get("contenu") else None
+    with Transaction(con):
+        r = _hs_row(con, hid)
+        et = json.loads(r["etapes_json"] or "{}")
+        if d is None:
+            et.pop(etape, None)
+        else:
+            e = et.get(etape) or {}
+            e["date"] = d.isoformat()
+            if fichier:
+                nom, contenu, fmt = fichier
+                doc_id = DOC.enregistrer(con, ctx["chemin_db"], r["dossier_id"], None, "Autre",
+                                         "Fiche signée (%s) - %s" % (libs[etape].lower(), nom), contenu, fmt[0], fmt[1],
+                                         ctx["user"]["id"])
+                con.execute("UPDATE documents SET hs_id = ? WHERE id = ?", (hid, doc_id))
+                e["doc_id"] = doc_id
+            et[etape] = e
+        con.execute("UPDATE heures_sup SET etapes_json=?, maj_le=? WHERE id=?", (json.dumps(et), db.maintenant(), hid))
+        journaliser(ctx, "hs_signature", r["devis_numero"] or "relevé %d" % hid,
+                    "%s : %s%s" % (libs[etape], d or "effacée", " + scan" if fichier else ""))
+    return detail_hs(ctx, g, body)
+
+
+def fiche_hs_word(ctx, g, body):
+    con = ctx["con"]
+    h = _hs_vue(con, _hs_row(con, int(g[0])), False)
+    if not h["lignes"]:
+        raise ErreurAPI(409, "La fiche n'a encore aucune heure.")
+    return Fichier(docx_facture.fiche_hs_docx(parametres(con), h, prive=ctx["prive"], origine=ctx["origine"]),
+                   DOC.MIME_DOCX, docx_facture.nom_fiche_hs(h))
+
+
+def archiver_fiche_hs(ctx, g, body):
+    """Copie figée de la fiche remise au client (Word, puis PDF si LibreOffice est là), rangée avec le dossier."""
+    con = ctx["con"]
+    hid = int(g[0])
+    h = _hs_vue(con, _hs_row(con, hid), False)
+    if not h["lignes"]:
+        raise ErreurAPI(409, "La fiche n'a encore aucune heure.")
+    contenu = docx_facture.fiche_hs_docx(parametres(con), h, prive=ctx["prive"], origine=ctx["origine"])
+    nom = docx_facture.nom_fiche_hs(h)
+    with Transaction(con):
+        doc_id = DOC.enregistrer(con, ctx["chemin_db"], h["dossier_id"], None, "Autre", nom, contenu, DOC.MIME_DOCX,
+                                 ".docx", ctx["user"]["id"])
+        con.execute("UPDATE documents SET hs_id = ? WHERE id = ?", (hid, doc_id))
+        journaliser(ctx, "hs_fiche_archivee", h["devis_numero"] or "relevé %d" % hid, nom)
+    DOC.convertir_en_tache_de_fond(ctx["chemin_db"], [(h["dossier_id"], None, nom, contenu)], ctx["user"]["id"],
+                                   categorie="Autre", hs_id=hid)
+    return {"id": doc_id, "pdf": DOC.soffice() is not None}
+
+
+def confirmer_ferie(ctx, g, body):
+    """Jour férié « à confirmer » (Aïd, Tabaski…) : confirmé (appliqué au taux des dimanches) ou retiré."""
+    con = ctx["con"]
+    jour = date_(body, "jour").isoformat()
+    ferie = booleen(body, "ferie")
+    with Transaction(con):
+        liste = list(parametres(con).get("hs_jours_feries") or [])
+        neuve, trouve = [], False
+        for x in liste:
+            k = str(x).split()[0]
+            if k == jour and db.A_CONFIRMER in x:
+                trouve = True
+                if ferie:
+                    neuve.append(" ".join(x.replace(db.A_CONFIRMER, "").split()))
+                continue
+            neuve.append(x)
+        if ferie and not trouve and jour not in {str(x).split()[0] for x in neuve}:
+            neuve.append(jour + " " + (texte(body, "libelle", 40) or "Jour férié"))
+        con.execute("INSERT OR REPLACE INTO parametres(cle, valeur) VALUES ('hs_jours_feries', ?)",
+                    (json.dumps(sorted(set(neuve), key=lambda y: (len(y.split()[0]) > 5, y))),))
+        journaliser(ctx, "ferie_confirme" if ferie else "ferie_retire", jour)
+    return {"hs_jours_feries": parametres(con)["hs_jours_feries"]}

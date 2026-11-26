@@ -62,6 +62,8 @@ L'application demande de créer le **compte de la direction** (administrateur) :
 | Intérimaires | **Intérimaires** | Chaque intérimaire reçoit un matricule fixe (INT-0001, INT-0002…) à sa première DA et le garde à chaque nouvelle DA (reconnu par son nom, sans tenir compte des accents ni des majuscules). Usage interne : jamais imprimé sur les documents. |
 | Anciens intérimaires | **Intérimaires** > **+ Ancien intérimaire** | Nom, poste, lieu, dates de l'ancien contrat, dernière visite médicale. Il reçoit un matricule, sans proforma ni facture. À sa prochaine DA, le même matricule et sa dernière visite sont repris. |
 | Documents | Dossier > **Documents** | Une copie de chaque facture est gardée automatiquement au moment où elle est émise (Word, et PDF si LibreOffice est installé : c'est le cas sur le serveur en ligne). Joignez aussi les pièces reçues du client : DA, BC, PV (PDF, PNG ou JPEG, 8 Mo au plus). Direction et Gestion téléchargent ; seule la Direction peut retirer une pièce de la liste (le fichier reste gardé). Les copies de factures ne se retirent pas. |
+| Retrouver | Case **Rechercher…** en haut du menu (ou touche **/**) | Un ou plusieurs mots : n° de facture ou de proforma, n° de BC ou de DA, nom ou matricule d'agent, client, service, lieu, mois (« septembre 2026 »), montant (« 11 173 500 »). Sans tenir compte des accents ni des majuscules. Résultats : dossiers, factures, documents (téléchargeables), clients, intérimaires. Filtres : type, client, statut, période, montant HT. Le rôle Lecture ne trouve que des factures. |
+| Heures supplémentaires | Dossier > **Heures supplémentaires** > + Nouveau relevé d'heures | 1. Joindre le relevé scanné du client. 2. Saisir la fiche d'attachement en grille calendrier (heures tapées sous chaque jour, de date à date, plusieurs mois possibles) ou par plages horaires (début, fin) : fiche en PDF. 3. Classement semaine par semaine (lundi → dimanche) : 8 premières heures à 28 %, le reste à 56 %, dimanches et jours fériés à 75 % ; modifiable à la main. 4. Proforma H (série à part : 124-10-ANO-MAD/2026). 5. Facture FA H (FA H 110/11/2026) au montant du devis par défaut, modifiable ; envoyée, payée. Taux horaire = coût mensuel ÷ 173,33. Derniers n° et taux dans Paramètres. Fiche à remettre au client en PDF ou Word, archivable, avec signatures de l'agent datées (Avant, Après, Payées, Récupérées, scan facultatif). Jours fériés « à confirmer » : un clic pour les confirmer avant le devis. |
 | Export | **Factures** > **Exporter (Excel)** | Tableau des factures affichées (mêmes filtres) pour Excel ou Numbers : n°, mois, agent, HT, TVA, TTC, statut, paiement. Jamais de salaire. |
 | 7. Suivi | **Tableau de bord** | En haut, la liste **À faire** (factures à émettre, à envoyer, en retard, proformas sans BC, brouillons), chaque ligne mène au bon écran. Puis par mois : personnes en contrat, à facturer, facturé, payé, impayés, retards, fins de contrat et visites médicales à refaire. |
 
@@ -135,6 +137,28 @@ Après la mise en ligne, sur le serveur : `bash deploiement/verifier-en-ligne.sh
 ## Versions et dépôt Git
 
 Le dossier est un dépôt Git : `git log --oneline` liste les versions, `git tag` leurs étiquettes, et `CHANGELOG.md` dit ce que chacune apporte. Le cachet (`app/prive/`) et les données (`donnees/`) ne sont jamais versionnés.
+
+### Deux branches : `dev` (travail) et `main` (production)
+
+- **`dev`** : toutes les nouvelles modifications arrivent ici. À chaque envoi, GitHub relance tous les tests. Rien ne part sur le serveur.
+- **`main`** : seulement ce qui a été vérifié sur `dev`. Une étiquette de version posée sur `main` met en ligne.
+
+Au quotidien (Mac) :
+1. `git checkout dev && git pull` : récupérer la dernière version de travail.
+2. Modifier, puis `git commit -am "…"` et `git push` : les tests tournent sur GitHub (onglet « Actions »).
+3. Essayer : sur le site de test (ci-dessous), ou en local avec « Lancer ANO.command ».
+
+**Site de test** : https://dev.2-29-210-17.sslip.io (badge « TEST » à côté du nom et onglet « [TEST] », données fictives,
+compte et données séparés de la production). Après chaque envoi sur `dev`, une fois les tests verts,
+GitHub le met à jour tout seul (onglet « Actions », étape « Mise à jour du site de test »).
+Installation, une seule fois, depuis le Mac (dossier erp-mvp) :
+`git fetch && git archive origin/dev | ssh root@2.29.210.17 'rm -rf /root/erp-dev-src && mkdir /root/erp-dev-src && tar xf - -C /root/erp-dev-src && bash /root/erp-dev-src/deploiement/installer-dev.sh'`
+Le script affiche une fois le mot de passe provisoire de l'entreprise fictive « essai ». Retirer : même commande avec `installer-dev.sh --retirer`.
+
+Passer en production, quand `dev` est validée :
+1. `git checkout main && git pull && git merge dev` puis `git push`.
+2. Suivre « Livrer une version » ci-dessous (`nouvelle-version.sh`, puis `git push origin main --follow-tags`).
+3. `git checkout dev` pour reprendre le travail.
 
 Livrer une version :
 1. Décrire la version en haut de `CHANGELOG.md` (`## v3.4.0 – date : titre`), puis `git commit -am "…"`.

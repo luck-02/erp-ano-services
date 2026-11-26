@@ -111,7 +111,7 @@ def en_pdf(docx, delai=120):
         return pdf if pdf.startswith(b"%PDF-") else None
 
 
-def convertir_en_tache_de_fond(chemin_db, a_convertir, user_id):
+def convertir_en_tache_de_fond(chemin_db, a_convertir, user_id, categorie="Facture", hs_id=None):
     """a_convertir = [(dossier_id, facture_id, nom_docx, contenu_docx)]. Ajoute
     les PDF un par un, sans faire attendre la personne qui a émis."""
     if not a_convertir or not soffice():
@@ -126,8 +126,10 @@ def convertir_en_tache_de_fond(chemin_db, a_convertir, user_id):
                 con = db.connecter(chemin_db)
                 try:
                     with con:
-                        enregistrer(con, chemin_db, dossier_id, facture_id, "Facture", nom[:-5] + ".pdf",
-                                    pdf, "application/pdf", ".pdf", user_id)
+                        doc = enregistrer(con, chemin_db, dossier_id, facture_id, categorie, nom[:-5] + ".pdf",
+                                          pdf, "application/pdf", ".pdf", user_id)
+                        if hs_id:
+                            con.execute("UPDATE documents SET hs_id = ? WHERE id = ?", (hs_id, doc))
                 finally:
                     con.close()
             except Exception:       # le Word est déjà gardé : un PDF manqué ne bloque rien
